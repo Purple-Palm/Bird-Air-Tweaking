@@ -108,7 +108,8 @@ class DemoAnalysisTest(unittest.TestCase):
 
     def test_candidate_is_a_page_decoder(self):
         self.assertEqual(self.dec['format'], 'birdair-lab-decoder')
-        self.assertEqual(self.dec['version'], 2)          # decoders/current.json is v1
+        with open(os.path.join(ROOT, 'decoders', 'current.json'), encoding='utf-8') as fh:
+            self.assertEqual(self.dec['version'], json.load(fh)['version'] + 1)   # proposes the next version
         self.assertIn('updatedAt', self.dec)
         self.assertFalse(self.dec['json'])
 
