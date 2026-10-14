@@ -397,8 +397,11 @@ function rebuildTelemetry() {
 const CONN = {
   idle: ['Не подключено', 'neutral', '○'], connecting: ['Подключаюсь…', 'warn', '◌'], connected: ['На связи', 'good', '●'],
   reconnecting: ['Переподключаюсь…', 'warn', '◌'], demo: ['Демо-режим', 'neutral', '◇'], offline: ['Лог из файла', 'neutral', '▤'],
-  unsupported: ['Bluetooth недоступен', 'crit', '⚠'], error: ['Ошибка', 'crit', '⚠'],
+  unsupported: ['Bluetooth недоступен', 'crit', '⚠'], error: ['Ошибка', 'crit', '⚠'], choosing: ['Выбери самокат в списке…', 'warn', '◌'],
 };
+/* A visible message above all tabs: the status pill gets cut off on a phone. */
+function showProblem(text) { $('#problemText').textContent = text; $('#problem').hidden = false; }
+function hideProblem() { $('#problem').hidden = true; }
 function setConn(id, detail) {
   state.conn = id;
   const [label, tone, icon] = CONN[id];
@@ -418,7 +421,10 @@ function errText(e) {
   const m = String(e && e.message || e || '');
   if (/authenticat|encrypt|insufficient/i.test(m)) return 'нужна привязка (pairing) — подтверди запрос на телефоне';
   switch (e && e.name) {
-    case 'NotFoundError': return 'не найдено';
+    case 'NotFoundError':
+      if (/cancel/i.test(m)) return 'выбор отменён';
+      if (/adapter|bluetooth.*(off|disabled|not available)/i.test(m)) return 'Bluetooth выключен или недоступен: включи Bluetooth и разреши Chrome «Устройства поблизости»';
+      return 'устройство не найдено';
     case 'SecurityError': return 'браузер запретил доступ (нужен https, или UUID в чёрном списке Chrome)';
     case 'NetworkError': return 'связь не установилась — самокат далеко, выключен или занят приложением Bird';
     case 'NotSupportedError': return 'эта характеристика так не умеет';
@@ -432,18 +438,35 @@ function serviceList() {
   return Array.from(new Set(DEFAULT_SERVICES.concat(extra)));
 }
 async function connect() {
-  if (!bleSupported()) { showTab('guide'); setConn('unsupported'); return; }
+  hideProblem();
+  if (!bleSupported()) {
+    showTab('guide'); setConn('unsupported');
+    showProblem(window.isSecureContext
+      ? 'В этом браузере нет Web Bluetooth. Открой страницу в Chrome — не во встроенном браузере другого приложения и не в Samsung Internet.'
+      : 'Bluetooth работает только по https. Открой https://purple-palm.github.io/Bird-Air-Tweaking/ в Chrome.');
+    return;
+  }
+  if (state.conn === 'choosing') return;
   const optionalServices = serviceList();
   const opts = settings.namePrefix
     ? { filters: [{ namePrefix: settings.namePrefix }], optionalServices }
     : { acceptAllDevices: true, optionalServices };
+  const before = state.conn;
+  setConn('choosing');
   let dev;
   try { dev = await navigator.bluetooth.requestDevice(opts); }
   catch (e) {
-    if (e && e.name === 'NotFoundError') return; /* chooser cancelled */
-    setConn('error', errText(e));
+    const cancelled = e && e.name === 'NotFoundError' && /cancel/i.test(e.message || '');
+    if (cancelled) {
+      setConn(before, 'выбор отменён');
+      showProblem('Список закрыт без выбора. Если самоката в нём не было: полностью закрой приложение Bird (самокат держит одно подключение), включи самокат' + (settings.namePrefix ? ', проверь фильтр по имени «' + settings.namePrefix + '» в настройках' : '') + ' и нажми «Подключить» ещё раз.');
+    } else {
+      setConn('error', errText(e));
+      showProblem('Не получилось начать поиск: ' + errText(e) + '. (' + ((e && e.name) || 'Error') + ': ' + ((e && e.message) || e) + ')');
+    }
     return;
   }
+  hideProblem();
   stopDemo(true);
   stopWriteRepeat();
   if (state.device && state.device !== dev) { try { state.manual = true; state.device.gatt.disconnect(); } catch { /* ignore */ } }

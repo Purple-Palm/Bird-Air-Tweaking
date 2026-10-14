@@ -11,6 +11,19 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="assets/app.css?v=__BUILD__">
+<script>
+/* Shows script failures on the page itself: a phone has no devtools. Runs before app.js, so it also catches app.js failing to load or parse. */
+(function () {
+  function show(msg) {
+    var b = document.getElementById('problem');
+    if (!b) return;
+    document.getElementById('problemText').textContent = 'Ошибка в странице: ' + msg + '. Перезагрузи страницу; если повторяется — пришли этот текст.';
+    b.hidden = false;
+  }
+  addEventListener('error', function (e) { if (e.message) show(e.message + (e.filename ? ' (' + e.filename.split('/').pop().split('?')[0] + ':' + e.lineno + ')' : '')); });
+  addEventListener('unhandledrejection', function (e) { var r = e.reason; show(String(r && r.message || r)); });
+})();
+</script>
 </head>
 <body>
 <header class="strip">
@@ -36,6 +49,10 @@
 </header>
 
 <main class="wrap">
+  <div class="banner top problem" id="problem" role="alert" hidden>
+    <span id="problemText"></span>
+    <button class="btn btn-sm" id="problemHide" type="button" onclick="this.parentNode.hidden = true">Скрыть</button>
+  </div>
   <div class="banner top" id="decUpd" role="status" hidden>
     <span id="decUpdText"></span>
     <span class="row">

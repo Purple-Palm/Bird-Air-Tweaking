@@ -107,3 +107,23 @@ test('manual disconnect does not reconnect', async ({ page }) => {
   expect(connects).toBe(1);
   await expect(page.locator('#btnConnect')).toBeVisible();
 });
+
+test('closing the chooser says so and keeps the demo running', async ({ page }) => {
+  await page.evaluate(() => { window.__fakeBle.requestError = { name: 'NotFoundError', message: 'User cancelled the requestDevice() chooser.' }; });
+  await page.click('#btnConnect');
+  await expect(page.locator('#connPill')).toContainText('Демо-режим · выбор отменён');
+  await expect(page.locator('#problem')).toBeVisible();
+  await expect(page.locator('#problemText')).toContainText('закрой приложение Bird');
+  await expect(page.locator('#demoBanner')).toBeVisible();
+  await page.evaluate(() => { window.__fakeBle.requestError = null; });
+  await connect(page);
+  await expect(page.locator('#problem')).toBeHidden();
+});
+
+test('Bluetooth switched off is reported, not swallowed', async ({ page }) => {
+  await page.evaluate(() => { window.__fakeBle.requestError = { name: 'NotFoundError', message: 'Bluetooth adapter not available.' }; });
+  await page.click('#btnConnect');
+  await expect(page.locator('#connPill')).toContainText('Ошибка');
+  await expect(page.locator('#problemText')).toContainText('Bluetooth выключен или недоступен');
+  await expect(page.locator('#problemText')).toContainText('Bluetooth adapter not available.');
+});
