@@ -466,17 +466,18 @@ async function openGatt() {
   sys('Подключено');
   acquireWakeLock();
 }
+/* Throws if the link drops midway, so openGatt() never reports a connection that is already gone. */
 async function discover() {
   const server = state.device.gatt;
+  const alive = () => { if (!server.connected) throw Object.assign(new Error('связь пропала во время обнаружения сервисов'), { name: 'NetworkError' }); };
   let services = [];
   try { services = await server.getPrimaryServices(); }
-  catch (e) { sys('Список сервисов не получен: ' + errText(e), true); }
-  const prev = state.chars;
-  state.gatt = []; state.chars = new Map();
+  catch (e) { alive(); sys('Список сервисов не получен: ' + errText(e), true); }
+  const prev = state.chars, gatt = [], found = new Map();
   for (const s of services) {
     const entry = { uuid: s.uuid, chars: [] };
     let chars = [];
-    try { chars = await s.getCharacteristics(); } catch (e) { sys('Характеристики ' + shortUuid(s.uuid) + ': ' + errText(e), true); }
+    try { chars = await s.getCharacteristics(); } catch (e) { alive(); sys('Характеристики ' + shortUuid(s.uuid) + ': ' + errText(e), true); }
     for (const c of chars) {
       const key = s.uuid + '|' + c.uuid;
       const p = c.properties;
@@ -486,11 +487,13 @@ async function discover() {
         props: { read: !!p.read, write: !!p.write, wnr: !!p.writeWithoutResponse, notify: !!p.notify, indicate: !!p.indicate },
         subscribed: false, handler: null, last: old ? old.last : null, count: old ? old.count : 0, wanted: old ? old.wanted : null,
       };
-      state.chars.set(key, info);
+      found.set(key, info);
       entry.chars.push(info);
     }
-    state.gatt.push(entry);
+    gatt.push(entry);
   }
+  alive();
+  state.gatt = gatt; state.chars = found;
   sys('Найдено сервисов: ' + state.gatt.length + ', характеристик: ' + state.chars.size);
   if (!state.gatt.length) sys('Сервисов не видно. Добавь UUID из nRF Connect в «Настройки → Свои UUID» и переподключись.', true);
   renderExplorer();
@@ -502,6 +505,7 @@ async function discover() {
     if (want) await subscribe(info, true);
   }
   renderExplorer();
+  alive();
 }
 async function readChar(info, quiet) {
   if (!info.obj) return;
