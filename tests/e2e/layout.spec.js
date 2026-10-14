@@ -5,9 +5,12 @@ const noSideScroll = page => page.evaluate(() => {
   return { scroll: d.scrollWidth, client: d.clientWidth, body: document.body.scrollWidth };
 });
 
-test('no horizontal scroll at 390 px on any tab', async ({ page }) => {
+// Fonts are stubbed in tests and fallback fonts differ between machines, so the second pass
+// widens every glyph: a layout that only fits with narrow fonts fails here, not on the phone.
+for (const spacing of [null, '0.08em']) test(`no horizontal scroll at 390 px on any tab${spacing ? ', wide glyphs' : ''}`, async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openApp(page, { storage: { 'bal.settings': { allowWrite: true } } });
+  if (spacing) await page.addStyleTag({ content: `* { letter-spacing: ${spacing} !important; }` });
   await page.waitForTimeout(1500);
   for (const tab of ['dash', 'data', 'decoder', 'guide']) {
     await page.click('#t-' + tab);

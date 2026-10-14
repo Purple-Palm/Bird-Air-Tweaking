@@ -99,8 +99,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ---------- layout ---------- */
 main.wrap { padding-block: 16px 40px; }
 .view { display: grid; gap: 14px; }
-.card { background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; align-content: start; min-width: 0; }
 .card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; }
+/* A select is as wide as its longest option. Single-column grids get an explicit minmax(0, 1fr)
+   track and header rows may shrink, so a long option ellipsizes instead of widening the card. */
+.view, .card, .field { grid-template-columns: minmax(0, 1fr); }
+.card-head > * { min-width: 0; max-width: 100%; }
 .hint { color: var(--ink-2); font-size: 14px; max-width: 68ch; }
 .empty { color: var(--muted); font-size: 14px; }
 .cols { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
