@@ -163,3 +163,17 @@ test.describe('decoder slots', () => {
     expect((await ls(page, 'bal.decoder.backups'))[0].decoder.fields[0].name).toBe('мой');
   });
 });
+
+test('closing the tab warns about data recorded after the last send', async ({ page }) => {
+  await mockGitHub(page);
+  await openApp(page, { bluetooth: true, tab: 'data', storage: { 'bal.gh.token': TOKEN } });
+  await connect(page);
+  const unload = () => page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; });
+  await page.evaluate(() => { for (let i = 0; i < 60; i++) window.__fakeBle.notify('ffe1', [i]); });
+  expect(await unload()).toBe(true);
+  await page.click('#btnGhSend');
+  await expect(page.locator('#ghMsg')).toContainText('Отправлено');
+  expect(await unload()).toBe(false);
+  await page.evaluate(() => window.__fakeBle.notify('ffe1', [99]));
+  expect(await unload()).toBe(true);           // the tail is not on GitHub yet
+});

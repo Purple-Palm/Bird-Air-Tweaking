@@ -247,7 +247,8 @@ function saveDecoder() {
 const MAX_ENTRIES = 80000;
 function newTel() { return { vals: new Map(), whOut: 0, whIn: 0, lastPT: null, powerTouched: false, jsonBuf: new Map() }; }
 function newSession(o) {
-  state.session = { startedAt: Date.now(), t0: performance.now(), entries: [], exported: false, trimmed: false, live: false, offline: false, demo: false, device: null, ...o };
+  /* pushed counts every entry ever added; savedMark is its value at the last download, copy or send */
+  state.session = { startedAt: Date.now(), t0: performance.now(), entries: [], pushed: 0, savedMark: 0, trimmed: false, live: false, offline: false, demo: false, device: null, ...o };
   state.tel = newTel(); state.series = []; state.charStats = new Map(); state.rxTimes = []; state.hoverT = null; state.rollMax = 300;
   state.an.off = null;
 }
@@ -383,7 +384,7 @@ function pushEntry(e) {
   if (e.b && !e.h) e.h = bytesToHex(e.b);
   if (e.h && !e.b) e.b = hexToBytes(e.h) || new Uint8Array(0);
   S.entries.push(e);
-  S.pushed = (S.pushed || 0) + 1;
+  S.pushed++;
   if (S.entries.length > MAX_ENTRIES) { S.entries.splice(0, S.entries.length - MAX_ENTRIES); S.trimmed = true; }
   if (e.k === 'rx' || e.k === 'rd') {
     const key = e.s + '|' + e.u;
@@ -1232,14 +1233,14 @@ function exportLog() {
   const a = h('a', { href: URL.createObjectURL(blob), download: name });
   document.body.append(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-  S.exported = true;
+  S.savedMark = S.pushed;
   flash($('#logMsg'), 'Сохранено: ' + name + ' (' + nf(blob.size / 1024, 0) + ' КБ).');
 }
 async function copyLog() {
   const S = state.session;
   if (!S || !S.entries.length) { flash($('#logMsg'), 'Лог пуст — нечего копировать.', true); return; }
   const json = sessionJson();
-  try { await navigator.clipboard.writeText(json); S.exported = true; flash($('#logMsg'), 'Лог скопирован (' + nf(json.length / 1024, 0) + ' КБ).'); }
+  try { await navigator.clipboard.writeText(json); S.savedMark = S.pushed; flash($('#logMsg'), 'Лог скопирован (' + nf(json.length / 1024, 0) + ' КБ).'); }
   catch { flash($('#logMsg'), 'Браузер не дал скопировать. Используй «Скачать лог».', true); }
 }
 async function readLogFile(file) {
@@ -1283,7 +1284,7 @@ function loadLogObject(o, fileName, note) {
     if (!e || typeof e.t !== 'number' || !KIND[e.k]) continue;
     pushEntry({ t: e.t, k: e.k, s: e.s, u: e.u, h: e.h, n: e.n });
   }
-  state.session.exported = true;
+  state.session.savedMark = state.session.pushed;
   state.win = 'all';
   syncWinSeg();
   setConn('offline', fileName);
@@ -1294,7 +1295,7 @@ function loadLogObject(o, fileName, note) {
 function clearLog() {
   const S = state.session;
   if (!S) return;
-  S.entries = []; S.exported = false; S.gh = null;
+  S.entries = []; S.gh = null; S.savedMark = S.pushed;
   S.startedAt = Date.now(); S.t0 = performance.now();   /* a new recording: its own file name */
   state.series = []; state.tel = newTel(); state.charStats = new Map();
   for (const i of state.chars.values()) { i.count = 0; i.last = null; }
@@ -1483,6 +1484,7 @@ async function sendToGitHub(auto) {
   if (prev && prev.pushed === S.pushed && prev.anon === anon && prev.dest === dest) { if (!auto) ghDone(msg, 'Этот лог уже отправлен: ', prev.files); return; }
   ghBusy = true; btn.disabled = true;
   const say = text => { if (!auto) flash(msg, text); };
+  const mark = S.pushed;
   try {
     const o = sessionObject();
     if (anon) anonymizeLog(o);
@@ -1507,8 +1509,8 @@ async function sendToGitHub(auto) {
       for (const f of old ? old.files : []) {
         if (!sent.some(x => x.path === f.path) && f.sha) await ghDelete(f.path, f.sha, 'Лог ' + base + ': старая упаковка').catch(() => {});
       }
-      S.gh = { base, pushed: S.pushed, anon, dest, files: sent, at: Date.now() };
-      S.exported = true;
+      S.gh = { base, pushed: mark, anon, dest, files: sent, at: Date.now() };
+      S.savedMark = mark;
       ghDone(msg, (auto ? 'Автоотправка ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + ': ' : 'Отправлено: '), sent);
       return;
     }
@@ -2077,7 +2079,7 @@ $('#btnClear').addEventListener('click', ev => {
 $('#fileImport').addEventListener('change', e => { const fs = Array.from(e.target.files || []); if (fs.length) importLogs(fs); e.target.value = ''; });
 window.addEventListener('beforeunload', e => {
   const S = state.session;
-  if (S && !S.demo && !S.offline && !S.exported && S.entries.filter(x => x.k === 'rx').length > 50) { e.preventDefault(); e.returnValue = ''; }
+  if (S && !S.demo && !S.offline && S.savedMark !== S.pushed && S.entries.filter(x => x.k === 'rx').length > 50) { e.preventDefault(); e.returnValue = ''; }
 });
 
 /* ============================================================
