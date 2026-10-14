@@ -191,7 +191,14 @@ const PACK_AH = 5.2;
    ============================================================ */
 const settings = Object.assign({ extraUuids: '', namePrefix: '', autoSubscribe: true, autoReconnect: true, wakeLock: true, units: 'mph', allowWrite: false, collapse: true },
   store.get('bal.settings', {}));
-let decoder = normalizeDecoder(store.get('bal.decoder', null)) || { json: false, fields: [] };
+/* Two decoder slots: «мой» (bal.decoder, what the user edits) and «из репозитория» (bal.decoder.repo,
+   the last decoders/current.json the user applied). bal.decoder.active says which one runs. */
+const decSrc = { active: store.get('bal.decoder.active', 'mine'), repo: store.get('bal.decoder.repo', null), remote: null, forked: false };
+const emptyDecoder = () => ({ json: false, fields: [] });
+const mineDecoder = () => normalizeDecoder(store.get('bal.decoder', null)) || emptyDecoder();
+const repoDecoder = () => (decSrc.repo && normalizeDecoder(decSrc.repo)) || null;
+if (decSrc.active === 'repo' && !repoDecoder()) decSrc.active = 'mine';
+let decoder = (decSrc.active === 'repo' && repoDecoder()) || mineDecoder();
 const state = {
   session: null, device: null, gatt: [], chars: new Map(), charStats: new Map(),
   conn: 'idle', manual: false, reconnectN: 0, reconnectTimer: null, wakeLock: null,
@@ -201,7 +208,19 @@ const state = {
   writeTimer: null, geo: null, rollMax: 300,
 };
 function saveSettings() { store.set('bal.settings', settings); }
-function saveDecoder() { if (!state.demo) store.set('bal.decoder', JSON.parse(decoderToJson(decoder))); }
+/* Every call is a user edit. Editing the repository decoder turns it into «мой»; the previous «мой»
+   goes to bal.decoder.backup so nothing is lost silently. */
+function saveDecoder() {
+  if (state.demo) return;
+  if (decSrc.active === 'repo') {
+    const old = store.get('bal.decoder', null), oldN = normalizeDecoder(old), rep = repoDecoder();
+    if (oldN && oldN.fields.length && (!rep || decoderToJson(oldN) !== decoderToJson(rep))) store.set('bal.decoder.backup', { savedAt: new Date().toISOString(), decoder: old });
+    setActiveSource('mine');
+    decSrc.forked = true;
+  }
+  store.set('bal.decoder', JSON.parse(decoderToJson(decoder)));
+  renderDecSource();
+}
 
 /* ============================================================
    session & telemetry
@@ -1591,6 +1610,7 @@ function renderDecoder() {
   }
   $('#decText').value = decoderToJson(decoder);
   renderDecoderValues();
+  renderDecSource();
 }
 function renderDecoderValues() {
   for (const f of decoder.fields) {
@@ -1650,6 +1670,122 @@ $('#decApply').addEventListener('click', () => {
   if (state.demo) stopDemo(false);
   decoder = d; saveDecoder(); renderDecoder(); rebuildTelemetry();
   flash($('#decMsg'), 'Применено полей: ' + d.fields.length + '.');
+});
+
+/* ============================================================
+   decoder source: «мой» / «из репозитория», updates from decoders/current.json
+   ============================================================ */
+function setActiveSource(src) { decSrc.active = src; store.set('bal.decoder.active', src); }
+/* The decoder for real data; while the demo runs it waits in savedDecoder. */
+function setRealDecoder(d) {
+  if (state.demo) state.savedDecoder = d;
+  else { decoder = d; rebuildTelemetry(); }
+  renderDecoder();
+}
+function useSource(src) {
+  if (src === 'repo' && !repoDecoder()) return;
+  setActiveSource(src);
+  decSrc.forked = false;
+  setRealDecoder(src === 'repo' ? repoDecoder() : mineDecoder());
+}
+/* > 0 when a is newer: by version (numbers compared part by part), then by updatedAt. */
+function cmpDecVersion(a, b) {
+  if (!a) return b ? -1 : 0;
+  if (!b) return 1;
+  const va = String(a.version ?? ''), vb = String(b.version ?? '');
+  if (va !== vb && va && vb) {
+    const pa = va.split('.').map(Number), pb = vb.split('.').map(Number);
+    if (pa.concat(pb).every(Number.isFinite)) {
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    } else return va.localeCompare(vb, 'en', { numeric: true });
+  } else if (va !== vb) return va ? 1 : -1;
+  return (Date.parse(a.updatedAt) || 0) - (Date.parse(b.updatedAt) || 0);
+}
+function decLabel(d) {
+  const date = Date.parse(d && d.updatedAt);
+  return 'v' + (d && d.version != null ? d.version : '?') + (date ? ' от ' + new Date(date).toLocaleDateString('ru-RU') : '');
+}
+/* Newer than the repository decoder last applied. «Не сейчас» only hides the banner (dismissed). */
+function remoteIsNewer(ignoreDismissed) {
+  const r = decSrc.remote;
+  if (!r || !(r.fields.length || r.json) || cmpDecVersion(r, decSrc.repo) <= 0) return false;
+  return ignoreDismissed || cmpDecVersion(r, store.get('bal.decoder.dismissed', null)) > 0;
+}
+async function checkDecoderUpdate() {
+  decSrc.checkedAt = Date.now();
+  try {
+    const r = await fetch('decoders/current.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const o = await r.json();
+    const d = normalizeDecoder(o);
+    if (!d) throw new Error('в файле нет списка fields');
+    decSrc.remote = { ...o, fields: o.fields, json: !!o.json };
+    decSrc.fetchErr = null;
+  } catch (e) {
+    decSrc.remote = null;
+    decSrc.fetchErr = location.protocol === 'file:' ? 'страница открыта из файла' : (e && e.message) || String(e);
+  }
+  renderDecSource();
+}
+function applyRemote() {
+  const r = decSrc.remote;
+  if (!r) return;
+  decSrc.repo = r;
+  store.set('bal.decoder.repo', r);
+  useSource('repo');
+  flash($('#decRepoText'), 'Применён декодер из репозитория ' + decLabel(r) + (state.demo ? '. На приборах он заработает, когда выключишь демо.' : '.'));
+}
+function dismissRemote() {
+  const r = decSrc.remote;
+  if (r) store.set('bal.decoder.dismissed', { version: r.version, updatedAt: r.updatedAt });
+  renderDecSource();
+}
+function restoreBackup() {
+  const b = store.get('bal.decoder.backup', null);
+  if (!b || !b.decoder) return;
+  const cur = store.get('bal.decoder', null), curN = normalizeDecoder(cur);
+  store.set('bal.decoder', b.decoder);
+  if (curN && curN.fields.length) store.set('bal.decoder.backup', { savedAt: new Date().toISOString(), decoder: cur });
+  else store.del('bal.decoder.backup');
+  useSource('mine');
+  flash($('#decRepoText'), 'Вернул прежний «мой» декодер.' + (curN && curN.fields.length ? ' Тот, что был, теперь в резервной копии.' : ''));
+}
+function renderDecSource() {
+  const real = state.demo ? state.savedDecoder : decoder;
+  const offer = remoteIsNewer(false), newer = remoteIsNewer(true), r = decSrc.remote, mine = mineDecoder();
+  /* banner above all tabs */
+  $('#decUpd').hidden = !offer;
+  if (offer) {
+    $('#decUpdText').textContent = 'В репозитории новый декодер ' + decLabel(r) + ', полей: ' + r.fields.length + (r.note ? ' — ' + r.note : '') + '.'
+      + (decSrc.active === 'mine' && mine.fields.length ? ' Твой декодер сохранится: вернуться к нему можно в разделе «Декодер».' : '');
+  }
+  /* decoder tab */
+  for (const b of $$('#decSrcSeg button')) {
+    b.setAttribute('aria-pressed', b.dataset.src === decSrc.active ? 'true' : 'false');
+    if (b.dataset.src === 'repo') { b.disabled = !decSrc.repo; b.textContent = 'Из репозитория' + (decSrc.repo ? ' v' + decSrc.repo.version : ''); }
+  }
+  const n = real ? real.fields.length : 0;
+  $('#decSrcText').textContent = (state.demo ? 'Сейчас демо: на приборах демо-конфиг, выбранный декодер включится после демо. ' : '')
+    + (decSrc.active === 'repo'
+      ? 'Работает декодер из репозитория ' + decLabel(decSrc.repo) + (decSrc.repo.note ? ': ' + decSrc.repo.note : '') + '. Если поправить любое поле, он станет «моим», а этот останется в репозитории.'
+      : 'Работает твой декодер' + (n ? ', полей: ' + n : ', пока пустой') + '.' + (decSrc.forked ? ' Он сделан правкой декодера из репозитория.' : ''));
+  const rt = $('#decRepoText');
+  if (newer) flash(rt, 'В репозитории новее: ' + decLabel(r) + ', полей ' + r.fields.length + (r.note ? ' — ' + r.note : '') + '.');
+  else if (r) flash(rt, 'В репозитории ' + decLabel(r) + (r.fields.length || r.json ? '' : ', полей пока нет') + ' — новее нет.');
+  else if (decSrc.fetchErr) flash(rt, 'Не получилось проверить декодер в репозитории: ' + decSrc.fetchErr + '.');
+  const ap = $('#decRepoApply');
+  ap.hidden = !newer;
+  if (newer) ap.textContent = 'Применить ' + decLabel(r);
+  const bk = store.get('bal.decoder.backup', null);
+  $('#decBackup').hidden = !(bk && bk.decoder);
+}
+$('#decUpdApply').addEventListener('click', applyRemote);
+$('#decRepoApply').addEventListener('click', applyRemote);
+$('#decUpdLater').addEventListener('click', dismissRemote);
+$('#decBackup').addEventListener('click', restoreBackup);
+for (const b of $$('#decSrcSeg button')) b.addEventListener('click', () => { if (b.dataset.src !== decSrc.active) useSource(b.dataset.src); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Date.now() - (decSrc.checkedAt || 0) > 10 * 60 * 1000) checkDecoderUpdate();
 });
 
 /* ============================================================
@@ -1770,6 +1906,7 @@ if (!bleSupported()) setConn('unsupported'); else setConn('idle');
 startDemo();
 if (!bleSupported()) { const pill = $('#connPill'); pill.dataset.tone = 'crit'; $('.txt', pill).textContent = 'Демо · Bluetooth здесь недоступен'; $('.ico', pill).textContent = '⚠'; }
 renderDecoder();
+checkDecoderUpdate();
 requestRender(true);
-window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH };
+window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate };
 })();

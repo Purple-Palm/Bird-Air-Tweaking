@@ -36,6 +36,13 @@
 </header>
 
 <main class="wrap">
+  <div class="banner top" id="decUpd" role="status" hidden>
+    <span id="decUpdText"></span>
+    <span class="row">
+      <button class="btn btn-sm btn-primary" id="decUpdApply" type="button">Применить</button>
+      <button class="btn btn-sm" id="decUpdLater" type="button">Не сейчас</button>
+    </span>
+  </div>
   <!-- ===================== DASHBOARD ===================== -->
   <section class="view" id="v-dash" role="tabpanel" aria-labelledby="t-dash">
     <div class="banner" id="demoBanner" hidden>
@@ -236,6 +243,21 @@
 
   <!-- ===================== DECODER ===================== -->
   <section class="view" id="v-decoder" role="tabpanel" aria-labelledby="t-decoder" hidden>
+    <div class="card" id="decSource">
+      <div class="card-head">
+        <h2>Какой декодер работает</h2>
+        <div class="seg" role="group" aria-label="Источник декодера" id="decSrcSeg">
+          <button type="button" data-src="mine" aria-pressed="true">Мой</button>
+          <button type="button" data-src="repo" aria-pressed="false">Из репозитория</button>
+        </div>
+      </div>
+      <p class="hint" id="decSrcText"></p>
+      <p class="msg" id="decRepoText"></p>
+      <div class="row">
+        <button class="btn btn-sm btn-primary" id="decRepoApply" type="button" hidden>Применить</button>
+        <button class="btn btn-sm" id="decBackup" type="button" hidden>Вернуть прежний «мой»</button>
+      </div>
+    </div>
     <div class="card">
       <div class="card-head"><h2>Декодер</h2><span class="empty" id="decNote"></span></div>
       <p class="hint">Декодер превращает байты в цифры на приборах. Для каждого показателя укажи: из какой характеристики брать пакет, с чего он начинается, с какого байта читать и как пересчитать в единицы. Изменения сразу применяются ко всему, что уже записано.</p>

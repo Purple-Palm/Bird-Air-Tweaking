@@ -109,6 +109,7 @@ main.wrap { padding-block: 16px 40px; }
 /* ---------- demo banner ---------- */
 .banner { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: var(--r); border: 1px dashed var(--base); background: var(--well); font-size: 14px; color: var(--ink-2); }
 .banner b { color: var(--ink); font-weight: 600; }
+.banner.top { margin-bottom: 14px; border-style: solid; border-color: color-mix(in srgb, var(--flow) 45%, var(--hair)); background: color-mix(in srgb, var(--flow) 8%, var(--surface)); }
 
 /* ---------- instruments ---------- */
 .cluster { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
