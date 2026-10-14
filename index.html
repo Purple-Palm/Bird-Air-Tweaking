@@ -133,10 +133,21 @@
           <button class="btn btn-sm" id="btnExport" type="button">Скачать лог (JSON)</button>
           <button class="btn btn-sm" id="btnCopyLog" type="button">Копировать</button>
           <label class="btn btn-sm" for="fileImport">Загрузить лог…</label>
-          <input type="file" id="fileImport" accept=".json,application/json" hidden>
+          <input type="file" id="fileImport" accept=".json,.gz,application/json,application/gzip" multiple hidden>
           <button class="btn btn-sm btn-danger" id="btnClear" type="button">Очистить</button>
         </div>
         <p class="msg" id="logMsg"></p>
+        <div class="field" id="ghBox">
+          <h3>Отправить в GitHub</h3>
+          <label class="f">Подпись в имени файла<input id="ghLabel" placeholder="например: газ и тормоз" maxlength="40" autocomplete="off"></label>
+          <p class="empty mono" id="ghName"></p>
+          <label class="check"><input type="checkbox" id="ghAnon" checked><span>Обезличить<small>Имя и id устройства → «scooter», значения Device Name, Serial Number и System ID стираются. Репозиторий публичный — не снимай без причины.</small></span></label>
+          <div class="row">
+            <button class="btn btn-primary btn-sm" id="btnGhSend" type="button">Отправить лог в GitHub</button>
+            <button class="btn btn-sm" id="btnGhSetup" type="button">Настройки GitHub</button>
+          </div>
+          <p class="msg" id="ghMsg" role="status"></p>
+        </div>
       </div>
     </div>
 
@@ -203,6 +214,23 @@
       <label class="check"><input type="checkbox" id="setReconnect"><span>Переподключаться, если связь оборвалась<small>Чинит главную беду приложения Bird: соединение держится, пока открыта страница.</small></span></label>
       <label class="check"><input type="checkbox" id="setWake"><span>Не гасить экран, пока самокат подключён</span></label>
       <label class="check"><input type="checkbox" id="setWrite"><span>Разрешить отправку команд в самокат<small>Только для разбора протокола. По умолчанию выключено.</small></span></label>
+    </div>
+
+    <div class="card" id="ghCard">
+      <h2>GitHub: куда отправлять логи</h2>
+      <div class="fgrid4">
+        <label class="f">Владелец (owner)<input id="ghOwner" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+        <label class="f">Репозиторий<input id="ghRepo" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+        <label class="f">Ветка<input id="ghBranch" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+        <label class="f">Папка<input id="ghFolder" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+      </div>
+      <label class="f">Fine-grained personal access token<input id="ghToken" type="password" class="mono" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="вставь токен"></label>
+      <p class="hint">Создай токен на <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>: Repository access → Only select repositories → этот репозиторий; Permissions → Contents: Read and write. Токен хранится только в этом браузере и не попадает ни в логи, ни в экспорт.</p>
+      <div class="row">
+        <button class="btn btn-sm" id="ghCheck" type="button">Проверить доступ</button>
+        <button class="btn btn-sm btn-danger" id="ghForget" type="button">Забыть токен</button>
+      </div>
+      <p class="msg" id="ghSetMsg" role="status"></p>
     </div>
   </section>
 

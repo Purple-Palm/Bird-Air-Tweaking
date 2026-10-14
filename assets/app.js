@@ -28,6 +28,7 @@ function h(tag, attrs, ...kids) {
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } },
 };
 const NF = {};
 function nf(v, d = 1) {
@@ -651,6 +652,7 @@ function renderAll(force) {
     if (due('exp', 400, force)) refreshExplorerValues();
     if (due('log', 350, force)) renderLog();
     if (due('an', 900, force)) renderAnalyzer();
+    renderGhName();
   }
   if (state.tab === 'decoder' && due('dec', 400, force)) renderDecoderValues();
 }
@@ -1103,15 +1105,16 @@ function renderLog() {
   }
   box.replaceChildren(...rows);
 }
-function sessionJson() {
+function sessionObject() {
   const S = state.session;
-  return JSON.stringify({
+  return {
     format: 'birdair-lab-log', version: 1, startedAt: new Date(S.startedAt).toISOString(), device: S.device, demo: !!S.demo, trimmed: !!S.trimmed,
     gatt: state.gatt.map(s => ({ uuid: s.uuid, chars: s.chars.map(c => ({ uuid: c.uuid, props: c.props })) })),
     decoder: JSON.parse(decoderToJson(decoder)),
     entries: S.entries.map(e => ({ t: e.t, k: e.k, s: e.s, u: e.u, h: e.h, n: e.n })),
-  });
+  };
 }
+function sessionJson() { return JSON.stringify(sessionObject()); }
 function flash(el, text, err) { el.textContent = text; el.classList.toggle('err', !!err); }
 function exportLog() {
   const S = state.session;
@@ -1132,13 +1135,39 @@ async function copyLog() {
   try { await navigator.clipboard.writeText(json); S.exported = true; flash($('#logMsg'), 'Лог скопирован (' + nf(json.length / 1024, 0) + ' КБ).'); }
   catch { flash($('#logMsg'), 'Браузер не дал скопировать. Используй «Скачать лог».', true); }
 }
-async function importLog(file) {
-  if (state.conn === 'connected' || state.conn === 'connecting' || state.conn === 'reconnecting') { flash($('#logMsg'), 'Сначала отключись от самоката.', true); return; }
+async function readLogFile(file) {
+  let bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (typeof DecompressionStream !== 'function') throw new Error(file.name + ': браузер не умеет распаковывать .gz — открой в свежем Chrome.');
+    try { bytes = await gunzipBytes(bytes); } catch { throw new Error(file.name + ': архив .gz повреждён.'); }
+  }
   let o;
-  try { o = JSON.parse(await file.text()); } catch { flash($('#logMsg'), 'Это не JSON. Нужен файл, сохранённый кнопкой «Скачать лог».', true); return; }
-  if (!o || o.format !== 'birdair-lab-log' || !Array.isArray(o.entries)) { flash($('#logMsg'), 'Формат не тот: нужен лог Bird Air Lab.', true); return; }
+  try { o = JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new Error(file.name + ': это не JSON. Нужен файл, сохранённый кнопкой «Скачать лог».'); }
+  if (!o || o.format !== 'birdair-lab-log' || !Array.isArray(o.entries)) throw new Error(file.name + ': формат не тот, нужен лог Bird Air Lab.');
+  return o;
+}
+/* One log, or all parts of one log (part.id), possibly gzipped. */
+async function importLogs(files) {
+  if (state.conn === 'connected' || state.conn === 'connecting' || state.conn === 'reconnecting') { flash($('#logMsg'), 'Сначала отключись от самоката.', true); return; }
+  let logs;
+  try { logs = await Promise.all(files.map(readLogFile)); } catch (e) { flash($('#logMsg'), e.message, true); return; }
+  let o = logs[0], note = '';
+  const name = files.length > 1 ? files[0].name.replace(/-part\d+of\d+(\.json)?(\.gz)?$/, '') : files[0].name;
+  if (logs.length > 1 || o.part) {
+    const ids = new Set(logs.map(l => l.part && l.part.id));
+    if (ids.size !== 1 || ids.has(undefined)) { flash($('#logMsg'), 'Выбери один лог или все части одного лога.', true); return; }
+    logs.sort((a, b) => a.part.index - b.part.index);
+    const count = o.part.count || logs.length, have = new Set(logs.map(l => l.part.index)), missing = [];
+    for (let i = 1; i <= count; i++) if (!have.has(i)) missing.push(i);
+    o = { ...logs[0], entries: logs.flatMap(l => l.entries).sort((a, b) => a.t - b.t) };
+    delete o.part;
+    if (missing.length) note = ' Не хватает частей ' + missing.join(', ') + ' из ' + count + ': выбери все части сразу.';
+  }
+  loadLogObject(o, name, note);
+}
+function loadLogObject(o, fileName, note) {
   stopDemo(true);
-  newSession({ offline: true, startedAt: Date.parse(o.startedAt) || Date.now(), device: o.device || { name: file.name }, demo: !!o.demo });
+  newSession({ offline: true, startedAt: Date.parse(o.startedAt) || Date.now(), device: o.device || { name: fileName }, demo: !!o.demo });
   state.gatt = Array.isArray(o.gatt) ? o.gatt.map(s => ({ uuid: s.uuid, chars: (s.chars || []).map(c => ({ key: s.uuid + '|' + c.uuid, service: s.uuid, uuid: c.uuid, obj: null, danger: isDanger(s.uuid, c.uuid), props: c.props || {}, count: 0, last: null })) })) : [];
   state.chars = new Map(state.gatt.flatMap(s => s.chars.map(c => [c.key, c])));
   const fileDec = normalizeDecoder(o.decoder);
@@ -1150,19 +1179,213 @@ async function importLog(file) {
   state.session.exported = true;
   state.win = 'all';
   syncWinSeg();
-  setConn('offline', file.name);
+  setConn('offline', fileName);
   renderExplorer(); renderCharSelects(); renderDecoder();
   rebuildTelemetry();
-  flash($('#logMsg'), 'Загружено записей: ' + state.session.entries.length + (fileDec && fileDec.fields.length && decoder !== fileDec ? '. В файле есть свой декодер — его можно взять через «Декодер → Конфиг текстом».' : '.'));
+  flash($('#logMsg'), 'Загружено записей: ' + state.session.entries.length + (fileDec && fileDec.fields.length && decoder !== fileDec ? '. В файле есть свой декодер — его можно взять через «Декодер → Конфиг текстом».' : '.') + (note || ''), !!note);
 }
 function clearLog() {
   const S = state.session;
   if (!S) return;
-  S.entries = []; S.exported = false;
+  S.entries = []; S.exported = false; S.gh = null;
   state.series = []; state.tel = newTel(); state.charStats = new Map();
   for (const i of state.chars.values()) { i.count = 0; i.last = null; }
   renderCharSelects(); requestRender(true);
   flash($('#logMsg'), 'Лог очищен.');
+}
+
+/* ============================================================
+   GitHub upload
+   ============================================================ */
+/* fileMax: bytes per file before base64 — the contents API reads files up to 1 MB back. */
+const GH = { api: 'https://api.github.com', fileMax: 1024 * 1024, maxParts: 200 };
+function ghDefaults() {
+  const m = location.hostname.match(/^([a-z0-9-]+)\.github\.io$/i);
+  const seg = location.pathname.split('/').filter(Boolean)[0];
+  if (!m) return { owner: 'Purple-Palm', repo: 'Bird-Air-Tweaking', branch: 'main', folder: 'logs' };
+  return { owner: m[1], repo: seg && !/\.html?$/i.test(seg) ? seg : m[1] + '.github.io', branch: 'main', folder: 'logs' };
+}
+/* Repo settings live in bal.gh; the token alone in bal.gh.token, never in settings or logs. */
+const ghCfg = Object.assign(ghDefaults(), store.get('bal.gh', {}));
+const ghToken = () => String(store.get('bal.gh.token', '') || '');
+const TRANSLIT = Object.fromEntries(Array.from('абвгдеёжзийклмнопрстуфхцчшщъыьэюя').map((c, i) =>
+  [c, ['a', 'b', 'v', 'g', 'd', 'e', 'e', 'zh', 'z', 'i', 'y', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'f', 'h', 'ts', 'ch', 'sh', 'sch', '', 'y', '', 'e', 'yu', 'ya'][i]]));
+function slug(label, dflt) {
+  const s = Array.from(String(label || '').toLowerCase()).map(c => TRANSLIT[c] ?? c).join('')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
+  return s || dflt;
+}
+function stamp(ms) {
+  const d = new Date(ms), p = n => String(n).padStart(2, '0');
+  return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+function ghBase() { const S = state.session; return stamp(S.startedAt) + '-' + slug($('#ghLabel').value, S.demo ? 'demo' : 'log'); }
+function ghPath(name) { const f = String(ghCfg.folder || '').replace(/^\/+|\/+$/g, ''); return (f ? f + '/' : '') + name; }
+function renderGhName() {
+  const el = $('#ghName'), S = state.session;
+  const t = S && S.entries.length ? 'Файл: ' + ghPath(ghBase()) + '.json (большой — .json.gz)' : '';
+  if (el.textContent !== t) el.textContent = t;
+}
+
+/* Same rules as tools/birdlog.py anonymize(). Mutates o, which is a fresh sessionObject(). */
+const NAME_CHARS = new Set([normUuid('2a00'), normUuid('2a25')]), ZERO_CHARS = new Set([normUuid('2a23')]);
+function anonymizeLog(o) {
+  const dev = o.device || {};
+  const secrets = [dev.name, dev.id].filter(x => x && String(x).length >= 2 && x !== 'scooter').map(String).sort((a, b) => b.length - a.length);
+  o.device = { name: 'scooter', id: 'scooter' };
+  const enc = new TextEncoder(), scooter = bytesToHex(enc.encode('scooter'));
+  const inPackets = secrets.map(s => enc.encode(s)).filter(b => b.length >= 4).map(b => [bytesToHex(b), bytesToHex(new Uint8Array(b.length).fill(0x2a))]);
+  for (const e of o.entries) {
+    if (e.n) for (const s of secrets) e.n = e.n.split(s).join('scooter');
+    if (e.h == null) continue;
+    if (NAME_CHARS.has(e.u)) e.h = scooter;
+    else if (ZERO_CHARS.has(e.u)) e.h = bytesToHex(new Uint8Array((hexToBytes(e.h) || []).length));
+    else for (const [hx, star] of inPackets) e.h = e.h.split(hx).join(star);
+  }
+  return o;
+}
+
+async function gzipBytes(u8) { return new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer()); }
+async function gunzipBytes(u8) { return new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()); }
+function b64(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+/* Plain .json while it fits, then .json.gz, then parts that are each a complete log with part {id, index, count}. */
+async function packLog(o, base) {
+  const raw = new TextEncoder().encode(JSON.stringify(o));
+  if (raw.length <= GH.fileMax) return [{ name: base + '.json', bytes: raw }];
+  const gz = typeof CompressionStream === 'function';
+  let size = raw.length;
+  if (gz) {
+    const z = await gzipBytes(raw);
+    if (z.length <= GH.fileMax) return [{ name: base + '.json.gz', bytes: z }];
+    size = z.length;
+  }
+  const ext = gz ? '.json.gz' : '.json';
+  for (let n = Math.max(2, Math.ceil(size / (GH.fileMax * 0.85))); n <= GH.maxParts; n = Math.ceil(n * 1.3) + 1) {
+    const per = Math.ceil(o.entries.length / n), count = Math.ceil(o.entries.length / per), files = [];
+    for (let i = 0; i < count; i++) {
+      const part = { ...o, part: { id: base, index: i + 1, count }, entries: o.entries.slice(i * per, (i + 1) * per) };
+      const json = new TextEncoder().encode(JSON.stringify(part));
+      const bytes = gz ? await gzipBytes(json) : json;
+      if (bytes.length > GH.fileMax) break;
+      files.push({ name: base + '-part' + (i + 1) + 'of' + count + ext, bytes });
+    }
+    if (files.length === count) return files;
+  }
+  throw new Error('Лог слишком большой даже по частям. Скачай его кнопкой «Скачать лог».');
+}
+
+function ghError(status, message) {
+  const repo = ghCfg.owner + '/' + ghCfg.repo;
+  let text;
+  if (!status) text = 'Нет связи с api.github.com. Проверь интернет и нажми ещё раз.';
+  else if ((status === 404 || status === 422) && /branch/i.test(message)) text = 'Ветка «' + ghCfg.branch + '» не найдена в ' + repo + ' (' + status + '). Проверь ветку в настройках GitHub.';
+  else if (status === 401) text = 'Токен не принят (401): он неверный, отозван или истёк. Создай новый и вставь в настройках GitHub.';
+  else if (status === 403 && /rate limit/i.test(message)) text = 'GitHub временно ограничил запросы (403). Подожди пару минут.';
+  else if (status === 403) text = 'Доступ запрещён (403): токену не выдано право Contents: Read and write на ' + repo + '.';
+  else if (status === 404) text = 'Репозиторий ' + repo + ' не найден (404). Проверь owner и repo; ещё 404 бывает, когда токен не допущен к этому репозиторию.';
+  else if (status === 409) text = 'Конфликт (409): ветка изменилась во время записи. Нажми «Отправить» ещё раз.';
+  else if (status === 422 && /sha/i.test(message)) text = 'Конфликт (422): такой файл уже есть в репозитории.';
+  else if (status === 422) text = 'GitHub отклонил запись (422): ' + (message || 'неверный запрос') + '.';
+  else text = 'Ошибка GitHub ' + status + (message ? ': ' + message : '') + '.';
+  return Object.assign(new Error(text), { status, ghMessage: message || '' });
+}
+async function ghFetch(method, path, body) {
+  const headers = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + ghToken(), 'X-GitHub-Api-Version': '2022-11-28' };
+  if (body) headers['Content-Type'] = 'application/json';
+  let r;
+  try {
+    r = await fetch(GH.api + '/repos/' + encodeURIComponent(ghCfg.owner) + '/' + encodeURIComponent(ghCfg.repo) + path,
+      { method, headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+  } catch { throw ghError(0); }
+  let data = null;
+  try { data = await r.json(); } catch { data = null; }
+  if (!r.ok) throw ghError(r.status, data && data.message);
+  return data;
+}
+const ghPut = (path, bytes, message) =>
+  ghFetch('PUT', '/contents/' + path.split('/').map(encodeURIComponent).join('/'), { message, content: b64(bytes), branch: ghCfg.branch });
+
+function showGhSettings() {
+  showTab('data');
+  const card = $('#ghCard');
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const empty = ['#ghOwner', '#ghRepo', '#ghBranch', '#ghToken'].map(s => $(s)).find(el => !el.value.trim());
+  (empty || $('#ghToken')).focus({ preventScroll: true });
+}
+async function sendToGitHub() {
+  const S = state.session, msg = $('#ghMsg'), btn = $('#btnGhSend');
+  if (!S || !S.entries.length) { flash(msg, 'Лог пуст — нечего отправлять.', true); return; }
+  if (!ghCfg.owner || !ghCfg.repo || !ghCfg.branch) { flash(msg, 'Заполни owner, репозиторий и ветку в настройках GitHub.', true); showGhSettings(); return; }
+  if (!ghToken()) { flash(msg, 'Нет токена: вставь fine-grained токен в настройках GitHub.', true); showGhSettings(); return; }
+  const anon = $('#ghAnon').checked, n = S.entries.length;
+  if (S.gh && S.gh.entries === n && S.gh.anon === anon) { ghDone(msg, 'Этот лог уже отправлен: ', S.gh.files); return; }
+  btn.disabled = true;
+  try {
+    const o = sessionObject();
+    if (anon) anonymizeLog(o);
+    flash(msg, 'Готовлю файл…');
+    /* Names come from the recording's start time; if one is taken (sent before a reload), add -2, -3… */
+    for (let attempt = 1; ; attempt++) {
+      const base = ghBase() + (attempt > 1 ? '-' + attempt : '');
+      const files = await packLog(o, base), sent = [];
+      try {
+        for (const [i, f] of files.entries()) {
+          if (files.length > 1) flash(msg, 'Отправляю часть ' + (i + 1) + ' из ' + files.length + '…');
+          else flash(msg, 'Отправляю ' + nf(f.bytes.length / 1024, 0) + ' КБ…');
+          const path = ghPath(f.name);
+          const r = await ghPut(path, f.bytes, 'Лог ' + base + ': ' + n + ' записей' + (files.length > 1 ? ', часть ' + (i + 1) + ' из ' + files.length : ''));
+          sent.push({ path, url: r && r.content && r.content.html_url, size: f.bytes.length });
+        }
+      } catch (e) {
+        if (e.status === 422 && /sha/i.test(e.ghMessage) && !sent.length && attempt < 9) continue;
+        throw e;
+      }
+      S.gh = { entries: n, anon, files: sent };
+      S.exported = true;
+      ghDone(msg, 'Отправлено: ', sent);
+      return;
+    }
+  } catch (e) {
+    flash(msg, e.message || String(e), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+function ghDone(msg, lead, files) {
+  msg.classList.remove('err');
+  msg.replaceChildren(lead, ...files.flatMap((f, i) => [i ? ', ' : '', f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener', text: f.path }) : f.path]),
+    files.length === 1 && files[0].size ? ' (' + nf(files[0].size / 1024, 0) + ' КБ)' : '', '.');
+}
+async function checkGitHub() {
+  const msg = $('#ghSetMsg');
+  if (!ghToken()) { flash(msg, 'Сначала вставь токен.', true); return; }
+  flash(msg, 'Проверяю…');
+  try {
+    const repo = await ghFetch('GET', '');
+    await ghFetch('GET', '/branches/' + encodeURIComponent(ghCfg.branch));
+    const note = repo && repo.permissions && repo.permissions.push === false ? ' Но у твоей учётной записи нет права записи.' : ' Право записи проверится при первой отправке.';
+    flash(msg, 'Доступ есть: ' + (repo && repo.full_name || ghCfg.owner + '/' + ghCfg.repo) + ', ветка ' + ghCfg.branch + (repo && repo.private ? ' (репозиторий приватный)' : '') + '.' + note);
+  } catch (e) { flash(msg, e.message, true); }
+}
+function bindGitHub() {
+  const save = () => store.set('bal.gh', { owner: ghCfg.owner, repo: ghCfg.repo, branch: ghCfg.branch, folder: ghCfg.folder });
+  for (const k of ['owner', 'repo', 'branch', 'folder']) {
+    const el = $('#gh' + k[0].toUpperCase() + k.slice(1));
+    el.value = ghCfg[k] || '';
+    el.addEventListener('input', () => { ghCfg[k] = el.value.trim(); save(); renderGhName(); });
+  }
+  const tok = $('#ghToken');
+  tok.value = ghToken();
+  tok.addEventListener('input', () => { const v = tok.value.trim(); if (v) store.set('bal.gh.token', v); else store.del('bal.gh.token'); });
+  $('#ghForget').addEventListener('click', () => { store.del('bal.gh.token'); tok.value = ''; flash($('#ghSetMsg'), 'Токен удалён из этого браузера.'); });
+  $('#ghCheck').addEventListener('click', checkGitHub);
+  $('#btnGhSend').addEventListener('click', sendToGitHub);
+  $('#btnGhSetup').addEventListener('click', showGhSettings);
+  $('#ghLabel').addEventListener('input', renderGhName);
 }
 
 /* ============================================================
@@ -1509,7 +1732,7 @@ $('#btnClear').addEventListener('click', ev => {
   b.dataset.armed = ''; b.textContent = 'Очистить';
   clearLog();
 });
-$('#fileImport').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) importLog(f); e.target.value = ''; });
+$('#fileImport').addEventListener('change', e => { const fs = Array.from(e.target.files || []); if (fs.length) importLogs(fs); e.target.value = ''; });
 window.addEventListener('beforeunload', e => {
   const S = state.session;
   if (S && !S.demo && !S.offline && !S.exported && S.entries.filter(x => x.k === 'rx').length > 50) { e.preventDefault(); e.returnValue = ''; }
@@ -1539,6 +1762,7 @@ async function renderChecks() {
    ============================================================ */
 (() => { const b = $('#build'), v = b.dataset.build || ''; b.textContent = v && !v.startsWith('__') ? 'сборка ' + v : 'локальная копия'; })();
 bindSettings();
+bindGitHub();
 syncWinSeg();
 const initialTab = (location.hash || '').slice(1);
 showTab(TABS.includes(initialTab) ? initialTab : store.get('bal.tab', 'dash'));
@@ -1547,5 +1771,5 @@ startDemo();
 if (!bleSupported()) { const pill = $('#connPill'); pill.dataset.tone = 'crit'; $('.txt', pill).textContent = 'Демо · Bluetooth здесь недоступен'; $('.ico', pill).textContent = '⚠'; }
 renderDecoder();
 requestRender(true);
-window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry };
+window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH };
 })();

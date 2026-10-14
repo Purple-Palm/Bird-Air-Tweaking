@@ -225,7 +225,7 @@ ol.diff .row { gap: 6px 10px; }
 
 /* ---------- forms ---------- */
 label.f { display: grid; gap: 4px; font-size: 13px; color: var(--ink-2); min-width: 0; }
-input[type="text"], input[type="number"], input:not([type]), select, textarea { background: var(--surface); border: 1px solid var(--base); border-radius: 8px; padding: 7px 9px; color: var(--ink); min-width: 0; max-width: 100%; }
+input[type="text"], input[type="number"], input[type="password"], input:not([type]), select, textarea { background: var(--surface); border: 1px solid var(--base); border-radius: 8px; padding: 7px 9px; color: var(--ink); min-width: 0; max-width: 100%; }
 textarea { font-family: var(--f-mono); font-size: 12px; width: 100%; min-height: 110px; resize: vertical; }
 input.mono { font-family: var(--f-mono); font-size: 13px; }
 label.check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink); }
