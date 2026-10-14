@@ -173,6 +173,24 @@ class LogFilesTest(unittest.TestCase):
         self.assertEqual(bl.load_logs([p], notes), [])
         self.assertTrue(notes)
 
+    def test_anonymize(self):
+        name = 'BA593XYZ'
+        lg = bl.new_log(device={'name': name, 'id': 'AbC123=='})
+        lg['entries'] = [
+            {'t': 0, 'k': 'sys', 'n': 'Выбрано устройство: ' + name},
+            {'t': 1, 'k': 'rd', 's': bl.norm_uuid('1800'), 'u': bl.norm_uuid('2a00'), 'h': bl.hex_of(name.encode())},
+            {'t': 2, 'k': 'rd', 's': bl.norm_uuid('180a'), 'u': bl.norm_uuid('2a23'), 'h': '11 22 33 44 55 66 77 88'},
+            {'t': 3, 'k': 'rx', 's': 'x', 'u': 'y', 'h': '01 ' + bl.hex_of(name.encode()) + ' 02'},
+            {'t': 4, 'k': 'sys', 'n': 'peer AA:BB:CC:DD:EE:FF'},
+        ]
+        bl.anonymize(lg, extra=['AA:BB:CC:DD:EE:FF'])
+        text = bl.dumps(lg)
+        self.assertEqual(lg['device'], {'name': 'scooter', 'id': 'scooter'})
+        for secret in (name, 'AbC123==', 'AA:BB:CC:DD:EE:FF', bl.hex_of(name.encode()), '11 22 33'):
+            self.assertNotIn(secret, text)
+        self.assertEqual(bl.bytes_of(lg['entries'][1]['h']), b'scooter')
+        self.assertEqual(len(bl.bytes_of(lg['entries'][3]['h'])), len(name) + 2)
+
     def test_names(self):
         self.assertEqual(bl.slug('Газ и тормоз!'), 'gaz-i-tormoz')
         self.assertEqual(bl.slug('  '), 'log')

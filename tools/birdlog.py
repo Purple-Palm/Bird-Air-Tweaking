@@ -84,6 +84,42 @@ def new_log(device=None, started_at=None, gatt=None):
     }
 
 
+# Characteristics whose values identify one particular scooter.
+NAME_CHARS = {norm_uuid('2a00'), norm_uuid('2a25')}   # Device Name, Serial Number String
+ZERO_CHARS = {norm_uuid('2a23')}                      # System ID (derived from the MAC)
+
+
+def anonymize(log, extra=()):
+    """Same as the page's «Обезличить»: device name and id -> 'scooter'.
+
+    Also replaces those strings (and any of `extra`, e.g. MAC addresses) inside text
+    entries, blanks Device Name / Serial Number / System ID values and masks the
+    device name if it shows up inside packets (same length, '*' bytes).
+    """
+    dev = log.get('device') or {}
+    secrets = [str(x) for x in (dev.get('name'), dev.get('id'), *extra) if x and len(str(x)) >= 2 and str(x) != 'scooter']
+    secrets.sort(key=len, reverse=True)
+    log['device'] = {'name': 'scooter', 'id': 'scooter'}
+    scooter = hex_of(b'scooter')
+    in_packets = [(hex_of(s.encode('utf-8')), hex_of(b'*' * len(s.encode('utf-8')))) for s in secrets if len(s.encode('utf-8')) >= 4]
+    for e in log.get('entries', []):
+        if e.get('n'):
+            for s in secrets:
+                e['n'] = e['n'].replace(s, 'scooter')
+        if e.get('h') is None:
+            continue
+        u = e.get('u')
+        if u in NAME_CHARS:
+            e['h'] = scooter
+        elif u in ZERO_CHARS:
+            e['h'] = hex_of(bytes(len(bytes_of(e['h']))))
+        else:
+            for hx, star in in_packets:
+                e['h'] = e['h'].replace(hx, star)
+        e.pop('_b', None)
+    return log
+
+
 def clean_entry(e):
     out = {'t': e['t'], 'k': e['k']}
     for k in ('s', 'u', 'h', 'n'):
