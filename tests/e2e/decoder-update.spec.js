@@ -15,7 +15,8 @@ async function serveDecoder(page, get) {
 const ls = (page, k) => page.evaluate(key => JSON.parse(localStorage.getItem(key)), k);
 const realFields = page => page.evaluate(() => (window.__bal.state.demo ? window.__bal.state.savedDecoder : window.__bal.decoder).fields.map(f => f.name || f.key));
 
-test('the empty v1 in the repository is not offered', async ({ page }) => {
+test('an empty decoder in the repository is not offered', async ({ page }) => {
+  await serveDecoder(page, () => ({ format: 'birdair-lab-decoder', version: 1, updatedAt: '2026-10-14T22:30:00Z', json: false, fields: [] }));
   await openApp(page);
   await page.waitForTimeout(500);
   await expect(page.locator('#decUpd')).toBeHidden();
