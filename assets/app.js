@@ -202,20 +202,38 @@ if (decSrc.active === 'repo' && !repoDecoder()) decSrc.active = 'mine';
 let decoder = (decSrc.active === 'repo' && repoDecoder()) || mineDecoder();
 const state = {
   session: null, device: null, gatt: [], chars: new Map(), charStats: new Map(),
-  conn: 'idle', manual: false, reconnectN: 0, reconnectTimer: null, wakeLock: null,
+  conn: 'idle', manual: false, reconnectN: 0, connGen: 0, reconnectTimer: null, wakeLock: null,
   demo: null, savedDecoder: null, tel: null, series: [], rxTimes: [],
   win: '60', hoverT: null, showTable: false, tab: 'dash',
   an: { key: '', pattern: '', off: null, type: 'u8', mk: '', win: 3 },
   writeTimer: null, geo: null, rollMax: 300,
 };
 function saveSettings() { store.set('bal.settings', settings); }
+const decNonEmpty = d => !!d && (d.fields.length > 0 || !!d.json);
+/* Copies of «мой» taken before it was replaced, newest first (bal.decoder.backup was the single slot before). */
+const BACKUPS = 5;
+function decBackups() {
+  const list = store.get('bal.decoder.backups', null);
+  if (Array.isArray(list)) return list.filter(b => b && b.decoder);
+  const one = store.get('bal.decoder.backup', null);
+  return one && one.decoder ? [one] : [];
+}
+function pushBackup(raw) {
+  const d = normalizeDecoder(raw);
+  if (!decNonEmpty(d)) return;
+  const same = b => decoderToJson(normalizeDecoder(b.decoder) || emptyDecoder()) === decoderToJson(d);
+  const list = decBackups().filter(b => !same(b));
+  list.unshift({ savedAt: new Date().toISOString(), decoder: JSON.parse(decoderToJson(d)) });
+  store.set('bal.decoder.backups', list.slice(0, BACKUPS));
+  store.del('bal.decoder.backup');
+}
 /* Every call is a user edit. Editing the repository decoder turns it into «мой»; the previous «мой»
-   goes to bal.decoder.backup so nothing is lost silently. */
+   goes to the backups so nothing is lost silently. */
 function saveDecoder() {
   if (state.demo) return;
   if (decSrc.active === 'repo') {
     const old = store.get('bal.decoder', null), oldN = normalizeDecoder(old), rep = repoDecoder();
-    if (oldN && oldN.fields.length && (!rep || decoderToJson(oldN) !== decoderToJson(rep))) store.set('bal.decoder.backup', { savedAt: new Date().toISOString(), decoder: old });
+    if (decNonEmpty(oldN) && (!rep || decoderToJson(oldN) !== decoderToJson(rep))) pushBackup(old);
     setActiveSource('mine');
     decSrc.forked = true;
   }
@@ -365,6 +383,7 @@ function pushEntry(e) {
   if (e.b && !e.h) e.h = bytesToHex(e.b);
   if (e.h && !e.b) e.b = hexToBytes(e.h) || new Uint8Array(0);
   S.entries.push(e);
+  S.pushed = (S.pushed || 0) + 1;
   if (S.entries.length > MAX_ENTRIES) { S.entries.splice(0, S.entries.length - MAX_ENTRIES); S.trimmed = true; }
   if (e.k === 'rx' || e.k === 'rd') {
     const key = e.s + '|' + e.u;
@@ -430,6 +449,7 @@ function errText(e) {
     case 'NetworkError': return 'связь не установилась — самокат далеко, выключен или занят приложением Bird';
     case 'NotSupportedError': return 'эта характеристика так не умеет';
     case 'InvalidStateError': return 'нет соединения';
+    case 'AbortError': return 'подключение отменено';
     case 'NotAllowedError': return 'нет разрешения — проверь «Устройства поблизости» для Chrome';
     default: return m || 'неизвестная ошибка';
   }
@@ -479,21 +499,31 @@ async function connect() {
   dev.addEventListener('gattserverdisconnected', onDisconnected);
   sys('Выбрано устройство: ' + (dev.name || '(без имени)'));
   try { await openGatt(); }
-  catch (e) { sys('Не удалось подключиться: ' + errText(e), true); scheduleReconnect(); }
+  catch (e) {
+    if (state.manual) { setConn('idle'); return; }
+    sys('Не удалось подключиться: ' + errText(e), true); scheduleReconnect();
+  }
 }
+/* Every attempt gets a generation; «Отключить» or a newer attempt makes it stale, and a stale attempt
+   stops at its next step instead of finishing a connection nobody wants. */
 async function openGatt() {
-  const dev = state.device;
+  const dev = state.device, gen = ++state.connGen;
+  const stale = () => {
+    if (gen !== state.connGen || state.manual || state.device !== dev) throw Object.assign(new Error('подключение отменено'), { name: 'AbortError' });
+  };
   setConn('connecting', dev.name || '');
   await dev.gatt.connect();
-  await discover();
+  stale();
+  await discover(stale);
+  stale();
   setConn('connected', dev.name || '(без имени)');
   sys('Подключено');
   acquireWakeLock();
 }
 /* Throws if the link drops midway, so openGatt() never reports a connection that is already gone. */
-async function discover() {
+async function discover(stale = () => {}) {
   const server = state.device.gatt;
-  const alive = () => { if (!server.connected) throw Object.assign(new Error('связь пропала во время обнаружения сервисов'), { name: 'NetworkError' }); };
+  const alive = () => { stale(); if (!server.connected) throw Object.assign(new Error('связь пропала во время обнаружения сервисов'), { name: 'NetworkError' }); };
   let services = [];
   try { services = await server.getPrimaryServices(); }
   catch (e) { alive(); sys('Список сервисов не получен: ' + errText(e), true); }
@@ -522,12 +552,12 @@ async function discover() {
   if (!state.gatt.length) sys('Сервисов не видно. Добавь UUID из nRF Connect в «Настройки → Свои UUID» и переподключись.', true);
   renderExplorer();
   renderCharSelects();
-  for (const info of state.chars.values()) if (info.props.read && !info.danger) await readChar(info, true);
+  for (const info of state.chars.values()) { if (info.props.read && !info.danger) await readChar(info, true); stale(); }
   for (const info of state.chars.values()) {
     /* 0x1800/0x1801 carry the name and GATT bookkeeping, no telemetry; Chrome refuses notifications on 0x2A00 anyway. */
     if (!(info.props.notify || info.props.indicate) || info.danger || GAP_SERVICES.has(info.service)) continue;
     const want = info.wanted == null ? settings.autoSubscribe : info.wanted;
-    if (want) await subscribe(info, true);
+    if (want) { stale(); await subscribe(info, true); }
   }
   renderExplorer();
   alive();
@@ -541,7 +571,11 @@ async function readChar(info, quiet) {
 }
 async function subscribe(info, quiet) {
   if (!info.obj || info.subscribed || info.danger) return;
-  if (!info.handler) info.handler = ev => pushEntry({ k: 'rx', s: info.service, u: info.uuid, b: dvToBytes(ev.target.value) });
+  /* Events of a characteristic object that a newer discovery took over are dropped, never doubled. */
+  if (!info.handler) info.handler = ev => {
+    if (state.chars.get(info.key) !== info) { info.obj.removeEventListener('characteristicvaluechanged', info.handler); return; }
+    pushEntry({ k: 'rx', s: info.service, u: info.uuid, b: dvToBytes(ev.target.value) });
+  };
   info.obj.addEventListener('characteristicvaluechanged', info.handler);
   try {
     await info.obj.startNotifications();
@@ -583,15 +617,20 @@ function scheduleReconnect() {
   state.reconnectTimer = setTimeout(async () => {
     if (state.manual) return;
     try { await openGatt(); state.reconnectN = 0; }
-    catch (e) { sys('Переподключение не удалось: ' + errText(e), true); scheduleReconnect(); }
+    catch (e) { if (state.manual) return; sys('Переподключение не удалось: ' + errText(e), true); scheduleReconnect(); }
   }, delay);
 }
 function disconnect() {
   state.manual = true;
+  state.connGen++;
   clearTimeout(state.reconnectTimer);
   stopWriteRepeat();
-  if (state.device && state.device.gatt && state.device.gatt.connected) state.device.gatt.disconnect();
-  else { setConn('idle'); }
+  const g = state.device && state.device.gatt;
+  if (g && g.connected) g.disconnect();
+  else {
+    try { if (g) g.disconnect(); } catch { /* aborts a pending connect */ }
+    setConn('idle');
+  }
   releaseWakeLock();
 }
 async function acquireWakeLock() {
@@ -610,6 +649,7 @@ document.addEventListener('visibilitychange', () => {
    demo scooter
    ============================================================ */
 function startDemo() {
+  flushDecoder();
   if (state.conn === 'connected' || state.conn === 'connecting' || state.conn === 'reconnecting') return;
   stopDemo(true);
   state.savedDecoder = decoder;
@@ -1255,6 +1295,7 @@ function clearLog() {
   const S = state.session;
   if (!S) return;
   S.entries = []; S.exported = false; S.gh = null;
+  S.startedAt = Date.now(); S.t0 = performance.now();   /* a new recording: its own file name */
   state.series = []; state.tel = newTel(); state.charStats = new Map();
   for (const i of state.chars.values()) { i.count = 0; i.last = null; }
   renderCharSelects(); requestRender(true);
@@ -1275,6 +1316,9 @@ function ghDefaults() {
 /* Repo settings live in bal.gh; the token alone in bal.gh.token, never in settings or logs. */
 const ghCfg = Object.assign(ghDefaults(), store.get('bal.gh', {}));
 const ghToken = () => String(store.get('bal.gh.token', '') || '');
+/* Pasted tokens sometimes carry spaces or invisible characters; fetch() would then fail before sending. */
+const cleanToken = t => String(t || '').replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, '');
+const tokenOk = t => /^[A-Za-z0-9_]+$/.test(t);
 const TRANSLIT = Object.fromEntries(Array.from('абвгдеёжзийклмнопрстуфхцчшщъыьэюя').map((c, i) =>
   [c, ['a', 'b', 'v', 'g', 'd', 'e', 'e', 'zh', 'z', 'i', 'y', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'f', 'h', 'ts', 'ch', 'sh', 'sch', '', 'y', '', 'e', 'yu', 'ya'][i]]));
 function slug(label, dflt) {
@@ -1287,6 +1331,7 @@ function stamp(ms) {
   return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
 }
 function ghBase() { const S = state.session; return stamp(S.startedAt) + '-' + slug($('#ghLabel').value, S.demo ? 'demo' : 'log'); }
+const ghDest = () => [ghCfg.owner, ghCfg.repo, ghCfg.branch, ghCfg.folder].join('/');
 function ghPath(name) { const f = String(ghCfg.folder || '').replace(/^\/+|\/+$/g, ''); return (f ? f + '/' : '') + name; }
 function renderGhName() {
   const el = $('#ghName'), S = state.session;
@@ -1390,13 +1435,16 @@ function ghError(status, message) {
   else if (status === 403 && /rate limit/i.test(message)) text = 'GitHub временно ограничил запросы (403). Подожди пару минут.';
   else if (status === 403) text = 'Доступ запрещён (403): токену не выдано право Contents: Read and write на ' + repo + '.';
   else if (status === 404) text = 'Репозиторий ' + repo + ' не найден (404). Проверь owner и repo; ещё 404 бывает, когда токен не допущен к этому репозиторию.';
-  else if (status === 409) text = 'Конфликт (409): ветка изменилась во время записи. Нажми «Отправить» ещё раз.';
+  else if (status === 409 && /rule|protect|pull request/i.test(message)) text = 'Ветка «' + ghCfg.branch + '» защищена правилами репозитория (409): ' + message.split('\n')[0] + ' Выбери другую ветку в настройках GitHub.';
+  else if (status === 409 && (!message || /is at .* but expected|expected/i.test(message))) text = 'Конфликт (409): ветка изменилась во время записи. Нажми «Отправить» ещё раз.';
+  else if (status === 409) text = 'Конфликт (409): ' + message + '.';
   else if (status === 422 && /sha/i.test(message)) text = 'Конфликт (422): такой файл уже есть в репозитории.';
   else if (status === 422) text = 'GitHub отклонил запись (422): ' + (message || 'неверный запрос') + '.';
   else text = 'Ошибка GitHub ' + status + (message ? ': ' + message : '') + '.';
   return Object.assign(new Error(text), { status, ghMessage: message || '' });
 }
 async function ghFetch(method, path, body) {
+  if (!tokenOk(ghToken())) throw new Error('В токене лишние символы (пробел, кириллица или невидимый знак). Скопируй токен на GitHub заново и вставь в настройках.');
   const headers = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + ghToken(), 'X-GitHub-Api-Version': '2022-11-28' };
   if (body) headers['Content-Type'] = 'application/json';
   let r;
@@ -1431,15 +1479,15 @@ async function sendToGitHub(auto) {
   if (!S || !S.entries.length) { if (!auto) flash(msg, 'Лог пуст — нечего отправлять.', true); return; }
   if (!ghCfg.owner || !ghCfg.repo || !ghCfg.branch) { if (!auto) { flash(msg, 'Заполни owner, репозиторий и ветку в настройках GitHub.', true); showGhSettings(); } return; }
   if (!ghToken()) { if (!auto) { flash(msg, 'Нет токена: вставь fine-grained токен в настройках GitHub.', true); showGhSettings(); } return; }
-  const anon = $('#ghAnon').checked, n = S.entries.length, prev = S.gh;
-  if (prev && prev.entries === n && prev.anon === anon) { if (!auto) ghDone(msg, 'Этот лог уже отправлен: ', prev.files); return; }
+  const anon = $('#ghAnon').checked, n = S.entries.length, prev = S.gh, dest = ghDest();
+  if (prev && prev.pushed === S.pushed && prev.anon === anon && prev.dest === dest) { if (!auto) ghDone(msg, 'Этот лог уже отправлен: ', prev.files); return; }
   ghBusy = true; btn.disabled = true;
   const say = text => { if (!auto) flash(msg, text); };
   try {
     const o = sessionObject();
     if (anon) anonymizeLog(o);
     say('Готовлю файл…');
-    const old = prev && prev.anon === anon ? prev : null;
+    const old = prev && prev.anon === anon && prev.dest === dest ? prev : null;
     const shas = new Map(old ? old.files.map(f => [f.path, f.sha]) : []);
     /* A fresh name comes from the recording's start; if it is taken (sent before a reload), add -2, -3… */
     for (let attempt = 1; ; attempt++) {
@@ -1459,7 +1507,7 @@ async function sendToGitHub(auto) {
       for (const f of old ? old.files : []) {
         if (!sent.some(x => x.path === f.path) && f.sha) await ghDelete(f.path, f.sha, 'Лог ' + base + ': старая упаковка').catch(() => {});
       }
-      S.gh = { base, entries: n, anon, files: sent, at: Date.now() };
+      S.gh = { base, pushed: S.pushed, anon, dest, files: sent, at: Date.now() };
       S.exported = true;
       ghDone(msg, (auto ? 'Автоотправка ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + ': ' : 'Отправлено: '), sent);
       return;
@@ -1477,7 +1525,7 @@ function autoSendDue(force) {
   const S = state.session;
   if (!ghCfg.auto || !ghToken() || !S || S.demo || S.offline || !S.live) return false;
   if (!S.entries.some(e => e.k === 'rx' || e.k === 'rd')) return false;
-  if (S.gh && S.gh.entries === S.entries.length) return false;
+  if (S.gh && S.gh.pushed === S.pushed && S.gh.dest === ghDest()) return false;
   if (force) return true;
   const last = Math.max(S.gh ? S.gh.at : S.startedAt, S.ghFailedAt || 0);
   return Date.now() - last >= GH.autoEvery;
@@ -1508,7 +1556,11 @@ function bindGitHub() {
   }
   const tok = $('#ghToken');
   tok.value = ghToken();
-  tok.addEventListener('input', () => { const v = tok.value.trim(); if (v) store.set('bal.gh.token', v); else store.del('bal.gh.token'); });
+  tok.addEventListener('input', () => {
+    const v = cleanToken(tok.value);
+    if (v) store.set('bal.gh.token', v); else store.del('bal.gh.token');
+    flash($('#ghSetMsg'), v && !tokenOk(v) ? 'В токене есть буквы не из латиницы или лишние знаки — скопируй его заново.' : '', v && !tokenOk(v));
+  });
   $('#ghForget').addEventListener('click', () => { store.del('bal.gh.token'); tok.value = ''; flash($('#ghSetMsg'), 'Токен удалён из этого браузера.'); });
   $('#ghCheck').addEventListener('click', checkGitHub);
   $('#btnGhSend').addEventListener('click', () => sendToGitHub(false));
@@ -1641,31 +1693,51 @@ $('#anGrid').addEventListener('keydown', pickCol);
 function renderWriteCard() {
   $('#writeCard').hidden = !settings.allowWrite;
   const live = state.conn === 'connected';
-  $('#wrSend').disabled = !live;
+  $('#wrSend').disabled = !live || !!state.writeTimer;
   renderExplorerButtons();
 }
-async function sendWrite() {
-  const info = state.chars.get($('#wrChar').value);
+/* What to write and where, checked once. A repeat keeps sending exactly this job, never whatever
+   the fields hold at the next tick. */
+function writeJob() {
   const msg = $('#wrMsg');
-  if (!settings.allowWrite) return;
-  if (!info || !info.obj || state.conn !== 'connected') { flash(msg, 'Нет подключения или не выбрана характеристика.', true); stopWriteRepeat(); return; }
-  if (info.danger) { flash(msg, 'Это характеристика обновления прошивки. Писать в неё нельзя.', true); stopWriteRepeat(); return; }
+  if (!settings.allowWrite) return null;
+  const info = state.chars.get($('#wrChar').value);
+  if (!info || !info.obj || state.conn !== 'connected') { flash(msg, 'Нет подключения или не выбрана характеристика.', true); return null; }
+  if (info.danger) { flash(msg, 'Это характеристика обновления прошивки. Писать в неё нельзя.', true); return null; }
   const bytes = hexToBytes($('#wrHex').value);
-  if (!bytes || !bytes.length) { flash(msg, 'Введи байты в hex, например: 5A A5 01 3E 20 01 B0', true); stopWriteRepeat(); return; }
+  if (!bytes || !bytes.length) { flash(msg, 'Введи байты в hex, например: 5A A5 01 3E 20 01 B0', true); return null; }
+  return { key: info.key, bytes };
+}
+async function sendWrite(job) {
+  const msg = $('#wrMsg');
+  const info = job && state.chars.get(job.key);
+  if (!settings.allowWrite || !info || !info.obj || info.danger || state.conn !== 'connected') {
+    if (job) flash(msg, 'Связи нет — запись остановлена.', true);
+    stopWriteRepeat();
+    return;
+  }
   try {
     const c = info.obj;
-    if (info.props.wnr && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(bytes);
-    else if (c.writeValueWithResponse) await c.writeValueWithResponse(bytes);
-    else await c.writeValue(bytes);
-    pushEntry({ k: 'tx', s: info.service, u: info.uuid, b: bytes });
-    flash(msg, 'Отправлено ' + bytes.length + ' байт в ' + shortUuid(info.uuid) + '.');
+    if (info.props.wnr && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(job.bytes);
+    else if (c.writeValueWithResponse) await c.writeValueWithResponse(job.bytes);
+    else await c.writeValue(job.bytes);
+    pushEntry({ k: 'tx', s: info.service, u: info.uuid, b: job.bytes });
+    flash(msg, 'Отправлено ' + job.bytes.length + ' байт в ' + shortUuid(info.uuid) + '.');
   } catch (e) { flash(msg, 'Не отправилось: ' + errText(e), true); stopWriteRepeat(); }
 }
-function stopWriteRepeat() { clearInterval(state.writeTimer); state.writeTimer = null; $('#wrRepeat').checked = false; }
-$('#wrSend').addEventListener('click', sendWrite);
+function lockWrite(on) {
+  for (const id of ['#wrChar', '#wrHex', '#wrEvery']) $(id).disabled = on;
+  $('#wrSend').disabled = on || state.conn !== 'connected';
+}
+function stopWriteRepeat() { clearInterval(state.writeTimer); state.writeTimer = null; $('#wrRepeat').checked = false; lockWrite(false); }
+$('#wrSend').addEventListener('click', () => { const job = writeJob(); if (job) sendWrite(job); });
 $('#wrRepeat').addEventListener('change', e => {
   clearInterval(state.writeTimer); state.writeTimer = null;
-  if (e.target.checked) { const every = Math.max(200, num($('#wrEvery').value, 1000)); sendWrite(); state.writeTimer = setInterval(sendWrite, every); }
+  const job = e.target.checked ? writeJob() : null;
+  if (!job) { stopWriteRepeat(); return; }
+  lockWrite(true);
+  state.writeTimer = setInterval(() => sendWrite(job), Math.max(200, num($('#wrEvery').value, 1000)));
+  sendWrite(job);   /* after the timer exists, so a failure here clears it */
 });
 
 /* ============================================================
@@ -1674,8 +1746,12 @@ $('#wrRepeat').addEventListener('change', e => {
 let decTimer = null;
 function decoderChanged() {
   clearTimeout(decTimer);
-  decTimer = setTimeout(() => { saveDecoder(); rebuildTelemetry(); $('#decText').value = decoderToJson(decoder); }, 250);
+  decTimer = setTimeout(() => { decTimer = null; saveDecoder(); rebuildTelemetry(); $('#decText').value = decoderToJson(decoder); }, 250);
 }
+/* Saves an edit still waiting for its 250 ms timer before the decoder is swapped underneath it. */
+function flushDecoder() { if (decTimer) { clearTimeout(decTimer); decTimer = null; saveDecoder(); } }
+/* Before «мой» is replaced wholesale by a button, keep a copy of it. */
+function backupMine() { flushDecoder(); if (decSrc.active === 'mine' && !state.demo) pushBackup(store.get('bal.decoder', null)); }
 function charOptionList() {
   const m = new Map();
   for (const info of state.chars.values()) m.set(info.uuid, (CHR_NAMES[info.uuid] ? CHR_NAMES[info.uuid] + ' ' : '') + shortUuid(info.uuid));
@@ -1763,12 +1839,14 @@ $('#decAdd').addEventListener('click', () => {
 });
 $('#decLoadDemo').addEventListener('click', () => {
   if (state.demo) { flash($('#decMsg'), 'Демо-конфиг уже работает.'); return; }
+  backupMine();
   decoder = DEMO_DECODER(); renderDecoder(); decoderChanged();
 });
 $('#decClear').addEventListener('click', ev => {
   const b = ev.currentTarget;
   if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Точно удалить все?'; setTimeout(() => { b.dataset.armed = ''; b.textContent = 'Удалить все поля'; }, 3000); return; }
   b.dataset.armed = ''; b.textContent = 'Удалить все поля';
+  backupMine();
   decoder.fields = []; renderDecoder(); decoderChanged();
 });
 $('#decJson').addEventListener('change', e => { decoder.json = e.target.checked; decoderChanged(); });
@@ -1782,6 +1860,7 @@ $('#decApply').addEventListener('click', () => {
   const d = normalizeDecoder(o);
   if (!d) { flash($('#decMsg'), 'Нет списка fields — это не конфиг декодера.', true); return; }
   if (state.demo) stopDemo(false);
+  backupMine();
   decoder = d; saveDecoder(); renderDecoder(); rebuildTelemetry();
   flash($('#decMsg'), 'Применено полей: ' + d.fields.length + '.');
 });
@@ -1797,6 +1876,7 @@ function setRealDecoder(d) {
   renderDecoder();
 }
 function useSource(src) {
+  flushDecoder();
   if (src === 'repo' && !repoDecoder()) return;
   setActiveSource(src);
   decSrc.forked = false;
@@ -1816,8 +1896,8 @@ function cmpDecVersion(a, b) {
   return (Date.parse(a.updatedAt) || 0) - (Date.parse(b.updatedAt) || 0);
 }
 function decLabel(d) {
-  const date = Date.parse(d && d.updatedAt);
-  return 'v' + (d && d.version != null ? d.version : '?') + (date ? ' от ' + new Date(date).toLocaleDateString('ru-RU') : '');
+  const date = Date.parse(d && d.updatedAt), v = d && d.version != null ? 'v' + d.version : '';
+  return [v, date ? 'от ' + new Date(date).toLocaleDateString('ru-RU') : ''].filter(Boolean).join(' ') || 'без версии';
 }
 /* Newer than the repository decoder last applied. «Не сейчас» only hides the banner (dismissed). */
 function remoteIsNewer(ignoreDismissed) {
@@ -1844,6 +1924,7 @@ async function checkDecoderUpdate() {
 function applyRemote() {
   const r = decSrc.remote;
   if (!r) return;
+  flushDecoder();
   decSrc.repo = r;
   store.set('bal.decoder.repo', r);
   useSource('repo');
@@ -1855,14 +1936,17 @@ function dismissRemote() {
   renderDecSource();
 }
 function restoreBackup() {
-  const b = store.get('bal.decoder.backup', null);
-  if (!b || !b.decoder) return;
-  const cur = store.get('bal.decoder', null), curN = normalizeDecoder(cur);
+  flushDecoder();
+  const list = decBackups(), i = Number($('#decBackupSel').value) || 0, b = list[i];
+  if (!b) return;
+  const cur = store.get('bal.decoder', null);
+  list.splice(i, 1);
+  store.set('bal.decoder.backups', list);
+  store.del('bal.decoder.backup');
+  pushBackup(cur);   /* the «мой» being replaced becomes the newest copy */
   store.set('bal.decoder', b.decoder);
-  if (curN && curN.fields.length) store.set('bal.decoder.backup', { savedAt: new Date().toISOString(), decoder: cur });
-  else store.del('bal.decoder.backup');
   useSource('mine');
-  flash($('#decRepoText'), 'Вернул прежний «мой» декодер.' + (curN && curN.fields.length ? ' Тот, что был, теперь в резервной копии.' : ''));
+  flash($('#decRepoText'), 'Вернул «мой» декодер от ' + new Date(b.savedAt).toLocaleString('ru-RU') + '.' + (decNonEmpty(normalizeDecoder(cur)) ? ' Тот, что был, теперь в резервных копиях.' : ''));
 }
 function renderDecSource() {
   const real = state.demo ? state.savedDecoder : decoder;
@@ -1871,12 +1955,12 @@ function renderDecSource() {
   $('#decUpd').hidden = !offer;
   if (offer) {
     $('#decUpdText').textContent = 'В репозитории новый декодер ' + decLabel(r) + ', полей: ' + r.fields.length + (r.note ? ' — ' + r.note : '') + '.'
-      + (decSrc.active === 'mine' && mine.fields.length ? ' Твой декодер сохранится: вернуться к нему можно в разделе «Декодер».' : '');
+      + (decSrc.active === 'mine' && decNonEmpty(mine) ? ' Твой декодер сохранится: вернуться к нему можно в разделе «Декодер».' : '');
   }
   /* decoder tab */
   for (const b of $$('#decSrcSeg button')) {
     b.setAttribute('aria-pressed', b.dataset.src === decSrc.active ? 'true' : 'false');
-    if (b.dataset.src === 'repo') { b.disabled = !decSrc.repo; b.textContent = 'Из репозитория' + (decSrc.repo ? ' v' + decSrc.repo.version : ''); }
+    if (b.dataset.src === 'repo') { b.disabled = !decSrc.repo; b.textContent = 'Из репозитория' + (decSrc.repo ? ' ' + decLabel(decSrc.repo).split(' от ')[0] : ''); }
   }
   const n = real ? real.fields.length : 0;
   $('#decSrcText').textContent = (state.demo ? 'Сейчас демо: на приборах демо-конфиг, выбранный декодер включится после демо. ' : '')
@@ -1890,8 +1974,15 @@ function renderDecSource() {
   const ap = $('#decRepoApply');
   ap.hidden = !newer;
   if (newer) ap.textContent = 'Применить ' + decLabel(r);
-  const bk = store.get('bal.decoder.backup', null);
-  $('#decBackup').hidden = !(bk && bk.decoder);
+  const backups = decBackups(), sel = $('#decBackupSel');
+  $('#decBackupBox').hidden = !backups.length;
+  const opts = backups.map((b, i) => {
+    const d = normalizeDecoder(b.decoder) || emptyDecoder();
+    return [String(i), new Date(b.savedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ' · полей ' + d.fields.length + (d.json ? ' + JSON' : '')];
+  });
+  if (Array.from(sel.options).map(o => o.value + o.textContent).join() !== opts.map(o => o.join('')).join()) {
+    sel.replaceChildren(...opts.map(([v, t]) => h('option', { value: v, text: t })));
+  }
 }
 $('#decUpdApply').addEventListener('click', applyRemote);
 $('#decRepoApply').addEventListener('click', applyRemote);

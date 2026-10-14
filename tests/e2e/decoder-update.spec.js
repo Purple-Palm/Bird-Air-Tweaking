@@ -53,7 +53,7 @@ test('editing the repository decoder makes it «мой» and keeps the old one',
   await page.locator('#decFields [data-k="scale"]').first().fill('0.2');
   await expect.poll(() => ls(page, 'bal.decoder.active')).toBe('mine');
   expect((await ls(page, 'bal.decoder')).fields.map(f => f.key + ':' + f.scale)).toEqual(['speed_kmh:0.2', 'current:0.01']);
-  expect((await ls(page, 'bal.decoder.backup')).decoder.fields[0].name).toBe('мой байт');
+  expect((await ls(page, 'bal.decoder.backups'))[0].decoder.fields[0].name).toBe('мой байт');
   expect((await ls(page, 'bal.decoder.repo')).fields[0].scale).toBe(0.1);
   await expect(page.locator('#decSrcText')).toContainText('сделан правкой декодера из репозитория');
   await page.click('#decBackup');

@@ -42,7 +42,7 @@ const decodeContent = body => {
   return JSON.parse((buf[0] === 0x1f && buf[1] === 0x8b ? zlib.gunzipSync(buf) : buf).toString('utf8'));
 };
 
-const TOKEN = 'test-token-0123456789';
+const TOKEN = 'test_token_0123456789';   // real tokens are [A-Za-z0-9_]
 const CONTENTS = /^\/repos\/Purple-Palm\/Bird-Air-Tweaking\/contents\/(.+)$/;
 const pathOf = req => decodeURIComponent(req.path.match(CONTENTS)[1]);
 

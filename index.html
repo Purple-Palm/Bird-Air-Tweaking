@@ -277,7 +277,10 @@
       <p class="msg" id="decRepoText"></p>
       <div class="row">
         <button class="btn btn-sm btn-primary" id="decRepoApply" type="button" hidden>Применить</button>
-        <button class="btn btn-sm" id="decBackup" type="button" hidden>Вернуть прежний «мой»</button>
+        <span class="row" id="decBackupBox" hidden>
+          <label class="f">Резервные копии «моего»<select id="decBackupSel"></select></label>
+          <button class="btn btn-sm" id="decBackup" type="button">Вернуть эту копию</button>
+        </span>
       </div>
     </div>
     <div class="card">

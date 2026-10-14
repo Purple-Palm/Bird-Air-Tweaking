@@ -2,7 +2,7 @@
    One scooter like the real one: 1800/2A00 (read, notify), FFE0/FFE1 (notify, write without response), 180A/2A29 (read "HL Corp")
    and Telink OTA 1912/2B12 (read, write, notify), which the page must never touch.
    Tests drive it through window.__fakeBle: notify(uuid, bytes), drop(), calls, failConnects, discoverDelay,
-   requestError {name, message}. */
+   connectDelay (disconnect() during it aborts the connect, as in Chrome), requestError {name, message}. */
 (() => {
   const BASE = '-0000-1000-8000-00805f9b34fb';
   const full = u => (/^[0-9a-f]{4}$/i.test(u) ? '0000' + u + BASE : u).toLowerCase();
@@ -14,7 +14,7 @@
   const hex = v => Array.from(view(v), b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
   const lost = () => new DOMException('GATT Server is disconnected.', 'NetworkError');
   const calls = [];
-  let connected = false, allowed = [];
+  let connected = false, allowed = [], pendingConnect = null, aborted = false;
   const device = new EventTarget();
 
   class Char extends EventTarget {
@@ -65,7 +65,7 @@
   service('00010203-0405-0607-0809-0a0b0c0d1912', [['00010203-0405-0607-0809-0a0b0c0d2b12', { read: true, write: true, writeWithoutResponse: true, notify: true }, [0]]]);
 
   const fake = {
-    device, services, calls, failConnects: 0, discoverDelay: 0, requestError: null,
+    device, services, calls, failConnects: 0, discoverDelay: 0, connectDelay: 0, requestError: null,
     get connected() { return connected; },
     char(u) { for (const s of services) for (const c of s._chars) if (c.uuid === full(u)) return c; return null; },
     notify(u, bytes) { return this.char(u)._emit(bytes); },
@@ -81,11 +81,20 @@
     get connected() { return connected; },
     async connect() {
       calls.push(['connect']);
+      if (fake.connectDelay) {
+        await new Promise((resolve, reject) => { pendingConnect = reject; setTimeout(resolve, fake.connectDelay); });
+        if (aborted) { aborted = false; throw new DOMException('Connection attempt was aborted.', 'AbortError'); }
+        pendingConnect = null;
+      }
       if (fake.failConnects > 0) { fake.failConnects--; throw new DOMException('Connection attempt failed.', 'NetworkError'); }
       connected = true;
       return gatt;
     },
-    disconnect() { calls.push(['disconnect']); fake.drop(); },
+    disconnect() {
+      calls.push(['disconnect']);
+      if (pendingConnect) { aborted = true; pendingConnect(new DOMException('Connection attempt was aborted.', 'AbortError')); pendingConnect = null; }
+      fake.drop();
+    },
     async getPrimaryServices() {
       calls.push(['getPrimaryServices']);
       if (fake.discoverDelay) await new Promise(r => setTimeout(r, fake.discoverDelay));
