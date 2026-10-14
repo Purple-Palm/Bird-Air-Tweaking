@@ -653,13 +653,19 @@ function demoTick() {
 /* ============================================================
    rendering scheduler
    ============================================================ */
-let queued = false, lastRender = 0;
+let queued = false, queuedForce = false, lastRender = 0;
 const lastPart = { log: 0, an: 0, exp: 0, dec: 0 };
+/* A forced request upgrades one already queued: a log from a file gets no periodic re-render to catch up. */
 function requestRender(now) {
+  if (now) queuedForce = true;
   if (queued) return;
   queued = true;
   const wait = now ? 0 : Math.max(0, 110 - (performance.now() - lastRender));
-  setTimeout(() => requestAnimationFrame(() => { queued = false; lastRender = performance.now(); renderAll(now); }), wait);
+  setTimeout(() => requestAnimationFrame(() => {
+    const force = queuedForce;
+    queued = false; queuedForce = false; lastRender = performance.now();
+    renderAll(force);
+  }), wait);
 }
 function due(part, ms, force) {
   const t = performance.now();
