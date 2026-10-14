@@ -1,0 +1,9 @@
+{
+  "format": "birdair-lab-decoder",
+  "version": 1,
+  "updatedAt": "2026-10-14T22:30:00Z",
+  "note": "Протокол ещё не расшифрован: полей нет. Они появятся после разбора первого лога.",
+  "sources": [],
+  "json": false,
+  "fields": []
+}
