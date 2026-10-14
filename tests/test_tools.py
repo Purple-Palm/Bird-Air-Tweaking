@@ -191,6 +191,12 @@ class LogFilesTest(unittest.TestCase):
         self.assertEqual(bl.bytes_of(lg['entries'][1]['h']), b'scooter')
         self.assertEqual(len(bl.bytes_of(lg['entries'][3]['h'])), len(name) + 2)
 
+    def test_anonymize_short_name_only_as_a_word(self):
+        lg = bl.new_log(device={'name': 'LE', 'id': 'scooter'})
+        lg['entries'] = [{'t': 0, 'k': 'sys', 'n': 'Выбрано устройство: LE'}, {'t': 1, 'k': 'sys', 'n': 'MTU 247, LEGACY'}]
+        bl.anonymize(lg)
+        self.assertEqual([e['n'] for e in lg['entries']], ['Выбрано устройство: scooter', 'MTU 247, LEGACY'])
+
     def test_names(self):
         self.assertEqual(bl.slug('Газ и тормоз!'), 'gaz-i-tormoz')
         self.assertEqual(bl.slug('  '), 'log')

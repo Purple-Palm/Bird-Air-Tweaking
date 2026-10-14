@@ -1287,8 +1287,11 @@ function anonymizeLog(o) {
   o.device = { name: 'scooter', id: 'scooter' };
   const enc = new TextEncoder(), scooter = bytesToHex(enc.encode('scooter'));
   const inPackets = secrets.map(s => enc.encode(s)).filter(b => b.length >= 4).map(b => [bytesToHex(b), bytesToHex(new Uint8Array(b.length).fill(0x2a))]);
+  /* A short secret (a 2–3 letter name) only counts as a whole word, so «MTU» or «LE …» survive. */
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const word = s => new RegExp('(?<![0-9A-Za-zА-Яа-яЁё])' + esc(s) + '(?![0-9A-Za-zА-Яа-яЁё])', 'g');
   for (const e of o.entries) {
-    if (e.n) for (const s of secrets) e.n = e.n.split(s).join('scooter');
+    if (e.n) for (const s of secrets) e.n = s.length < 4 ? e.n.replace(word(s), 'scooter') : e.n.split(s).join('scooter');
     if (e.h == null) continue;
     if (NAME_CHARS.has(e.u)) e.h = scooter;
     else if (ZERO_CHARS.has(e.u)) e.h = bytesToHex(new Uint8Array((hexToBytes(e.h) || []).length));

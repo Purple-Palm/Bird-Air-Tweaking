@@ -102,10 +102,12 @@ def anonymize(log, extra=()):
     log['device'] = {'name': 'scooter', 'id': 'scooter'}
     scooter = hex_of(b'scooter')
     in_packets = [(hex_of(s.encode('utf-8')), hex_of(b'*' * len(s.encode('utf-8')))) for s in secrets if len(s.encode('utf-8')) >= 4]
+    # A short secret (a 2–3 letter name) only counts as a whole word, so «MTU» or «LE …» survive.
+    words = {s: re.compile(r'(?<![0-9A-Za-zА-Яа-яЁё])' + re.escape(s) + r'(?![0-9A-Za-zА-Яа-яЁё])') for s in secrets if len(s) < 4}
     for e in log.get('entries', []):
         if e.get('n'):
             for s in secrets:
-                e['n'] = e['n'].replace(s, 'scooter')
+                e['n'] = words[s].sub('scooter', e['n']) if s in words else e['n'].replace(s, 'scooter')
         if e.get('h') is None:
             continue
         u = e.get('u')
