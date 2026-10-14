@@ -1,9 +1,11 @@
 {
   "format": "birdair-lab-decoder",
-  "version": 1,
-  "updatedAt": "2026-10-14T22:30:00Z",
-  "note": "Протокол ещё не расшифрован: полей нет. Они появятся после разбора первого лога.",
-  "sources": [],
+  "version": 2,
+  "updatedAt": "2026-10-14T23:40:00Z",
+  "note": "Полей пока нет. Без приложения Bird самокат по FFE1 шлёт только инициализацию Bluetooth-модуля (мусор UART, AT+SETNAME, AT+RESET), телеметрии нет — нужен snoop-лог приложения Bird.",
+  "sources": [
+    "logs/20261014-160502-log.json"
+  ],
   "json": false,
   "fields": []
 }
