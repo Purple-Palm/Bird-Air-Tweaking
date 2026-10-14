@@ -94,3 +94,21 @@ test('no hint once a decoder has fields', async ({ page }) => {
   await page.waitForTimeout(300);
   await expect(page.locator('#rawBanner')).toBeHidden();
 });
+
+test('the device name is masked even when cut across packets', async ({ page }) => {
+  const puts = await connected(page, { 'bal.gh.token': TOKEN });
+  // the dashboard sends AT commands over the UART bridge; they arrive in 20-byte notifications
+  const text = Array.from(new TextEncoder().encode('AT+SETNAME=BirdAir-TEST01\r\nAT+RESET\r\n'));
+  await page.evaluate(t => { for (let i = 0; i < t.length; i += 20) window.__fakeBle.notify('ffe1', t.slice(i, i + 20)); }, text);
+  await page.click('#t-data');
+  await page.click('#btnGhSend');
+  await expect(page.locator('#ghMsg')).toContainText('Отправлено');
+  const log = decodeContent(puts[0].body);
+  const rx = log.entries.filter(e => e.k === 'rx').map(e => e.h).join(' ');
+  const ascii = Buffer.from(rx.replace(/ /g, ''), 'hex').toString('latin1');
+  expect(ascii).toBe('AT+SETNAME=**************\r\nAT+RESET\r\n');
+  expect(JSON.stringify(log)).not.toContain('BirdAir-TEST01');
+  expect(log.entries.find(e => (e.u || '').startsWith('00002a00')).h).toBe('73 63 6F 6F 74 65 72');   // «scooter»
+  const subs = await page.evaluate(() => window.__fakeBle.calls.filter(c => c[0] === 'startNotifications').map(c => c[1].slice(4, 8)));
+  expect(subs).toEqual(['ffe1']);   // no subscription attempt on 0x2A00
+});

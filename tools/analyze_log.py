@@ -334,11 +334,15 @@ def partition(items):
     return out
 
 
+# Generic Access, Generic Attribute, Device Information: names and bookkeeping, never telemetry.
+STANDARD = {bl.norm_uuid(x) for x in ('1800', '1801', '180a')}
+
+
 def build_groups(logs):
     by_char = collections.OrderedDict()
     for li, lg in enumerate(logs):
         for e in lg['entries']:
-            if e['k'] in ('rx', 'rd'):
+            if e['k'] in ('rx', 'rd') and (e.get('s') or '') not in STANDARD:
                 b = bl.entry_bytes(e)
                 if b:
                     by_char.setdefault(bl.char_key(e), []).append((li, e['t'], b))
@@ -642,6 +646,22 @@ def rel(path):
         return path
 
 
+def stream_texts(logs, min_len=4):
+    """Printable lines in the byte stream of each characteristic, joined across packets."""
+    out = collections.OrderedDict()
+    for lg in logs:
+        streams = collections.OrderedDict()
+        for e in lg['entries']:
+            if e['k'] in ('rx', 'tx') and e.get('h'):
+                streams.setdefault((e['k'], e.get('u') or ''), bytearray()).extend(bl.entry_bytes(e))
+        for key, buf in streams.items():
+            text = ''.join(chr(b) if 32 <= b < 127 else '\n' for b in buf)
+            for line in text.split('\n'):
+                if len(line.strip()) >= min_len and sum(c.isalnum() for c in line) >= min_len:
+                    out.setdefault(key, collections.Counter())[line.strip()] += 1
+    return out
+
+
 def collect_markers(logs):
     out = []
     for li, lg in enumerate(logs):
@@ -887,6 +907,14 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
             p(f'  {first[(u, h)] / 1000:8.2f} с  {u}  {h}  ×{c}')
         if len(tx) > 40:
             p(f'  … и ещё {len(tx) - 40} разных')
+
+    texts = stream_texts(logs)
+    if texts:
+        p('\n## Текст в потоках (так выглядят AT-команды и отладочный вывод)')
+        for (k, u), lines in texts.items():
+            p(f"  {bl.short_uuid(u)} ({'от самоката' if k == 'rx' else 'от телефона'}):")
+            for line, c in lines.most_common(12):
+                p(f'    «{line}» ×{c}')
 
     reads = collections.OrderedDict()
     for lg in logs:

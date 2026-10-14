@@ -117,6 +117,19 @@ class DemoAnalysisTest(unittest.TestCase):
         self.assertIn('XOR', self.report)
 
 
+class StreamTextTest(unittest.TestCase):
+    def test_text_is_joined_across_packets_and_standard_services_are_not_fields(self):
+        lg = bl.new_log()
+        text = b'\x80\xf8x\x00AT+SETNAME=BirdAir-X1\r\nAT+RESET\r\n'
+        u = bl.norm_uuid('ffe1')
+        lg['entries'] = [{'t': i, 'k': 'rx', 's': bl.norm_uuid('ffe0'), 'u': u, 'h': bl.hex_of(text[i:i + 20])} for i in range(0, len(text), 20)]
+        lg['entries'] += [{'t': 100 + i, 'k': 'rd', 's': bl.norm_uuid('1800'), 'u': bl.norm_uuid('2a04'), 'h': '14 00 28 00 00 00 E8 03'} for i in range(6)]
+        lg['_files'] = ['x.json']
+        texts = analyze_log.stream_texts([lg])
+        self.assertEqual(dict(texts[('rx', u)]), {'AT+SETNAME=BirdAir-X1': 1, 'AT+RESET': 1})
+        self.assertEqual([g for g in analyze_log.build_groups([lg]) if g.s == bl.norm_uuid('1800')], [])
+
+
 class LogFilesTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -190,6 +203,20 @@ class LogFilesTest(unittest.TestCase):
             self.assertNotIn(secret, text)
         self.assertEqual(bl.bytes_of(lg['entries'][1]['h']), b'scooter')
         self.assertEqual(len(bl.bytes_of(lg['entries'][3]['h'])), len(name) + 2)
+
+    def test_anonymize_name_split_across_packets(self):
+        # the real case: the dashboard sends AT+SETNAME over the UART bridge, cut into 20-byte notifications
+        name = 'BirdAir-202190918'
+        text = b'AT+SETNAME=' + name.encode() + b'\r\nAT+RESET\r\n'
+        u = bl.norm_uuid('ffe1')
+        lg = bl.new_log(device={'name': name, 'id': 'xyz123'})
+        lg['entries'] = [{'t': i, 'k': 'rx', 's': bl.norm_uuid('ffe0'), 'u': u, 'h': bl.hex_of(text[i:i + 20])} for i in range(0, len(text), 20)]
+        lg['entries'].append({'t': 99, 'k': 'rx', 's': 'x', 'u': 'other', 'h': bl.hex_of(b'SN 202190918')})
+        bl.anonymize(lg)
+        joined = b''.join(bl.bytes_of(e['h']) for e in lg['entries'][:-1])
+        self.assertEqual(joined, b'AT+SETNAME=' + b'*' * len(name) + b'\r\nAT+RESET\r\n')
+        self.assertEqual(bl.bytes_of(lg['entries'][-1]['h']), b'SN *********')   # the serial alone, too
+        self.assertEqual([len(bl.bytes_of(e['h'])) for e in lg['entries'][:-1]], [20, 20])   # name cut between packets 1 and 2
 
     def test_anonymize_short_name_only_as_a_word(self):
         lg = bl.new_log(device={'name': 'LE', 'id': 'scooter'})

@@ -1,5 +1,5 @@
 /* Fake Web Bluetooth, injected with page.addInitScript before the app loads.
-   One scooter: FFE0/FFE1 (notify, write without response), 180A/2A29 (read "HL Corp")
+   One scooter like the real one: 1800/2A00 (read, notify), FFE0/FFE1 (notify, write without response), 180A/2A29 (read "HL Corp")
    and Telink OTA 1912/2B12 (read, write, notify), which the page must never touch.
    Tests drive it through window.__fakeBle: notify(uuid, bytes), drop(), calls, failConnects, discoverDelay,
    requestError {name, message}. */
@@ -59,6 +59,7 @@
     };
     services.push(s);
   }
+  service('1800', [['2a00', { read: true, notify: true }, Array.from(new TextEncoder().encode('BirdAir-TEST01'))]]);
   service('ffe0', [['ffe1', { notify: true, writeWithoutResponse: true }]]);
   service('180a', [['2a29', { read: true }, Array.from(new TextEncoder().encode('HL Corp'))]]);
   service('00010203-0405-0607-0809-0a0b0c0d1912', [['00010203-0405-0607-0809-0a0b0c0d2b12', { read: true, write: true, writeWithoutResponse: true, notify: true }, [0]]]);

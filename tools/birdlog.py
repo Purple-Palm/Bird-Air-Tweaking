@@ -89,22 +89,62 @@ NAME_CHARS = {norm_uuid('2a00'), norm_uuid('2a25')}   # Device Name, Serial Numb
 ZERO_CHARS = {norm_uuid('2a23')}                      # System ID (derived from the MAC)
 
 
+def secret_names(*names):
+    """The strings to hide for a device name: the name and any serial-like run of 6+ digits in it."""
+    out = []
+    for n in names:
+        if n and str(n) != 'scooter':
+            out.append(str(n))
+            out += re.findall(r'\d{6,}', str(n))
+    return out
+
+
+def mask_in_streams(entries, secrets):
+    """Replace secret bytes with '*' inside packets, also when one is split across consecutive
+    packets of the same characteristic (a UART bridge cuts text into 20-byte notifications)."""
+    pats = sorted({s.encode('utf-8') for s in secrets if len(s.encode('utf-8')) >= 4}, key=len, reverse=True)
+    if not pats:
+        return
+    streams = {}
+    for e in entries:
+        if e.get('h') and e.get('k') in ('rx', 'rd', 'tx') and e.get('u') not in NAME_CHARS | ZERO_CHARS:
+            streams.setdefault((e['k'], e.get('s'), e.get('u')), []).append(e)
+    for es in streams.values():
+        bufs = [bytearray(bytes_of(e['h'])) for e in es]
+        flat = b''.join(bufs)
+        where = [(i, j) for i, b in enumerate(bufs) for j in range(len(b))]
+        hit = False
+        for pat in pats:
+            pos = flat.find(pat)
+            while pos >= 0:
+                for k in range(pos, pos + len(pat)):
+                    i, j = where[k]
+                    bufs[i][j] = 0x2A
+                hit = True
+                pos = flat.find(pat, pos + 1)
+        if hit:
+            for e, b in zip(es, bufs):
+                e['h'] = hex_of(b)
+                e.pop('_b', None)
+
+
 def anonymize(log, extra=()):
     """Same as the page's «Обезличить»: device name and id -> 'scooter'.
 
     Also replaces those strings (and any of `extra`, e.g. MAC addresses) inside text
-    entries, blanks Device Name / Serial Number / System ID values and masks the
-    device name if it shows up inside packets (same length, '*' bytes).
+    entries, blanks Device Name / Serial Number / System ID values and masks the device
+    name and its serial digits inside packets (same length, '*' bytes), also across
+    packet boundaries.
     """
     dev = log.get('device') or {}
-    secrets = [str(x) for x in (dev.get('name'), dev.get('id'), *extra) if x and len(str(x)) >= 2 and str(x) != 'scooter']
+    secrets = [s for s in secret_names(dev.get('name'), dev.get('id'), *extra) if len(s) >= 2]
     secrets.sort(key=len, reverse=True)
     log['device'] = {'name': 'scooter', 'id': 'scooter'}
     scooter = hex_of(b'scooter')
-    in_packets = [(hex_of(s.encode('utf-8')), hex_of(b'*' * len(s.encode('utf-8')))) for s in secrets if len(s.encode('utf-8')) >= 4]
     # A short secret (a 2–3 letter name) only counts as a whole word, so «MTU» or «LE …» survive.
     words = {s: re.compile(r'(?<![0-9A-Za-zА-Яа-яЁё])' + re.escape(s) + r'(?![0-9A-Za-zА-Яа-яЁё])') for s in secrets if len(s) < 4}
-    for e in log.get('entries', []):
+    entries = log.get('entries', [])
+    for e in entries:
         if e.get('n'):
             for s in secrets:
                 e['n'] = words[s].sub('scooter', e['n']) if s in words else e['n'].replace(s, 'scooter')
@@ -115,10 +155,8 @@ def anonymize(log, extra=()):
             e['h'] = scooter
         elif u in ZERO_CHARS:
             e['h'] = hex_of(bytes(len(bytes_of(e['h']))))
-        else:
-            for hx, star in in_packets:
-                e['h'] = e['h'].replace(hx, star)
         e.pop('_b', None)
+    mask_in_streams(entries, secrets)
     return log
 
 

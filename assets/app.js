@@ -124,6 +124,7 @@ const CHR_NAMES = {
   '6e400002-b5a3-f393-e0a9-e50e24dcca9e': 'UART: запись в устройство', '6e400003-b5a3-f393-e0a9-e50e24dcca9e': 'UART: данные от устройства',
   [TELINK_OTA_CHR]: 'OTA — обновление прошивки', [DEMO_CHR]: 'Демо: поток телеметрии',
 };
+const GAP_SERVICES = new Set([normUuid('1800'), normUuid('1801')]);
 const DEFAULT_SERVICES = ['1800', '1801', '180a', '180f', 'ffe0', 'fff0', 'ffd0', 'ffc0', 'ff00', 'fee0', 'fee7', 'fe95', 'ae00', 'ae30']
   .map(normUuid).concat([NUS, TELINK_SPP, TELINK_OTA_SVC, '49535343-fe7d-4ae5-8fa9-9fafd205e455', '0783b03e-8535-b5a0-7140-a304d2495cb7']);
 function isDanger(svc, chr) {
@@ -523,7 +524,8 @@ async function discover() {
   renderCharSelects();
   for (const info of state.chars.values()) if (info.props.read && !info.danger) await readChar(info, true);
   for (const info of state.chars.values()) {
-    if (!(info.props.notify || info.props.indicate) || info.danger) continue;
+    /* 0x1800/0x1801 carry the name and GATT bookkeeping, no telemetry; Chrome refuses notifications on 0x2A00 anyway. */
+    if (!(info.props.notify || info.props.indicate) || info.danger || GAP_SERVICES.has(info.service)) continue;
     const want = info.wanted == null ? settings.autoSubscribe : info.wanted;
     if (want) await subscribe(info, true);
   }
@@ -1294,12 +1296,45 @@ function renderGhName() {
 
 /* Same rules as tools/birdlog.py anonymize(). Mutates o, which is a fresh sessionObject(). */
 const NAME_CHARS = new Set([normUuid('2a00'), normUuid('2a25')]), ZERO_CHARS = new Set([normUuid('2a23')]);
+/* The device name and any serial-like run of 6+ digits in it. */
+const secretNames = (...names) => names.filter(n => n && String(n) !== 'scooter').flatMap(n => [String(n), ...(String(n).match(/\d{6,}/g) || [])]);
+/* '*' over secret bytes inside packets, also when one is split across consecutive packets of the same
+   characteristic: the UART bridge cuts text (AT+SETNAME=<name>) into 20-byte notifications. */
+function maskInStreams(entries, secrets) {
+  const enc = new TextEncoder();
+  const pats = [...new Set(secrets)].map(s => enc.encode(s)).filter(b => b.length >= 4).sort((a, b) => b.length - a.length);
+  if (!pats.length) return;
+  const streams = new Map();
+  for (const e of entries) {
+    if (!e.h || !['rx', 'rd', 'tx'].includes(e.k) || NAME_CHARS.has(e.u) || ZERO_CHARS.has(e.u)) continue;
+    const key = e.k + '|' + e.s + '|' + e.u;
+    if (!streams.has(key)) streams.set(key, []);
+    streams.get(key).push(e);
+  }
+  for (const es of streams.values()) {
+    const bufs = es.map(e => hexToBytes(e.h) || new Uint8Array(0));
+    const where = [];
+    bufs.forEach((b, i) => { for (let j = 0; j < b.length; j++) where.push([i, j]); });
+    const flat = new Uint8Array(where.length);
+    where.forEach(([i, j], k) => { flat[k] = bufs[i][j]; });
+    let hit = false;
+    for (const pat of pats) {
+      for (let pos = 0; pos + pat.length <= flat.length; pos++) {
+        let k = 0;
+        while (k < pat.length && flat[pos + k] === pat[k]) k++;
+        if (k < pat.length) continue;
+        for (k = 0; k < pat.length; k++) { const [i, j] = where[pos + k]; bufs[i][j] = 0x2a; }
+        hit = true;
+      }
+    }
+    if (hit) es.forEach((e, i) => { e.h = bytesToHex(bufs[i]); });
+  }
+}
 function anonymizeLog(o) {
   const dev = o.device || {};
-  const secrets = [dev.name, dev.id].filter(x => x && String(x).length >= 2 && x !== 'scooter').map(String).sort((a, b) => b.length - a.length);
+  const secrets = secretNames(dev.name, dev.id).filter(x => x.length >= 2).sort((a, b) => b.length - a.length);
   o.device = { name: 'scooter', id: 'scooter' };
-  const enc = new TextEncoder(), scooter = bytesToHex(enc.encode('scooter'));
-  const inPackets = secrets.map(s => enc.encode(s)).filter(b => b.length >= 4).map(b => [bytesToHex(b), bytesToHex(new Uint8Array(b.length).fill(0x2a))]);
+  const scooter = bytesToHex(new TextEncoder().encode('scooter'));
   /* A short secret (a 2–3 letter name) only counts as a whole word, so «MTU» or «LE …» survive. */
   const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const word = s => new RegExp('(?<![0-9A-Za-zА-Яа-яЁё])' + esc(s) + '(?![0-9A-Za-zА-Яа-яЁё])', 'g');
@@ -1308,8 +1343,8 @@ function anonymizeLog(o) {
     if (e.h == null) continue;
     if (NAME_CHARS.has(e.u)) e.h = scooter;
     else if (ZERO_CHARS.has(e.u)) e.h = bytesToHex(new Uint8Array((hexToBytes(e.h) || []).length));
-    else for (const [hx, star] of inPackets) e.h = e.h.split(hx).join(star);
   }
+  maskInStreams(o.entries, secrets);
   return o;
 }
 
