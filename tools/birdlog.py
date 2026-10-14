@@ -8,6 +8,7 @@ import gzip
 import json
 import os
 import re
+import zlib
 
 FORMAT = 'birdair-lab-log'
 DECODER_FORMAT = 'birdair-lab-decoder'
@@ -191,7 +192,10 @@ def read_json_bytes(path):
     with open(path, 'rb') as fh:
         data = fh.read()
     if data[:2] == b'\x1f\x8b':
-        data = gzip.decompress(data)
+        try:
+            data = gzip.decompress(data)
+        except (EOFError, zlib.error, gzip.BadGzipFile) as ex:
+            raise ValueError('архив .gz повреждён или обрезан') from ex
     return json.loads(data.decode('utf-8'))
 
 
@@ -223,15 +227,34 @@ def merge_parts(parts):
 
 
 def expand_paths(paths):
+    """Files as given; folders walked recursively for .json / .json.gz, hidden folders skipped."""
     out = []
     for p in paths:
         if os.path.isdir(p):
-            for name in sorted(os.listdir(p)):
-                if name.endswith(('.json', '.json.gz')) and not name.startswith('.'):
-                    out.append(os.path.join(p, name))
+            for d, dirs, files in os.walk(p):
+                dirs[:] = sorted(x for x in dirs if not x.startswith('.'))
+                for name in sorted(files):
+                    if name.endswith(('.json', '.json.gz')) and not name.startswith('.'):
+                        out.append(os.path.join(d, name))
         else:
             out.append(p)
     return out
+
+
+def _entry_key(e):
+    return (e['t'], e['k'], e.get('u'), e.get('h'), e.get('n'))
+
+
+def is_resend(short, long):
+    """Is `short` an earlier copy of `long`: its first and last entries are in `long` and
+    its time span lies inside that of `long`?"""
+    a, b = short['entries'], long['entries']
+    if not a:
+        return True
+    if not b or a[0]['t'] < b[0]['t'] or a[-1]['t'] > b[-1]['t']:
+        return False
+    have = {_entry_key(e) for e in b}
+    return _entry_key(a[0]) in have and _entry_key(a[-1]) in have
 
 
 def load_logs(paths, notes=None):
@@ -239,7 +262,9 @@ def load_logs(paths, notes=None):
 
     The page names a log by when the recording started, so a log sent twice (once more
     after recording a bit longer) shows up as two files with the same startedAt; only the
-    longer one is kept.
+    longer one is kept, and only if it contains the shorter one (a different recording
+    may share startedAt too). Files of a dropped copy are listed in `_dropped` of the log
+    that was kept.
     """
     notes = notes if notes is not None else []
     singles, groups = [], {}
@@ -251,24 +276,31 @@ def load_logs(paths, notes=None):
             continue
         part = o.get('part')
         if isinstance(part, dict) and part.get('id'):
-            groups.setdefault(part['id'], []).append(o)
+            # An interrupted re-send can leave parts of another packing (1of2 next to 1of3…3of3):
+            # each packing is a log of its own, the re-send check below keeps the longest.
+            groups.setdefault((part['id'], part.get('count')), []).append(o)
         else:
             singles.append(o)
     logs = singles + [merge_parts(g) for g in groups.values()]
-    for lg in logs:
-        if lg.get('_missing'):
-            notes.append(f"{lg['_files'][0]}: не хватает частей {lg['_missing']}")
     by_start = {}
     for lg in logs:
-        key = (lg.get('startedAt'), (lg.get('device') or {}).get('name'))
-        prev = by_start.get(key)
-        if prev is None or len(lg['entries']) > len(prev['entries']):
-            if prev is not None:
-                notes.append(f"{prev['_files'][0]}: повтор более длинного {lg['_files'][0]}, пропущен")
-            by_start[key] = lg
-        else:
-            notes.append(f"{lg['_files'][0]}: повтор более длинного {prev['_files'][0]}, пропущен")
-    return sorted(by_start.values(), key=lambda lg: str(lg.get('startedAt')))
+        by_start.setdefault((lg.get('startedAt'), (lg.get('device') or {}).get('name')), []).append(lg)
+    kept = []
+    for same in by_start.values():
+        same.sort(key=lambda lg: -len(lg['entries']))
+        mine = []
+        for lg in same:
+            big = next((k for k in mine if is_resend(lg, k)), None)
+            if big is None:
+                mine.append(lg)
+                continue
+            notes.append(f"{lg['_files'][0]}: повтор более длинного {big['_files'][0]}, пропущен")
+            big.setdefault('_dropped', []).extend(lg['_files'])
+        kept += mine
+    for lg in kept:
+        if lg.get('_missing'):
+            notes.append(f"{lg['_files'][0]}: не хватает частей {lg['_missing']}")
+    return sorted(kept, key=lambda lg: str(lg.get('startedAt')))
 
 
 TRANSLIT = dict(zip('абвгдеёжзийклмнопрстуфхцчшщъыьэюя',

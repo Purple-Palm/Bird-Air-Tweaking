@@ -118,6 +118,38 @@ class DemoAnalysisTest(unittest.TestCase):
         self.assertIn('XOR', self.report)
 
 
+class LongDemoTest(unittest.TestCase):
+    def test_voltage_low_byte_is_not_speed(self):
+        # over 1600 s the voltage drifts through many 2.56 V steps, so its low byte wraps
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, '20261014-190000-demo.json')
+            bl.save_log(fixtures.demo_log(1600), p)
+            res, _ = run_analyze([p])
+        got = {c['key']: (c['off'], c['type'], c['scale']) for c in res['chosen']}
+        self.assertEqual(got.get('speed_kmh'), (9, 'u16le', 0.1), got)
+        self.assertEqual(got.get('voltage'), (5, 'u16le', 0.01), got)
+
+
+class HandleUuidTest(unittest.TestCase):
+    def test_fields_without_a_uuid_are_set_aside(self):
+        # parse_btsnoop without GATT discovery names characteristics by handle
+        lg = fixtures.demo_log(200)
+        lg['gatt'] = []
+        for e in lg['entries']:
+            if e['k'] == 'rx':
+                e['s'], e['u'] = 'unknown', 'handle-0x0012'
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, '20261014-190000-snoop.json')
+            bl.save_log(lg, p)
+            res, _ = run_analyze([p])
+        dec = res['decoder']
+        self.assertEqual(dec['fields'], [])
+        self.assertIn('speed_kmh', {f['key'] for f in dec['needs_uuid']})
+        for f in dec['needs_uuid']:
+            self.assertEqual((f['uuid'], f['handle'], f['confidence']), ('', 'handle-0x0012', 'низкая'))
+            self.assertIn('UUID', f['evidence'][0])
+
+
 class StreamTextTest(unittest.TestCase):
     def test_text_is_joined_across_packets_and_standard_services_are_not_fields(self):
         lg = bl.new_log()
@@ -129,6 +161,32 @@ class StreamTextTest(unittest.TestCase):
         texts = analyze_log.stream_texts([lg])
         self.assertEqual(dict(texts[('rx', u)]), {'AT+SETNAME=BirdAir-X1': 1, 'AT+RESET': 1})
         self.assertEqual([g for g in analyze_log.build_groups([lg]) if g.s == bl.norm_uuid('1800')], [])
+
+    def test_chunked_frames_get_distinct_patterns(self):
+        # 30-byte frames over a UART bridge arrive as 20 + 10 byte notifications
+        lg = bl.new_log()
+        u = bl.norm_uuid('ffe1')
+        for i in range(60):
+            f = fixtures.demo_frame(0x25, [(i * (j + 3) + j * 11) & 0xFF for j in range(25)])
+            self.assertEqual((len(f), f[2]), (30, 0x1B))
+            lg['entries'] += [{'t': i * 100, 'k': 'rx', 's': bl.norm_uuid('ffe0'), 'u': u, 'h': bl.hex_of(f[:20])},
+                              {'t': i * 100 + 1, 'k': 'rx', 's': bl.norm_uuid('ffe0'), 'u': u, 'h': bl.hex_of(f[20:])}]
+        groups = {g.length: g for g in analyze_log.build_groups([lg])}
+        self.assertEqual(sorted(groups), [10, 20])
+        self.assertEqual(groups[20].pattern, '5A A5 1B 25')
+        self.assertNotEqual(groups[10].pattern, groups[20].pattern)
+
+
+class NeedsMatchTest(unittest.TestCase):
+    def test_field_without_a_match_on_a_mixed_characteristic_is_set_aside(self):
+        g1 = analyze_log.Group(bl.norm_uuid('ffe0'), bl.norm_uuid('ffe1'), {}, 10, [(0, i, bytes(10)) for i in range(6)])
+        g2 = analyze_log.Group(bl.norm_uuid('ffe0'), bl.norm_uuid('ffe1'), {0: 0x5A}, 20, [(0, i, b'\x5a' + bytes(19)) for i in range(6)])
+        chosen = [{'group': g1, 'key': 'speed_kmh', 'name': '', 'off': 3, 'type': 'u8', 'scale': 0.1, 'score': 1.0, 'why': ['x']},
+                  {'group': g2, 'key': 'current', 'name': '', 'off': 4, 'type': 's16le', 'scale': 0.01, 'score': 1.0, 'why': ['y']}]
+        dec = analyze_log.candidate_decoder(chosen, [g1, g2], [], {'version': 1})
+        self.assertEqual([f['key'] for f in dec['fields']], ['current'])
+        self.assertEqual([f['key'] for f in dec['needs_match']], ['speed_kmh'])
+        self.assertIn('Начало пакета', dec['needs_match'][0]['evidence'][0])
 
 
 class LogFilesTest(unittest.TestCase):
@@ -178,6 +236,58 @@ class LogFilesTest(unittest.TestCase):
         logs = bl.load_logs([self.d])
         self.assertEqual(len(logs), 1)
         self.assertEqual(len(logs[0]['entries']), len(lg['entries']))
+
+    def test_different_recording_with_same_start_is_kept(self):
+        # «Очистить» used to keep startedAt, so another recording got the same start and name
+        lg = fixtures.demo_log(20)
+        bl.save_log(lg, os.path.join(self.d, '20261014-190000-log.json'))
+        other = fixtures.demo_log(10)
+        inside = dict(other, entries=[dict(e, t=e['t'] + 50) for e in other['entries']])     # within lg's time span
+        after = dict(other, entries=[dict(e, t=e['t'] + 30000) for e in other['entries']])   # t went on from the old start
+        bl.save_log(inside, os.path.join(self.d, '20261014-190000-log-2.json'))
+        bl.save_log(after, os.path.join(self.d, '20261014-190000-log-3.json'))
+        notes = []
+        logs = bl.load_logs([self.d], notes)
+        self.assertEqual(sorted(len(x['entries']) for x in logs), sorted(len(x['entries']) for x in (lg, inside, after)))
+        self.assertFalse([n for n in notes if 'повтор' in n])
+
+    def test_dropped_resend_stays_in_sources(self):
+        lg = fixtures.demo_log(20)
+        short = os.path.join(self.d, '20261014-190000-log.json')
+        bl.save_log(dict(lg, entries=lg['entries'][:50]), short)
+        bl.save_log(lg, os.path.join(self.d, '20261014-190000-log-2.json'))
+        res, _ = run_analyze([self.d])
+        self.assertEqual(len(res['logs']), 1)
+        self.assertIn(analyze_log.rel(short), res['decoder']['sources'])
+
+    def test_interrupted_resend_with_other_part_count(self):
+        # first send: 2 parts, only part 1 arrived; re-sent later, longer, in 3 parts
+        lg = fixtures.demo_log(30)
+        es = lg['entries']
+        names = []
+        first = es[:len(es) // 3]
+        packings = [(2, [first[:len(first) // 2]]), (3, [es[:len(es) // 3], es[len(es) // 3:2 * len(es) // 3], es[2 * len(es) // 3:]])]
+        for count, chunks in packings:
+            for i, ch in enumerate(chunks, 1):
+                names.append(os.path.join(self.d, f'20261014-190000-log-part{i}of{count}.json.gz'))
+                bl.save_log(dict(lg, entries=ch, part={'id': '20261014-190000-log', 'index': i, 'count': count}), names[-1])
+        res, _ = run_analyze([self.d])
+        self.assertEqual(len(res['logs']), 1)
+        self.assertEqual(len(res['logs'][0]['entries']), len(es))
+        self.assertEqual(res['logs'][0]['_missing'], [])
+        for p in names:
+            self.assertIn(analyze_log.rel(p), res['decoder']['sources'])
+
+    def test_broken_gzip_is_skipped_with_a_note(self):
+        z = gzip.compress(bl.dumps(fixtures.demo_log(5)).encode())
+        broken = {'cut.json.gz': z[:-12], 'garbage.json.gz': z[:10] + b'\xff' * 40,
+                  'crc.json.gz': z[:-8] + bytes(x ^ 0xFF for x in z[-8:-4]) + z[-4:]}
+        for name, data in broken.items():
+            with open(os.path.join(self.d, name), 'wb') as fh:
+                fh.write(data)
+        notes = []
+        self.assertEqual(bl.load_logs([self.d], notes), [])
+        self.assertEqual(sum('повреждён' in n for n in notes), 3, notes)
 
     def test_rejects_foreign_json(self):
         p = os.path.join(self.d, 'other.json')
@@ -240,6 +350,15 @@ class LogFilesTest(unittest.TestCase):
             json.dump({'sources': [analyze_log.rel(os.path.join(logs, 'a.json'))]}, fh)
         self.assertEqual([os.path.basename(p) for p in analyze_log.new_logs(logs, cur)], ['b.json.gz'])
 
+    def test_new_logs_walks_subfolders(self):
+        logs = os.path.join(self.d, 'logs')
+        for sub in ('sub/deeper', '.hidden'):
+            os.makedirs(os.path.join(logs, sub))
+        for name in ('a.json', 'sub/c.json.gz', 'sub/deeper/d.json', 'sub/e.json.tmp', 'sub/e.json.gz.tmp', '.hidden/f.json'):
+            open(os.path.join(logs, name), 'w').close()
+        got = [os.path.relpath(p, logs) for p in analyze_log.new_logs(logs, os.path.join(self.d, 'missing.json'))]
+        self.assertEqual(got, ['a.json', os.path.join('sub', 'c.json.gz'), os.path.join('sub', 'deeper', 'd.json')])
+
 
 class SecretsTest(unittest.TestCase):
     TOKEN = 'github' + '_pat_' + '11ABCDEFG0123456789_abcdefghijklmnop'
@@ -260,6 +379,22 @@ class SecretsTest(unittest.TestCase):
                 self.assertEqual(check_secrets.main([d]), 1)
             self.assertIn('log.json.gz', err.getvalue())
             self.assertNotIn(self.TOKEN[12:], err.getvalue())   # the token itself is never echoed
+
+    def test_broken_gzip_neither_crashes_nor_hides_a_token(self):
+        z = gzip.compress(json.dumps({'t': 'Bearer ' + self.TOKEN, 'pad': 'x' * 2000}).encode())
+        with tempfile.TemporaryDirectory() as d:
+            # last bytes lost in an upload; trailer checksum damaged
+            for name, data in (('cut.json.gz', z[:-6]), ('crc.json.gz', z[:-8] + bytes(x ^ 0xFF for x in z[-8:-4]) + z[-4:])):
+                p = os.path.join(d, name)
+                with open(p, 'wb') as fh:
+                    fh.write(data)
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(check_secrets.main([p]), 1, name)
+                self.assertIn(name, err.getvalue())
+            p = os.path.join(d, 'garbage.json.gz')
+            with open(p, 'wb') as fh:
+                fh.write(z[:10] + b'\xff' * 40)
+            self.assertEqual(check_secrets.main([p]), 0)   # no traceback either
 
     def test_staged_mode_in_a_scratch_repo(self):
         with tempfile.TemporaryDirectory() as d:

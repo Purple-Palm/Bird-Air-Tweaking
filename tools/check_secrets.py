@@ -5,14 +5,14 @@
     python3 tools/check_secrets.py --staged   # what is about to be committed (pre-commit hook)
     python3 tools/check_secrets.py PATH...    # these files or folders
 
-.gz files are decompressed before scanning, so a token cannot hide inside
-an uploaded .json.gz log.
+.gz files are scanned both as they are and decompressed (as far as they go when
+truncated or damaged), so a token cannot hide inside an uploaded .json.gz log.
 """
 import argparse
-import gzip
 import os
 import subprocess
 import sys
+import zlib
 
 # Built by concatenation so this file does not match itself.
 PREFIXES = ('github' + '_pat_', 'gh' + 'p_')
@@ -56,17 +56,45 @@ def read(path):
         return b''
 
 
+def gunzip(data, chunk=1 << 14):
+    """Everything that decompresses from gzip/zlib data, also from a truncated or damaged
+    archive (up to the damage) and from several gzip members in a row."""
+    out = bytearray()
+    while data:
+        d = zlib.decompressobj(wbits=47)   # 32 + 15: gzip or zlib header
+        pos = 0
+        while pos < len(data) and not d.eof:
+            piece = data[pos:pos + chunk]
+            saved = d.copy()
+            try:
+                out += d.decompress(piece)
+            except zlib.error:
+                # The output of a failed call is lost: redo the piece byte by byte up to the damage.
+                for i in range(len(piece)):
+                    try:
+                        out += saved.decompress(piece[i:i + 1])
+                    except zlib.error:
+                        break
+                return bytes(out)
+            pos += len(piece)
+        if not d.eof:
+            break                          # truncated: that was all
+        data = d.unused_data + data[pos:]
+    return bytes(out)
+
+
 def scan(path, data):
+    blobs = [data]
     if path.endswith('.gz'):
-        try:
-            data = gzip.decompress(data)
-        except (OSError, EOFError):
-            pass
+        blobs.append(gunzip(data))
     hits = []
-    for no, line in enumerate(data.split(b'\n'), 1):
-        for p in PREFIXES:
-            if p.encode() in line:
-                hits.append(f'{path}:{no}: {p}…')
+    for blob in blobs:
+        for no, line in enumerate(blob.split(b'\n'), 1):
+            for p in PREFIXES:
+                if p.encode() in line:
+                    hit = f'{path}:{no}: {p}…'
+                    if hit not in hits:
+                        hits.append(hit)
     return hits
 
 

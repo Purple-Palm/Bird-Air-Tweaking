@@ -2,7 +2,7 @@
 """Разбор логов Bird Air Lab: где в пакетах лежат заряд, скорость, ток и прочее.
 
     python3 tools/analyze_log.py logs/20261014-190211-gaz.json
-    python3 tools/analyze_log.py logs/                     # все логи в папке
+    python3 tools/analyze_log.py logs/                     # все логи в папке и подпапках
     python3 tools/analyze_log.py --new                     # логи, которых нет в sources декодера
 
 Печатает сводку по характеристикам, группы пакетов (по заголовку), контрольные суммы,
@@ -348,12 +348,22 @@ def build_groups(logs):
                     by_char.setdefault(bl.char_key(e), []).append((li, e['t'], b))
     groups = []
     for (s, u), items in by_char.items():
+        mine = []
         for fixed, its in partition(items):
             by_len = collections.defaultdict(list)
             for it in its:
                 by_len[len(it[2])].append(it)
             for n, sub in sorted(by_len.items(), key=lambda kv: -len(kv[1])):
-                groups.append(Group(s, u, fixed, n, sub))
+                mine.append(Group(s, u, fixed, n, sub))
+        # Kinds split only by length (frames a UART bridge cuts into 20-byte notifications:
+        # heads and continuation chunks) would share a pattern, and the page matches by
+        # prefix alone, so give each its own constant leading bytes.
+        pats = collections.Counter(g.pattern for g in mine)
+        for g in mine:
+            if pats[g.pattern] > 1:
+                pk = g.packets
+                g.fixed = {**{i: pk[0][i] for i in range(_const_prefix(pk, 4))}, **g.fixed}
+        groups += mine
     groups.sort(key=lambda g: -len(g.items))
     for i, g in enumerate(groups):
         g.label = chr(65 + i) if i < 26 else 'G%d' % i
@@ -362,6 +372,44 @@ def build_groups(logs):
 
 # ---------------------------------------------------------------- per-field analysis
 
+def _thin(items):
+    if len(items) > MAX_SERIES:
+        step = len(items) / MAX_SERIES
+        items = [items[int(i * step)] for i in range(MAX_SERIES)]
+    return items
+
+
+def wrap_steps(group, off):
+    """Steps of byte `off` that look like the low byte of a wider number rolling over.
+
+    Returns (carries, big, steps): jumps over 128 while byte off+1 moves by one (the carry
+    of a little-endian number), jumps over half the byte's range (and over 64, so a byte
+    flapping 73↔74 does not count), and all steps between neighbouring packets of a log.
+    """
+    items = [(li, b[off], b[off + 1] if off + 1 < len(b) else None) for li, _, b in _thin(group.items) if off < len(b)]
+    vals = [v for _, v, _ in items]
+    rng = max(vals) - min(vals) if vals else 0
+    carries = big = steps = 0
+    prev = {}
+    for li, v, nxt in items:
+        p = prev.get(li)
+        prev[li] = (v, nxt)
+        if p is None:
+            continue
+        steps += 1
+        d = abs(v - p[0])
+        carries += d > 128 and nxt is not None and p[1] is not None and abs(nxt - p[1]) == 1
+        big += d > rng / 2 and d > 64
+    return carries, big, steps
+
+
+def wraps_like_low_byte(group, off, cache):
+    if off not in cache:
+        carries, big, steps = wrap_steps(group, off)
+        cache[off] = carries >= 2 or (big >= 3 and big * 1000 >= steps)
+    return cache[off]
+
+
 class Series:
     """Values of one (offset, type) in a group, split per log."""
 
@@ -369,11 +417,7 @@ class Series:
         self.off, self.typ, self.bit = off, typ, bit
         self.per_log = collections.defaultdict(lambda: ([], []))
         vals = []
-        items = group.items
-        if len(items) > MAX_SERIES:
-            step = len(items) / MAX_SERIES
-            items = [items[int(i * step)] for i in range(MAX_SERIES)]
-        for li, t, b in items:
+        for li, t, b in _thin(group.items):
             v = read_num(b, off, typ)
             if v is None:
                 continue
@@ -502,6 +546,8 @@ def evaluate(group, markers, w, kinds_present):
 
     have = lambda k: k in kinds_present  # noqa: E731
     const = {off for off in range(n) if len({b[off] for b in group.packets}) == 1}
+    wraps = {}
+    WRAP_WHY = 'перескакивает через 0/255 — похоже на младший байт числа пошире'
     for (off, typ), s in series.items():
         if s.n < 5:
             continue
@@ -513,6 +559,8 @@ def evaluate(group, markers, w, kinds_present):
                 continue
         e = {k: s.effect(markers, k, w) for k in kinds_present}
         ev = lambda k: e[k][0] if e.get(k) else 0.0  # noqa: E731
+        # A one-byte speed / charge / temperature must not roll over like the low byte of a wider number.
+        wrapped = lambda: size == 1 and wraps_like_low_byte(group, off, wraps)  # noqa: E731
 
         # speed: rises on throttle, falls on brake and stop, reaches ~0
         if typ in ('u8', 'u16le', 'u16be') and s.distinct > 2:
@@ -524,6 +572,9 @@ def evaluate(group, markers, w, kinds_present):
                 if not (have('throttle') or have('brake')):
                     score = min(score, 0.3)
                 why = [f'{fmt(s.lo * sc)}…{fmt(s.hi * sc)} км/ч при ×{sc}'] + [eff_text(e.get(k), k) for k in ('throttle', 'brake', 'stop') if e.get(k)]
+                if wrapped():
+                    score -= 0.6
+                    why.append(WRAP_WHY)
                 add('speed_kmh', s, score, sc, why)
 
         # current: signed, up on throttle, down on release / brake / charge
@@ -557,13 +608,20 @@ def evaluate(group, markers, w, kinds_present):
                 score += 0.2
             score += 0.3 * clip(ev('charge_on'))
             why = [f'{s.lo}…{s.hi} %', f'меняется в {s.trans:.1%} пакетов'] + ([eff_text(e.get('charge_on'), 'charge_on')] if e.get('charge_on') else [])
+            if wrapped():
+                score -= 0.6
+                why.append(WRAP_WHY)
             add('battery_pct', s, score, 1, why)
 
         # controller temperature
         if typ in ('u8', 's8') and 5 <= s.lo and s.hi <= 90 and s.distinct > 1 and s.trans < 0.03:
             inc, dec = s.monotonic()
             score = 0.2 + (0.15 if inc > dec else 0)
-            add('temp', s, score, 1, [f'{s.lo}…{s.hi} °C', f'меняется в {s.trans:.1%} пакетов'])
+            why = [f'{s.lo}…{s.hi} °C', f'меняется в {s.trans:.1%} пакетов']
+            if wrapped():
+                score -= 0.6
+                why.append(WRAP_WHY)
+            add('temp', s, score, 1, why)
 
         # riding mode: 2–4 small values that change on «Сменил режим»
         if typ == 'u8' and s.hi <= 4 and 2 <= s.distinct <= 4:
@@ -732,18 +790,36 @@ def candidate_decoder(chosen, groups, sources, current):
         version = int(version) + 1
     except (TypeError, ValueError):
         version = 1
-    fields = []
+    fields, needs_uuid, needs_match = [], [], []
+    kinds = collections.Counter((g.s, g.u) for g in groups if len(g.items) >= 5)
     for c in chosen:
         g = c['group']
-        u = bl.norm_uuid(g.u) or g.u
-        fields.append({
-            'key': c['key'], 'name': c['name'] or None, 'uuid': u, 'match': g.pattern, 'offset': c['off'],
+        u = bl.norm_uuid(g.u)
+        f = {
+            'key': c['key'], 'name': c['name'] or None, 'uuid': u or '', 'match': g.pattern, 'offset': c['off'],
             'type': c['type'], 'scale': c['scale'], 'add': 0,
             'confidence': confidence(c['score']), 'evidence': [x for x in c['why'] if x],
-        })
-    for f in fields:
+        }
         if f['name'] is None:
             del f['name']
+        if u and not g.pattern and kinds[(g.s, g.u)] > 1:
+            # No constant leading bytes, yet the characteristic carries other kinds of packets: on the
+            # page an empty match fits all of them, so the field would read the wrong bytes.
+            f['confidence'] = 'низкая'
+            f['evidence'].insert(0, 'у этой группы нет постоянного начала, а на характеристике есть и другие пакеты: '
+                                    'на странице поле сработает на всех — задай «Начало пакета» вручную')
+            needs_match.append(f)
+            continue
+        if u:
+            fields.append(f)
+            continue
+        # A log from parse_btsnoop without GATT discovery has 'handle-0x0012' instead of a UUID;
+        # the page reads that as '' and the field would then match every characteristic.
+        f['handle'] = g.u
+        f['confidence'] = 'низкая'
+        f['evidence'].insert(0, 'UUID характеристики неизвестен' + (f' ({g.u})' if g.u else '')
+                             + ': впиши его вручную, иначе поле сработает на любой характеристике')
+        needs_uuid.append(f)
     checks = []
     for g in groups:
         if g.checksum:
@@ -753,7 +829,7 @@ def candidate_decoder(chosen, groups, sources, current):
         'format': bl.DECODER_FORMAT, 'version': version,
         'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
         'note': 'Черновик tools/analyze_log.py. Проверь поля с низкой уверенностью перед переносом в current.json.',
-        'sources': sources, 'json': False, 'fields': fields, 'checksums': checks,
+        'sources': sources, 'json': False, 'fields': fields, 'needs_uuid': needs_uuid, 'needs_match': needs_match, 'checksums': checks,
     }
 
 
@@ -936,7 +1012,8 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
         for t in tips:
             p('  - ' + t)
 
-    sources = sorted({rel(f) for lg in logs for f in lg['_files']})
+    # Files dropped as re-sends count as read, or --new would pick them again next time.
+    sources = sorted({rel(f) for lg in logs for f in lg['_files'] + lg.get('_dropped', [])})
     current = None
     cur_path = os.path.join(ROOT, 'decoders', 'current.json')
     if os.path.exists(cur_path):
@@ -950,7 +1027,9 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
         with open(out_path, 'w', encoding='utf-8') as fh:
             json.dump(dec, fh, ensure_ascii=False, indent=1)
             fh.write('\n')
-        p(f'\nЧерновик декодера: {rel(out_path)} — полей {len(dec["fields"])}')
+        p(f'\nЧерновик декодера: {rel(out_path)} — полей {len(dec["fields"])}'
+          + (f', без UUID (needs_uuid, впиши вручную) {len(dec["needs_uuid"])}' if dec['needs_uuid'] else '')
+          + (f', без «Начала пакета» (needs_match, задай вручную) {len(dec["needs_match"])}' if dec['needs_match'] else ''))
     return {'logs': logs, 'groups': groups, 'candidates': all_cands, 'chosen': chosen, 'decoder': dec, 'notes': notes}
 
 
