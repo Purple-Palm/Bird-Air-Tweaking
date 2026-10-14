@@ -1,25 +1,4 @@
-const { test, expect, openApp, entries, decodeContent } = require('./helpers');
-
-const TOKEN = 'test-token-0123456789';
-const CONTENTS = /^\/repos\/Purple-Palm\/Bird-Air-Tweaking\/contents\/(.+)$/;
-
-/* Mock api.github.com. reply(req, n) may return {status, body}; default 201 Created. */
-async function mockGitHub(page, reply = () => null) {
-  const puts = [];
-  await page.route('https://api.github.com/**', async route => {
-    const req = route.request(), url = new URL(req.url());
-    const rec = { method: req.method(), path: url.pathname, headers: req.headers(), body: req.postData() ? JSON.parse(req.postData()) : null };
-    if (rec.method === 'PUT') puts.push(rec);
-    const r = reply(rec, puts.length);
-    if (r) return route.fulfill({ status: r.status, contentType: 'application/json', body: JSON.stringify(r.body || {}) });
-    if (rec.method === 'PUT') {
-      const path = decodeURIComponent(url.pathname.match(CONTENTS)[1]);
-      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ content: { path, html_url: 'https://github.com/Purple-Palm/Bird-Air-Tweaking/blob/main/' + path } }) });
-    }
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ full_name: 'Purple-Palm/Bird-Air-Tweaking', private: false, permissions: { push: true } }) });
-  });
-  return puts;
-}
+const { test, expect, openApp, entries, decodeContent, mockGitHub, pathOf, TOKEN } = require('./helpers');
 
 /* A finished demo recording with a token in place. */
 async function ready(page, opts = {}) {
@@ -31,7 +10,6 @@ const send = async page => {
   await page.click('#btnGhSend');
   await expect(page.locator('#ghMsg')).not.toHaveText(/Готовлю|Отправляю/, { timeout: 15000 });
 };
-const pathOf = put => decodeURIComponent(put.path.match(CONTENTS)[1]);
 
 test('uploads an anonymized log with the token only in the header', async ({ page }) => {
   const puts = await mockGitHub(page);

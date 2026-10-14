@@ -1,7 +1,7 @@
 // Playwright tests for the page: npm test (see README, «Тесты»).
 const { defineConfig, devices } = require('@playwright/test');
 
-const PORT = 4173;
+const PORT = Number(process.env.PW_PORT) || 4173;   // PW_PORT=… when several runs share a machine
 
 module.exports = defineConfig({
   testDir: 'tests/e2e',

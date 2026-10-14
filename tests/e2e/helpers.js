@@ -42,4 +42,29 @@ const decodeContent = body => {
   return JSON.parse((buf[0] === 0x1f && buf[1] === 0x8b ? zlib.gunzipSync(buf) : buf).toString('utf8'));
 };
 
-module.exports = { test, expect, openApp, entries, uuid16, decodeContent };
+const TOKEN = 'test-token-0123456789';
+const CONTENTS = /^\/repos\/Purple-Palm\/Bird-Air-Tweaking\/contents\/(.+)$/;
+const pathOf = req => decodeURIComponent(req.path.match(CONTENTS)[1]);
+
+/* Mock api.github.com. reply(req, n) may return {status, body}; default 201 Created with a sha.
+   Returns the PUT requests; DELETE requests land in .deletes. */
+async function mockGitHub(page, reply = () => null) {
+  const puts = [];
+  puts.deletes = [];
+  await page.route('https://api.github.com/**', async route => {
+    const req = route.request(), url = new URL(req.url());
+    const rec = { method: req.method(), path: url.pathname, headers: req.headers(), body: req.postData() ? JSON.parse(req.postData()) : null };
+    if (rec.method === 'PUT') puts.push(rec);
+    if (rec.method === 'DELETE') puts.deletes.push(rec);
+    const r = reply(rec, puts.length);
+    if (r) return route.fulfill({ status: r.status, contentType: 'application/json', body: JSON.stringify(r.body || {}) });
+    if (rec.method === 'PUT' || rec.method === 'DELETE') {
+      const path = pathOf(rec);
+      return route.fulfill({ status: rec.method === 'PUT' ? 201 : 200, contentType: 'application/json', body: JSON.stringify({ content: rec.method === 'PUT' ? { path, sha: 'sha-' + puts.length, html_url: 'https://github.com/Purple-Palm/Bird-Air-Tweaking/blob/main/' + path } : null }) });
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ full_name: 'Purple-Palm/Bird-Air-Tweaking', private: false, permissions: { push: true } }) });
+  });
+  return puts;
+}
+
+module.exports = { test, expect, openApp, entries, uuid16, decodeContent, mockGitHub, pathOf, TOKEN };

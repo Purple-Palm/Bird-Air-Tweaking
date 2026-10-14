@@ -70,6 +70,10 @@
       <span id="idleText">Подключи самокат, загрузи записанный лог или включи демо.</span>
       <button class="btn btn-sm" id="btnDemoStart" type="button">Показать демо</button>
     </div>
+    <div class="banner" id="rawBanner" hidden>
+      <span id="rawText"></span>
+      <button class="btn btn-sm btn-primary" id="btnRawSend" type="button">Отправить лог</button>
+    </div>
 
     <div class="cluster">
       <div class="tile big" id="tBattery">
@@ -248,6 +252,7 @@
         <label class="f">Ветка<input id="ghBranch" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
         <label class="f">Папка<input id="ghFolder" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
       </div>
+      <label class="check"><input type="checkbox" id="ghAuto"><span>Отправлять лог сам<small>Пока самокат на связи — раз в 5 минут и сразу при отключении. Один файл на поездку, он дописывается. Демо и логи из файла не отправляются.</small></span></label>
       <label class="f">Fine-grained personal access token<input id="ghToken" type="password" class="mono" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="вставь токен"></label>
       <p class="hint">Создай токен на <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>: Repository access → Only select repositories → этот репозиторий; Permissions → Contents: Read and write. Токен хранится только в этом браузере и не попадает ни в логи, ни в экспорт.</p>
       <div class="row">

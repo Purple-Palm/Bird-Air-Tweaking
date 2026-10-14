@@ -560,6 +560,7 @@ async function unsubscribe(info) {
   renderExplorerButtons();
 }
 function onDisconnected() {
+  setTimeout(() => autoSend(true), 300);
   for (const info of state.chars.values()) {
     if (info.obj && info.handler) info.obj.removeEventListener('characteristicvaluechanged', info.handler);
     info.subscribed = false;
@@ -729,7 +730,19 @@ function renderBanners() {
       : 'Подключи самокат, загрузи записанный лог или включи демо.';
   }
 }
+/* Connected but nothing decodes yet: say why the gauges are empty and what to do. */
+function renderRawBanner() {
+  const S = state.session, d = decoder;
+  const raw = state.conn === 'connected' && !state.demo && d && !d.fields.length && !d.json;
+  $('#rawBanner').hidden = !raw;
+  if (!raw) return;
+  const n = S ? S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length : 0;
+  const t = 'Самокат на связи, пакетов: ' + n + '. Цифр на приборах пока нет: протокол ещё не расшифрован, декодер пустой. '
+    + (ghCfg.auto && ghToken() ? 'Лог уходит в GitHub сам — напиши мне «новый лог».' : 'Отправь лог и напиши мне «новый лог»: я найду, где лежат скорость, заряд и ток.');
+  if ($('#rawText').textContent !== t) $('#rawText').textContent = t;
+}
 function renderDashboard() {
+  renderRawBanner();
   const mph = settings.units === 'mph';
   /* battery */
   const soc = socNow();
@@ -1250,7 +1263,7 @@ function clearLog() {
    GitHub upload
    ============================================================ */
 /* fileMax: bytes per file before base64 — the contents API reads files up to 1 MB back. */
-const GH = { api: 'https://api.github.com', fileMax: 1024 * 1024, maxParts: 200 };
+const GH = { api: 'https://api.github.com', fileMax: 1024 * 1024, maxParts: 200, autoEvery: 5 * 60 * 1000, autoTick: 30 * 1000 };
 function ghDefaults() {
   const m = location.hostname.match(/^([a-z0-9-]+)\.github\.io$/i);
   const seg = location.pathname.split('/').filter(Boolean)[0];
@@ -1275,7 +1288,7 @@ function ghBase() { const S = state.session; return stamp(S.startedAt) + '-' + s
 function ghPath(name) { const f = String(ghCfg.folder || '').replace(/^\/+|\/+$/g, ''); return (f ? f + '/' : '') + name; }
 function renderGhName() {
   const el = $('#ghName'), S = state.session;
-  const t = S && S.entries.length ? 'Файл: ' + ghPath(ghBase()) + '.json (большой — .json.gz)' : '';
+  const t = !S || !S.entries.length ? '' : S.gh ? 'Файл: ' + S.gh.files.map(f => f.path).join(', ') + ' — при новой отправке он перезапишется' : 'Файл: ' + ghPath(ghBase()) + '.json (большой — .json.gz)';
   if (el.textContent !== t) el.textContent = t;
 }
 
@@ -1361,8 +1374,11 @@ async function ghFetch(method, path, body) {
   if (!r.ok) throw ghError(r.status, data && data.message);
   return data;
 }
-const ghPut = (path, bytes, message) =>
-  ghFetch('PUT', '/contents/' + path.split('/').map(encodeURIComponent).join('/'), { message, content: b64(bytes), branch: ghCfg.branch });
+const contentsUrl = path => '/contents/' + path.split('/').map(encodeURIComponent).join('/');
+/* sha: the file's current blob when overwriting one this page already sent. */
+const ghPut = (path, bytes, message, sha) =>
+  ghFetch('PUT', contentsUrl(path), { message, content: b64(bytes), branch: ghCfg.branch, ...(sha ? { sha } : {}) });
+const ghDelete = (path, sha, message) => ghFetch('DELETE', contentsUrl(path), { message, sha, branch: ghCfg.branch });
 
 function showGhSettings() {
   showTab('data');
@@ -1371,45 +1387,67 @@ function showGhSettings() {
   const empty = ['#ghOwner', '#ghRepo', '#ghBranch', '#ghToken'].map(s => $(s)).find(el => !el.value.trim());
   (empty || $('#ghToken')).focus({ preventScroll: true });
 }
-async function sendToGitHub() {
+/* One recording = one log in the repository: sending again (by hand or automatically) overwrites the
+   files sent before, using the sha GitHub returned, and removes ones the new packing no longer uses. */
+let ghBusy = false;
+async function sendToGitHub(auto) {
   const S = state.session, msg = $('#ghMsg'), btn = $('#btnGhSend');
-  if (!S || !S.entries.length) { flash(msg, 'Лог пуст — нечего отправлять.', true); return; }
-  if (!ghCfg.owner || !ghCfg.repo || !ghCfg.branch) { flash(msg, 'Заполни owner, репозиторий и ветку в настройках GitHub.', true); showGhSettings(); return; }
-  if (!ghToken()) { flash(msg, 'Нет токена: вставь fine-grained токен в настройках GitHub.', true); showGhSettings(); return; }
-  const anon = $('#ghAnon').checked, n = S.entries.length;
-  if (S.gh && S.gh.entries === n && S.gh.anon === anon) { ghDone(msg, 'Этот лог уже отправлен: ', S.gh.files); return; }
-  btn.disabled = true;
+  if (ghBusy) return;
+  if (!S || !S.entries.length) { if (!auto) flash(msg, 'Лог пуст — нечего отправлять.', true); return; }
+  if (!ghCfg.owner || !ghCfg.repo || !ghCfg.branch) { if (!auto) { flash(msg, 'Заполни owner, репозиторий и ветку в настройках GitHub.', true); showGhSettings(); } return; }
+  if (!ghToken()) { if (!auto) { flash(msg, 'Нет токена: вставь fine-grained токен в настройках GitHub.', true); showGhSettings(); } return; }
+  const anon = $('#ghAnon').checked, n = S.entries.length, prev = S.gh;
+  if (prev && prev.entries === n && prev.anon === anon) { if (!auto) ghDone(msg, 'Этот лог уже отправлен: ', prev.files); return; }
+  ghBusy = true; btn.disabled = true;
+  const say = text => { if (!auto) flash(msg, text); };
   try {
     const o = sessionObject();
     if (anon) anonymizeLog(o);
-    flash(msg, 'Готовлю файл…');
-    /* Names come from the recording's start time; if one is taken (sent before a reload), add -2, -3… */
+    say('Готовлю файл…');
+    const old = prev && prev.anon === anon ? prev : null;
+    const shas = new Map(old ? old.files.map(f => [f.path, f.sha]) : []);
+    /* A fresh name comes from the recording's start; if it is taken (sent before a reload), add -2, -3… */
     for (let attempt = 1; ; attempt++) {
-      const base = ghBase() + (attempt > 1 ? '-' + attempt : '');
+      const base = old ? old.base : ghBase() + (attempt > 1 ? '-' + attempt : '');
       const files = await packLog(o, base), sent = [];
       try {
         for (const [i, f] of files.entries()) {
-          if (files.length > 1) flash(msg, 'Отправляю часть ' + (i + 1) + ' из ' + files.length + '…');
-          else flash(msg, 'Отправляю ' + nf(f.bytes.length / 1024, 0) + ' КБ…');
+          say(files.length > 1 ? 'Отправляю часть ' + (i + 1) + ' из ' + files.length + '…' : 'Отправляю ' + nf(f.bytes.length / 1024, 0) + ' КБ…');
           const path = ghPath(f.name);
-          const r = await ghPut(path, f.bytes, 'Лог ' + base + ': ' + n + ' записей' + (files.length > 1 ? ', часть ' + (i + 1) + ' из ' + files.length : ''));
-          sent.push({ path, url: r && r.content && r.content.html_url, size: f.bytes.length });
+          const r = await ghPut(path, f.bytes, 'Лог ' + base + ': ' + n + ' записей' + (files.length > 1 ? ', часть ' + (i + 1) + ' из ' + files.length : '') + (auto ? ' (автоотправка)' : ''), shas.get(path));
+          sent.push({ path, url: r && r.content && r.content.html_url, sha: r && r.content && r.content.sha, size: f.bytes.length });
         }
       } catch (e) {
-        if (e.status === 422 && /sha/i.test(e.ghMessage) && !sent.length && attempt < 9) continue;
+        if (!old && e.status === 422 && /sha/i.test(e.ghMessage) && !sent.length && attempt < 9) continue;
         throw e;
       }
-      S.gh = { entries: n, anon, files: sent };
+      for (const f of old ? old.files : []) {
+        if (!sent.some(x => x.path === f.path) && f.sha) await ghDelete(f.path, f.sha, 'Лог ' + base + ': старая упаковка').catch(() => {});
+      }
+      S.gh = { base, entries: n, anon, files: sent, at: Date.now() };
       S.exported = true;
-      ghDone(msg, 'Отправлено: ', sent);
+      ghDone(msg, (auto ? 'Автоотправка ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + ': ' : 'Отправлено: '), sent);
       return;
     }
   } catch (e) {
-    flash(msg, e.message || String(e), true);
+    flash(msg, (auto ? 'Автоотправка не удалась: ' : '') + (e.message || String(e)), true);
+    if (auto && S.gh) S.gh.at = Date.now();   /* do not retry every tick */
+    else if (auto) S.ghFailedAt = Date.now();
   } finally {
-    btn.disabled = false;
+    ghBusy = false; btn.disabled = false;
   }
 }
+/* Automatic sending: live sessions only (not the demo, not a log from a file). */
+function autoSendDue(force) {
+  const S = state.session;
+  if (!ghCfg.auto || !ghToken() || !S || S.demo || S.offline || !S.live) return false;
+  if (!S.entries.some(e => e.k === 'rx' || e.k === 'rd')) return false;
+  if (S.gh && S.gh.entries === S.entries.length) return false;
+  if (force) return true;
+  const last = Math.max(S.gh ? S.gh.at : S.startedAt, S.ghFailedAt || 0);
+  return Date.now() - last >= GH.autoEvery;
+}
+function autoSend(force) { if (autoSendDue(force)) sendToGitHub(true); }
 function ghDone(msg, lead, files) {
   msg.classList.remove('err');
   msg.replaceChildren(lead, ...files.flatMap((f, i) => [i ? ', ' : '', f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener', text: f.path }) : f.path]),
@@ -1427,7 +1465,7 @@ async function checkGitHub() {
   } catch (e) { flash(msg, e.message, true); }
 }
 function bindGitHub() {
-  const save = () => store.set('bal.gh', { owner: ghCfg.owner, repo: ghCfg.repo, branch: ghCfg.branch, folder: ghCfg.folder });
+  const save = () => store.set('bal.gh', { owner: ghCfg.owner, repo: ghCfg.repo, branch: ghCfg.branch, folder: ghCfg.folder, auto: !!ghCfg.auto });
   for (const k of ['owner', 'repo', 'branch', 'folder']) {
     const el = $('#gh' + k[0].toUpperCase() + k.slice(1));
     el.value = ghCfg[k] || '';
@@ -1438,9 +1476,14 @@ function bindGitHub() {
   tok.addEventListener('input', () => { const v = tok.value.trim(); if (v) store.set('bal.gh.token', v); else store.del('bal.gh.token'); });
   $('#ghForget').addEventListener('click', () => { store.del('bal.gh.token'); tok.value = ''; flash($('#ghSetMsg'), 'Токен удалён из этого браузера.'); });
   $('#ghCheck').addEventListener('click', checkGitHub);
-  $('#btnGhSend').addEventListener('click', sendToGitHub);
+  $('#btnGhSend').addEventListener('click', () => sendToGitHub(false));
   $('#btnGhSetup').addEventListener('click', showGhSettings);
   $('#ghLabel').addEventListener('input', renderGhName);
+  const auto = $('#ghAuto');
+  auto.checked = !!ghCfg.auto;
+  auto.addEventListener('change', () => { ghCfg.auto = auto.checked; save(); if (auto.checked && !ghToken()) flash($('#ghSetMsg'), 'Для автоотправки нужен токен.', true); });
+  (function tick() { autoSend(false); setTimeout(tick, GH.autoTick); })();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') autoSend(true); });
 }
 
 /* ============================================================
@@ -1893,6 +1936,7 @@ $('#btnTable').addEventListener('click', e => {
   if (state.showTable) renderChartTable();
 });
 $('#btnConnect').addEventListener('click', connect);
+$('#btnRawSend').addEventListener('click', () => { showTab('data'); $('#ghBox').scrollIntoView({ behavior: 'smooth', block: 'start' }); sendToGitHub(false); });
 $('#btnDisconnect').addEventListener('click', disconnect);
 $('#btnDemoStop').addEventListener('click', () => stopDemo(false));
 $('#btnDemoStart').addEventListener('click', startDemo);
@@ -1944,5 +1988,5 @@ if (!bleSupported()) { const pill = $('#connPill'); pill.dataset.tone = 'crit'; 
 renderDecoder();
 checkDecoderUpdate();
 requestRender(true);
-window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate };
+window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend };
 })();
