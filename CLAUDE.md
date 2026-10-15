@@ -6,7 +6,7 @@
 2AWV7029757739). BLE-модуль Wi-linktech WLT8266BM (Telink TLSR8266), BLE 4.2. Батарея 36 В
 10S2P 5,2 А·ч, зарядка 42 В 2 А. Режимы TAKEOFF 9 mph / GLIDE 12,5 mph / FLY 16 mph. Телефон
 владельца — Galaxy S21, Chrome. Сайт: https://purple-palm.github.io/Bird-Air-Tweaking/
-(GitHub Pages из `main`, `.github/workflows/pages.yml`).
+(GitHub Pages из `main` или ветки-источника Pages, `.github/workflows/pages.yml`).
 
 ## Жёсткие правила
 
