@@ -35,10 +35,15 @@
       this.dispatchEvent(new Event('characteristicvaluechanged'));   // Chrome fires it on reads too
       return this.value;
     }
-    async startNotifications() { this._op('startNotifications'); this._notifying = true; return this; }
+    async startNotifications() {
+      this._op('startNotifications');
+      if (failNext('notify', this.uuid)) throw new DOMException('GATT operation failed for unknown reason.', 'NetworkError');
+      this._notifying = true; return this;
+    }
     async stopNotifications() { calls.push(['stopNotifications', this.uuid]); this._notifying = false; return this; }
     async writeValue(v) {
       this._op('write');
+      if (failNext('write', this.uuid)) { calls.push(['writeFailed', this.uuid, hex(v)]); throw new DOMException('GATT operation already in progress.', 'NetworkError'); }
       calls.push(['writeData', this.uuid, hex(v)]);
       if (this.uuid === full('ffe1')) dashWrite(view(v).slice());
     }
@@ -52,6 +57,14 @@
     }
   }
 
+  /* fake.fail = { notify: { ffe1: 1 }, write: { ffe1: 2 } } — the next n operations of that kind on that
+     characteristic fail like Android's GATT errors do. */
+  function failNext(kind, uuid) {
+    const m = fake.fail && fake.fail[kind];
+    if (!m) return false;
+    for (const k of Object.keys(m)) if (full(k) === uuid && m[k] > 0) { m[k]--; return true; }
+    return false;
+  }
   const services = [];
   function service(uuid, chars) {
     const s = { uuid: full(uuid), isPrimary: true, device };
@@ -70,7 +83,7 @@
   service('00010203-0405-0607-0809-0a0b0c0d1912', [['00010203-0405-0607-0809-0a0b0c0d2b12', { read: true, write: true, writeWithoutResponse: true, notify: true }, [0]]]);
 
   const fake = {
-    device, services, calls, failConnects: 0, discoverDelay: 0, connectDelay: 0, requestError: null, dash: null,
+    device, services, calls, failConnects: 0, discoverDelay: 0, connectDelay: 0, requestError: null, dash: null, fail: null,
     get connected() { return connected; },
     char(u) { for (const s of services) for (const c of s._chars) if (c.uuid === full(u)) return c; return null; },
     notify(u, bytes) { return this.char(u)._emit(bytes); },

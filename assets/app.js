@@ -279,7 +279,8 @@ const MAX_ENTRIES = 250000, TRIM_STEP = 10000;
 function newTel() { return { vals: new Map(), whOut: 0, whIn: 0, lastPT: null, powerTouched: false, jsonBuf: new Map(), frames: newFrames(), rxT: null }; }
 function newSession(o) {
   /* pushed counts every entry ever added; savedMark is its value at the last download, copy or send */
-  state.session = { startedAt: Date.now(), t0: performance.now(), entries: [], pushed: 0, savedMark: 0, trimmed: false, live: false, offline: false, demo: false, device: null, ...o };
+  /* nData: rx/rd entries in entries; markers: the mk entries — kept as we go, so renders never scan the log */
+  state.session = { startedAt: Date.now(), t0: performance.now(), entries: [], pushed: 0, savedMark: 0, trimmed: false, live: false, offline: false, demo: false, device: null, nData: 0, markers: [], ...o };
   state.tel = newTel(); state.series = []; state.charStats = new Map(); state.rxTimes = []; state.hoverT = null; state.rollMax = 300;
   state.an.off = null;
   clearTimeout(state.wake.timer);
@@ -519,7 +520,15 @@ function pushEntry(e) {
   if (e.h && !e.b) e.b = hexToBytes(e.h) || new Uint8Array(0);
   S.entries.push(e);
   S.pushed++;
-  if (S.entries.length > MAX_ENTRIES + TRIM_STEP) { S.entries.splice(0, S.entries.length - MAX_ENTRIES); S.trimmed = true; }
+  if (e.k === 'rx' || e.k === 'rd') S.nData++;
+  else if (e.k === 'mk') S.markers.push(e);
+  if (S.entries.length > MAX_ENTRIES + TRIM_STEP) {
+    const cut = S.entries.length - MAX_ENTRIES;
+    for (let i = 0; i < cut; i++) { const k = S.entries[i].k; if (k === 'rx' || k === 'rd') S.nData--; }
+    const gone = new Set(S.markers.length ? S.entries.slice(0, cut).filter(x => x.k === 'mk') : []);
+    S.entries.splice(0, cut); S.trimmed = true;
+    if (gone.size) S.markers = S.markers.filter(m => !gone.has(m));
+  }
   if (e.k === 'rx' || e.k === 'rd') {
     const key = e.s + '|' + e.u;
     const st = state.charStats.get(key) || { s: e.s, u: e.u, count: 0 };
@@ -633,6 +642,8 @@ async function connect() {
   state.device = dev;
   state.manual = false;
   state.reconnectN = 0;
+  state.hadFfe1 = false;
+  state.live.on = false;   /* a new pick from the chooser: «Живые данные» start again only by a tap or «Включать сами» */
   newSession({ live: true, device: { name: dev.name || '(без имени)', id: dev.id } });
   state.gatt = []; state.chars = new Map();
   dev.addEventListener('gattserverdisconnected', onDisconnected);
@@ -655,6 +666,16 @@ async function openGatt() {
   stale();
   await discover(stale);
   stale();
+  /* A reconnect to the scooter must bring FFE1 back with notifications. A half-done discovery or a failed
+     subscription on a link that stays up would show «На связи» with no data for the rest of the ride:
+     drop the link and let scheduleReconnect() try again. */
+  const f1 = ffe1Char();
+  if (state.hadFfe1 && (!f1 || !f1.subscribed)) {
+    sys('После переподключения ' + (f1 ? 'подписка на 0xFFE1 не удалась' : '0xFFE1 не нашлась') + ' — переподключаюсь ещё раз', true);
+    try { dev.gatt.disconnect(); } catch { /* ignore */ }
+    throw Object.assign(new Error('0xFFE1 не поднялась после переподключения'), { name: 'NetworkError' });
+  }
+  if (f1 && f1.subscribed) state.hadFfe1 = true;
   setConn('connected', dev.name || '(без имени)');
   sys('Подключено');
   armWake(gen);
@@ -742,7 +763,7 @@ function onDisconnected() {
     if (info.obj && info.handler) info.obj.removeEventListener('characteristicvaluechanged', info.handler);
     info.subscribed = false;
   }
-  releaseWakeLock();
+  if (state.manual || !settings.autoReconnect) releaseWakeLock();   /* reconnecting: keep the screen on */
   if (state.manual) { setConn('idle'); sys('Отключено'); renderExplorerButtons(); return; }
   sys('Связь потеряна', true);
   renderExplorerButtons();
@@ -750,8 +771,8 @@ function onDisconnected() {
 }
 function scheduleReconnect() {
   clearTimeout(state.reconnectTimer);
-  if (state.manual || !state.device) { setConn('idle'); return; }
-  if (!settings.autoReconnect) { setConn('idle', 'связь потеряна'); return; }
+  if (state.manual || !state.device) { state.live.on = false; releaseWakeLock(); setConn('idle'); return; }
+  if (!settings.autoReconnect) { state.live.on = false; releaseWakeLock(); setConn('idle', 'связь потеряна'); return; }
   state.reconnectN++;
   const delay = Math.min(10000, 1000 * Math.pow(2, state.reconnectN - 1));
   setConn('reconnecting', 'через ' + Math.round(delay / 1000) + ' с');
@@ -785,7 +806,7 @@ async function acquireWakeLock() {
 }
 function releaseWakeLock() { if (state.wakeLock) { try { state.wakeLock.release(); } catch { /* ignore */ } state.wakeLock = null; } }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && (state.conn === 'connected' || state.conn === 'demo')) acquireWakeLock();
+  if (document.visibilityState === 'visible' && (state.conn === 'connected' || state.conn === 'reconnecting' || state.conn === 'demo')) acquireWakeLock();
 });
 
 /* ============================================================
@@ -923,7 +944,7 @@ function renderRawBanner(wakeShown) {
   const raw = state.conn === 'connected' && !state.demo && d && !d.fields.length && !d.json && !wakeShown;
   $('#rawBanner').hidden = !raw;
   if (!raw) return;
-  const n = S ? S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length : 0, nf_ = state.tel.frames.total;
+  const n = S ? S.nData : 0, nf_ = state.tel.frames.total;
   const repo = [decSrc.repo, decSrc.remote].find(x => x && x.fields && x.fields.length);
   const t = nf_
     ? 'Самокат на связи, пакетов: ' + n + ', из них кадров контроллера: ' + nf_ + '. Цифр на приборах нет: выбран пустой декодер. '
@@ -934,7 +955,8 @@ function renderRawBanner(wakeShown) {
 }
 /* The dashboard stays silent until the phone writes a «+…» command. Connected to the real scooter and
    no frame for WAKE.silent ms: offer +SVGT=? (a read-only version query). */
-const WAKE = { silent: 3000, auto: 1000, retry: 3000, pulse: 3000 };
+/* pulse 2.5 s against the dash's ~4.5 s window; a failed pulse is retried after failRetry ms */
+const WAKE = { silent: 3000, auto: 1000, retry: 3000, pulse: 2500, failRetry: 400 };
 /* When data last came: a controller frame or any decoded notification (a JSON board, raw-packet fields). */
 function lastLiveT() {
   const T = state.tel;
@@ -985,7 +1007,8 @@ async function sendWake(auto, quiet) {
   } catch (e) { if (!quiet) flash(msg, 'Не отправилось: ' + errText(e), true); return false; }
 }
 /* «Живые данные». The dashboard streams for ~4.5 s after each command and then goes quiet
-   (logs/20261014-175429-log.json), so while this is on the page sends +SVGT=? every WAKE.pulse ms.
+   (logs/20261014-175429-log.json), so while this is on the page sends +SVGT=? every WAKE.pulse ms
+   (and right before packing a log for GitHub, which can block the page for a second or two).
    A pulse is checked on every notification (Chrome throttles timers in a hidden tab but still
    delivers notifications) and on a 1 s timer (restarts a stream that stopped). Only ever these
    7 bytes, only to FFE1, only while connected to the real scooter; «Отключить» turns it off. */
@@ -1001,7 +1024,14 @@ async function livePulse(auto = true, first = false) {
   if (!L.on || L.busy || state.conn !== 'connected' || state.demo || !state.session || state.session.offline || !ffe1Char()) return false;
   if (performance.now() - L.sentAt < WAKE.pulse) return false;
   L.busy = true; L.sentAt = performance.now();
-  try { return await sendWake(auto, !first); } finally { L.busy = false; }
+  try {
+    const ok = await sendWake(auto, !first);
+    if (!ok) {
+      L.sentAt = performance.now() - WAKE.pulse + WAKE.failRetry;
+      if (!L.failing) { L.failing = true; sys('Живые данные: запрос +SVGT=? не ушёл — повторяю', true); }
+    } else if (L.failing) { L.failing = false; sys('Живые данные: запросы снова уходят'); }
+    return ok;
+  } finally { L.busy = false; }
 }
 function renderLiveBar() {
   const on = state.live.on && !state.demo && (state.conn === 'connected' || state.conn === 'reconnecting');
@@ -1100,7 +1130,7 @@ function renderDashboard() {
   setVal($('#mRate .val'), S ? (live ? nf(rate, 1) : nf(S.entries.length, 0)) : '—', S ? (live ? 'пак/с' : 'записей') : '');
   $('#mRate').classList.toggle('stale', !S || (live && rate === 0));
   const F = state.tel && state.tel.frames;
-  $('#mRateSub').textContent = S ? 'всего ' + nf(S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length, 0) + ' пакетов' + (F && F.total ? ', кадров ' + nf(F.total, 0) : '') : 'пакеты от самоката';
+  $('#mRateSub').textContent = S ? 'всего ' + nf(S.nData, 0) + ' пакетов' + (F && F.total ? ', кадров ' + nf(F.total, 0) : '') : 'пакеты от самоката';
   /* custom fields */
   const cust = decoder.fields.filter(f => f.key === 'custom');
   const box = $('#customs');
@@ -1270,7 +1300,7 @@ function chartRange() {
   const S = state.session, end = nowT();
   if (state.win === 'all' || (S && S.offline && state.win === 'all')) {
     const first = state.series.length ? state.series[0].t : 0;
-    const mk = S ? S.entries.find(e => e.k === 'mk') : null;
+    const mk = S ? S.markers[0] : null;
     const start = Math.min(first, mk ? mk.t : first);
     return { start, end: Math.max(end, start + 10000), rel: false };
   }
@@ -1283,7 +1313,7 @@ function drawPowerChart() {
   const S = state.session;
   const r = chartRange();
   const pts = state.series.map(p => ({ t: p.t, y: p.p, src: p }));
-  const markers = S ? S.entries.filter(e => e.k === 'mk') : [];
+  const markers = S ? S.markers : [];
   const geo = drawSeries(cv, pts, {
     start: r.start, end: r.end, rel: r.rel, signed: true, color: C.draw, colorNeg: C.flow, markers, hoverT: state.hoverT, minSpan: 100,
     empty: !S ? 'Подключи самокат или включи демо' : 'Нет мощности: в декодере нет тока или мощности',
@@ -1593,7 +1623,7 @@ function loadLogObject(o, fileName, note) {
 function clearLog() {
   const S = state.session;
   if (!S) return;
-  S.entries = []; S.gh = null; S.savedMark = S.pushed;
+  S.entries = []; S.nData = 0; S.markers = []; S.gh = null; S.savedMark = S.pushed;
   S.startedAt = Date.now(); S.t0 = performance.now();   /* a new recording: its own file name */
   if (state.wake.connAt != null) state.wake = { ...state.wake, connAt: 0, sentAt: null, since: null };   /* the clock restarted */
   state.series = []; state.tel = newTel(); state.charStats = new Map();
@@ -1701,8 +1731,12 @@ function b64(u8) {
   return btoa(s);
 }
 /* Plain .json while it fits, then .json.gz, then parts that are each a complete log with part {id, index, count}. */
+/* Lets queued tasks (BLE notifications, the pulse) run between heavy steps; unlike setTimeout it is not
+   throttled in a hidden tab. */
+const yieldTask = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
 async function packLog(o, base) {
   const raw = new TextEncoder().encode(JSON.stringify(o));
+  await yieldTask();
   if (raw.length <= GH.fileMax) return [{ name: base + '.json', bytes: raw }];
   const gz = typeof CompressionStream === 'function';
   let size = raw.length;
@@ -1716,6 +1750,7 @@ async function packLog(o, base) {
     const per = Math.ceil(o.entries.length / n), count = Math.ceil(o.entries.length / per), files = [];
     for (let i = 0; i < count; i++) {
       const part = { ...o, part: { id: base, index: i + 1, count }, entries: o.entries.slice(i * per, (i + 1) * per) };
+      await yieldTask();
       const json = new TextEncoder().encode(JSON.stringify(part));
       const bytes = gz ? await gzipBytes(json) : json;
       if (bytes.length > GH.fileMax) break;
@@ -1773,9 +1808,10 @@ function showGhSettings() {
 /* One recording = one log in the repository: sending again (by hand or automatically) overwrites the
    files sent before, using the sha GitHub returned, and removes ones the new packing no longer uses. */
 let ghBusy = false;
-async function sendToGitHub(auto) {
+let ghAgain = false;   /* a forced send (link drop, page hidden) came while another one was uploading */
+async function sendToGitHub(auto, forced) {
   const S = state.session, msg = $('#ghMsg'), btn = $('#btnGhSend');
-  if (ghBusy) return;
+  if (ghBusy) { if (forced) ghAgain = true; return; }
   if (!S || !S.entries.length) { if (!auto) flash(msg, 'Лог пуст — нечего отправлять.', true); return; }
   if (!ghCfg.owner || !ghCfg.repo || !ghCfg.branch) { if (!auto) { flash(msg, 'Заполни owner, репозиторий и ветку в настройках GitHub.', true); showGhSettings(); } return; }
   if (!ghToken()) { if (!auto) { flash(msg, 'Нет токена: вставь fine-grained токен в настройках GitHub.', true); showGhSettings(); } return; }
@@ -1785,8 +1821,11 @@ async function sendToGitHub(auto) {
   const say = text => { if (!auto) flash(msg, text); };
   const mark = S.pushed;
   try {
+    if (state.live.on) { state.live.sentAt = -Infinity; await livePulse(); }   /* a fresh ~4.5 s window before the heavy part */
     const o = sessionObject();
+    await yieldTask();
     if (anon) anonymizeLog(o);
+    await yieldTask();
     say('Готовлю файл…');
     const old = prev && prev.anon === anon && prev.dest === dest ? prev : null;
     const shas = new Map(old ? old.files.map(f => [f.path, f.sha]) : []);
@@ -1819,6 +1858,7 @@ async function sendToGitHub(auto) {
     else if (auto) S.ghFailedAt = Date.now();
   } finally {
     ghBusy = false; btn.disabled = false;
+    if (ghAgain) { ghAgain = false; setTimeout(() => autoSend(true), 0); }
   }
 }
 /* Automatic sending: live sessions only (not the demo, not a log from a file). */
@@ -1831,7 +1871,7 @@ function autoSendDue(force) {
   const last = Math.max(S.gh ? S.gh.at : S.startedAt, S.ghFailedAt || 0);
   return Date.now() - last >= GH.autoEvery;
 }
-function autoSend(force) { if (autoSendDue(force)) sendToGitHub(true); }
+function autoSend(force) { if (autoSendDue(force)) sendToGitHub(true, force); }
 function ghDone(msg, lead, files) {
   msg.classList.remove('err');
   msg.replaceChildren(lead, ...files.flatMap((f, i) => [i ? ', ' : '', f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener', text: f.path }) : f.path]),
@@ -1923,14 +1963,14 @@ function renderAnalyzer(force) {
     const C = tokens();
     const S = state.session;
     const start = pts.length ? pts[0].t : 0, end = pts.length ? Math.max(pts[pts.length - 1].t, start + 2000) : 1;
-    drawSeries($('#anPlot'), pts, { start, end, rel: false, signed: false, color: C.raw, markers: S ? S.entries.filter(e => e.k === 'mk') : [], minSpan: 2, gap: 5000, empty: 'Нет значений' });
+    drawSeries($('#anPlot'), pts, { start, end, rel: false, signed: false, color: C.raw, markers: S ? S.markers : [], minSpan: 2, gap: 5000, empty: 'Нет значений' });
   }
   renderMarkerDiff(pk);
 }
 function renderMarkerDiff(pk) {
   const S = state.session;
   const sel = $('#anMk');
-  const mks = S ? S.entries.filter(e => e.k === 'mk') : [];
+  const mks = S ? S.markers : [];
   const cur = sel.value;
   sel.replaceChildren(...(mks.length ? mks.map((m, k) => h('option', { value: String(k), text: tfmt(m.t) + ' · ' + m.n })) : [h('option', { value: '', text: 'Меток пока нет' })]));
   if (cur && Number(cur) < mks.length) sel.value = cur; else if (mks.length) sel.value = String(mks.length - 1);

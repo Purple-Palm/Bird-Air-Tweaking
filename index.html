@@ -80,7 +80,7 @@
       <p class="msg" id="wakeMsg"></p>
     </div>
     <div class="banner" id="liveBar" role="status" hidden>
-      <span>Живые данные: раз в 3 с телефон шлёт рулю безопасный запрос <code>+SVGT=?</code> — без него руль замолкает через ~4,5 с.</span>
+      <span>Живые данные: каждые 2,5 с телефон шлёт рулю безопасный запрос <code>+SVGT=?</code> — без него руль замолкает через ~4,5 с.</span>
       <span class="row">
         <button class="btn btn-sm" id="btnLiveOff" type="button">Выключить</button>
         <label class="check"><input type="checkbox" id="gpsSpeed"><span>Скорость по GPS в лог (без координат)</span></label>
@@ -266,7 +266,7 @@
       <label class="check"><input type="checkbox" id="setWake"><span>Не гасить экран, пока самокат подключён</span></label>
       <label class="check"><input type="checkbox" id="setWrite"><span>Разрешить отправку команд в самокат<small>Только для разбора протокола. По умолчанию выключено.</small></span></label>
       <label class="check"><input type="checkbox" id="setGps"><span>Скорость по GPS в лог<small>Пока идёт запись с самоката, в лог пишется скорость телефона по GPS (только скорость и точность, без координат) — по ней найдём байт скорости. До этого она же на спидометре. По умолчанию выключено.</small></span></label>
-      <label class="check"><input type="checkbox" id="setAutoWake"><span>Живые данные сами при подключении<small>Руль шлёт данные ~4,5 с после каждой команды с телефона. Через секунду после подключения страница включит «Живые данные»: раз в 3 с безопасный запрос версии <code>+SVGT=?</code>. По умолчанию выключено.</small></span></label>
+      <label class="check"><input type="checkbox" id="setAutoWake"><span>Живые данные сами при подключении<small>Руль шлёт данные ~4,5 с после каждой команды с телефона. Через секунду после подключения страница включит «Живые данные»: каждые 2,5 с безопасный запрос версии <code>+SVGT=?</code>. По умолчанию выключено.</small></span></label>
     </div>
 
     <div class="card" id="ghCard">
