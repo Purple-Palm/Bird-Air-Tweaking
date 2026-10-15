@@ -56,7 +56,7 @@ object Watch {
                         f.get()
                         say("Открываю на часах «${node.displayName}»…")
                     } catch (e: Exception) {
-                        say("Часы не открыли приложение: поставь Bird Air на часы (тот же APK из android/wear) или открой его там сам.", true)
+                        say("Часы не открыли приложение: поставь на часы bird-air-watch.apk из того же релиза (android/README.md) или открой Bird Air там сам.", true)
                     } finally { exec.shutdown() }
                 }, exec)
             } catch (e: Exception) {

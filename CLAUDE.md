@@ -34,6 +34,10 @@
   `tools/birdlog.py`.
 - Тесты: `python3 -m unittest discover -s tests` и `npx playwright test` (нужен `npm ci`).
   Браузеры Playwright 1.56.1 в облачном окружении уже стоят, `playwright install` не нужен.
+- `android/` — отдельный Gradle-проект (сайт по-прежнему без сборки): `:core` (Kotlin JVM),
+  `:phone`, `:wear`, общий applicationId и `android/debug.keystore`; сборка и тесты —
+  `cd android && ANDROID_HOME=/root/android-sdk ./gradlew --no-daemon :core:test :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug`
+  (CI — `.github/workflows/android.yml`, APK в релизе `android-latest`; подробности — `android/README.md`).
 
 ## Рабочий цикл «новый лог»
 

@@ -110,6 +110,16 @@ class HealthTest {
         assertFalse(Health.stale(10_000, 10_000))
     }
 
+    @Test fun idlePhoneAnswersOnlyHellos() {
+        // no ride: the phone sends an IDLE snapshot per hello (every 5 s); it must not flip to «нет данных»
+        val idle = Telemetry(link = Link.IDLE)
+        assertEquals(Health.IDLE, Health.of(idle, 10_000, 14_999))
+        assertEquals(Health.IDLE, Health.of(idle, 10_000, 22_000))
+        assertEquals(Health.NO_PHONE, Health.of(idle, 10_000, 22_001))
+        // the hello still goes out every 5 s meanwhile
+        assertTrue(Hello.due(10_000, 10_000, 15_000))
+    }
+
     @Test fun phoneStates() {
         val now = 50_000L
         assertEquals(Health.RECONNECTING, Health.of(live.copy(link = Link.RECONNECTING), now, now))

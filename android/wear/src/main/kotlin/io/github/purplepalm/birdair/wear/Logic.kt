@@ -54,12 +54,16 @@ enum class Health(val label: String?) {
     companion object {
         /** No message from the phone for longer than this: the phone (or the watch's link to it) is gone. */
         const val STALE_MS = 3000L
+        /** With no ride the phone streams nothing and only answers each [Hello] (every [Hello.RETRY_MS]):
+         *  an IDLE answer holds this long, two missed answers, so the top line does not flicker. */
+        const val IDLE_STALE_MS = 12_000L
 
-        fun stale(rxAtMs: Long?, nowMs: Long): Boolean = rxAtMs == null || nowMs - rxAtMs > STALE_MS
+        fun stale(rxAtMs: Long?, nowMs: Long, idle: Boolean = false): Boolean =
+            rxAtMs == null || nowMs - rxAtMs > if (idle) IDLE_STALE_MS else STALE_MS
 
         /** [rxAtMs] and [nowMs]: the watch's own clock (elapsedRealtime) — the phone's [Telemetry.t] is not comparable. */
         fun of(t: Telemetry, rxAtMs: Long?, nowMs: Long): Health = when {
-            stale(rxAtMs, nowMs) -> NO_PHONE
+            stale(rxAtMs, nowMs, idle = t.link == Link.IDLE) -> NO_PHONE
             t.link == Link.IDLE -> IDLE
             t.link == Link.SCANNING -> SCANNING
             t.link == Link.CONNECTING -> CONNECTING
