@@ -81,7 +81,11 @@
     </div>
     <div class="banner" id="liveBar" role="status" hidden>
       <span>Живые данные: раз в 3 с телефон шлёт рулю безопасный запрос <code>+SVGT=?</code> — без него руль замолкает через ~4,5 с.</span>
-      <button class="btn btn-sm" id="btnLiveOff" type="button">Выключить</button>
+      <span class="row">
+        <button class="btn btn-sm" id="btnLiveOff" type="button">Выключить</button>
+        <label class="check"><input type="checkbox" id="gpsSpeed"><span>Скорость по GPS в лог (без координат)</span></label>
+      </span>
+      <p class="msg" id="gpsMsg"></p>
     </div>
     <div class="banner" id="rawBanner" hidden>
       <span id="rawText"></span>
@@ -261,6 +265,7 @@
       <label class="check"><input type="checkbox" id="setReconnect"><span>Переподключаться, если связь оборвалась<small>Чинит главную беду приложения Bird: соединение держится, пока открыта страница.</small></span></label>
       <label class="check"><input type="checkbox" id="setWake"><span>Не гасить экран, пока самокат подключён</span></label>
       <label class="check"><input type="checkbox" id="setWrite"><span>Разрешить отправку команд в самокат<small>Только для разбора протокола. По умолчанию выключено.</small></span></label>
+      <label class="check"><input type="checkbox" id="setGps"><span>Скорость по GPS в лог<small>Пока идёт запись с самоката, в лог пишется скорость телефона по GPS (только скорость и точность, без координат) — по ней найдём байт скорости. До этого она же на спидометре. По умолчанию выключено.</small></span></label>
       <label class="check"><input type="checkbox" id="setAutoWake"><span>Живые данные сами при подключении<small>Руль шлёт данные ~4,5 с после каждой команды с телефона. Через секунду после подключения страница включит «Живые данные»: раз в 3 с безопасный запрос версии <code>+SVGT=?</code>. По умолчанию выключено.</small></span></label>
     </div>
 

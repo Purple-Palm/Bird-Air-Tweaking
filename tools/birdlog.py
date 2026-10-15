@@ -12,7 +12,7 @@ import zlib
 
 FORMAT = 'birdair-lab-log'
 DECODER_FORMAT = 'birdair-lab-decoder'
-KINDS = ('rx', 'rd', 'tx', 'mk', 'sys')
+KINDS = ('rx', 'rd', 'tx', 'mk', 'sys', 'gps')
 BASE = '-0000-1000-8000-00805f9b34fb'
 
 # Characteristics and services the tools must never write to (firmware update).
@@ -295,7 +295,7 @@ def anonymize(log, extra=()):
 
 def clean_entry(e):
     out = {'t': e['t'], 'k': e['k']}
-    for k in ('s', 'u', 'h', 'n'):
+    for k in ('s', 'u', 'h', 'n', 'v', 'a'):
         if e.get(k) is not None:
             out[k] = e[k]
     return out

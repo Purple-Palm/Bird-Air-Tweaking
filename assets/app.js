@@ -214,7 +214,7 @@ const PACK_AH = 5.2;
 /* ============================================================
    state
    ============================================================ */
-const settings = Object.assign({ extraUuids: '', namePrefix: '', autoSubscribe: true, autoReconnect: true, wakeLock: true, units: 'mph', allowWrite: false, collapse: true, autoWake: false },
+const settings = Object.assign({ extraUuids: '', namePrefix: '', autoSubscribe: true, autoReconnect: true, wakeLock: true, units: 'mph', allowWrite: false, collapse: true, autoWake: false, gpsSpeed: false },
   store.get('bal.settings', {}));
 /* Two decoder slots: «мой» (bal.decoder, what the user edits) and «из репозитория» (bal.decoder.repo,
    the last decoders/current.json the user applied). bal.decoder.active says which one runs. */
@@ -491,6 +491,7 @@ function decodeEntry(e) {
 }
 /* Telemetry side of one log entry: the same for live data, a log from a file and a rebuild. */
 function feedTelemetry(e) {
+  if (e.k === 'gps') { if (isFinite(e.v)) setTel('gps_kmh', e.v * 3.6, e.t); return; }
   if (e.k === 'rx' || e.k === 'rd') decodeEntry(e);
   else if (e.k === 'sys' && String(e.n || '').startsWith(SYS_FOUND)) state.tel.frames.asm.clear();
 }
@@ -569,6 +570,7 @@ function setConn(id, detail) {
   $('#btnConnect').hidden = busy;
   $('#btnDisconnect').hidden = !busy;
   $('#btnDisconnect').textContent = id === 'reconnecting' ? 'Не переподключаться' : 'Отключить';
+  syncGps();
   renderBanners();
   renderWriteCard();
   if (state.tab === 'control') renderControl();
@@ -1005,6 +1007,29 @@ function renderLiveBar() {
   const on = state.live.on && !state.demo && (state.conn === 'connected' || state.conn === 'reconnecting');
   $('#liveBar').hidden = !on;
 }
+/* «Скорость по GPS»: while a live session runs, the phone's GPS speed goes into the log as {k: 'gps',
+   v: m/s, a: accuracy m} — a reference for finding the speed bytes in the frames, and the speed tile
+   until a decoder field exists. Coordinates are never read into the log. */
+const gps = { id: null };
+function gpsWanted() { const S = state.session; return !!settings.gpsSpeed && !!S && S.live && !S.offline && !state.demo && !state.manual; }
+function syncGps() {
+  const want = gpsWanted() && !!(navigator.geolocation && navigator.geolocation.watchPosition);
+  if (want && gps.id == null) {
+    gps.id = navigator.geolocation.watchPosition(p => {
+      if (!gpsWanted()) return;
+      const c = p.coords;
+      if (c.speed == null || !isFinite(c.speed)) return;
+      pushEntry({ k: 'gps', v: Math.round(c.speed * 100) / 100, a: c.accuracy != null && isFinite(c.accuracy) ? Math.round(c.accuracy) : undefined });
+    }, err => {
+      flash($('#gpsMsg'), err && err.code === 1 ? 'GPS запрещён: разреши сайту «Местоположение» в настройках Chrome.' : 'GPS недоступен: ' + (err && err.message || 'нет сигнала'), true);
+      if (err && err.code === 1) { navigator.geolocation.clearWatch(gps.id); gps.id = null; settings.gpsSpeed = false; saveSettings(); syncGpsBoxes(); }
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+  } else if (!want && gps.id != null) {
+    navigator.geolocation.clearWatch(gps.id);
+    gps.id = null;
+  }
+}
+function syncGpsBoxes() { for (const id of ['#gpsSpeed', '#setGps']) { const el = $(id); if (el) el.checked = !!settings.gpsSpeed; } }
 function renderDashboard() {
   renderLiveBar();
   renderRawBanner(renderWakeBanner());
@@ -1046,8 +1071,8 @@ function renderDashboard() {
   if (P == null && state.session) sub = 'нужен ток или мощность в декодере';
   $('#pwrSub').textContent = sub;
   /* speed */
-  const kmh = telV('speed_kmh');
-  $('#tSpeed').classList.toggle('stale', kmh == null || telStale('speed_kmh'));
+  const dk = telV('speed_kmh'), gk = dk == null ? telV('gps_kmh') : null, kmh = dk != null ? dk : gk;
+  $('#tSpeed').classList.toggle('stale', kmh == null || telStale(dk != null ? 'speed_kmh' : 'gps_kmh'));
   setVal($('#spdVal'), kmh == null ? '—' : nf(mph ? kmh / 1.609344 : kmh, 1), mph ? 'mph' : 'км/ч');
   const mode = telV('mode');
   const chip = $('#modeChip');
@@ -1057,7 +1082,7 @@ function renderDashboard() {
     chip.dataset.m = mm ? String(Math.round(mode)) : '0';
     $('#modeName').replaceChildren(document.createTextNode(mm ? mm[0] : 'режим ' + nf(mode, 0)), mm ? h('small', { text: ' ' + mm[1] }) : '');
   }
-  $('#spdSub').textContent = kmh == null ? 'лимит FLY — 16 mph (26 км/ч)' : (mph ? nf(kmh, 1) + ' км/ч' : nf(kmh / 1.609344, 1) + ' mph');
+  $('#spdSub').textContent = kmh == null ? 'лимит FLY — 16 mph (26 км/ч)' : (mph ? nf(kmh, 1) + ' км/ч' : nf(kmh / 1.609344, 1) + ' mph') + (gk != null ? ' · по GPS' : '');
   /* minis */
   const mini = (id, v, d, unit, key) => { const el = $(id); el.classList.toggle('stale', v == null || (key && telStale(key))); setVal($('.val', el), v == null ? '—' : nf(v, d), unit); };
   mini('#mCurrent', I, 1, 'А', 'current');
@@ -1461,7 +1486,7 @@ function renderFrames() {
 /* ============================================================
    log
    ============================================================ */
-const KIND = { rx: '↓', rd: '●', tx: '↑', mk: '⚑', sys: 'i' };
+const KIND = { rx: '↓', rd: '●', tx: '↑', mk: '⚑', sys: 'i', gps: '⌖' };
 function renderLog() {
   const S = state.session, box = $('#log');
   if (!S || !S.entries.length) { box.replaceChildren(h('div', { class: 'lr sys' }, h('span', { class: 't' }), h('span'), h('span'), h('span', { class: 'd', text: 'Лог пуст.' }))); return; }
@@ -1477,7 +1502,9 @@ function renderLog() {
     n = 0; lastKey = key;
     const tEl = h('span', { class: 't', text: tfmt(e.t) });
     const rep = h('em');
-    const d = e.k === 'mk' || e.k === 'sys' ? h('span', { class: 'd', text: e.n || '' }) : h('span', { class: 'd' }, e.h || '(пусто)', rep);
+    const d = e.k === 'mk' || e.k === 'sys' ? h('span', { class: 'd', text: e.n || '' })
+      : e.k === 'gps' ? h('span', { class: 'd', text: 'GPS ' + nf(e.v * 3.6, 1) + ' км/ч' + (e.a != null ? ' ±' + nf(e.a, 0) + ' м' : '') })
+      : h('span', { class: 'd' }, e.h || '(пусто)', rep);
     const row = h('div', { class: 'lr ' + e.k + (e.err ? ' err' : '') }, tEl, h('span', { class: 'k', text: KIND[e.k] || '', title: e.k }), h('span', { class: 'u', text: e.u ? shortUuid(e.u) : '' }), d);
     rows.push(row);
     lastRow = { rep, t: tEl };
@@ -1490,7 +1517,7 @@ function sessionObject() {
     format: 'birdair-lab-log', version: 1, startedAt: new Date(S.startedAt).toISOString(), device: S.device, demo: !!S.demo, trimmed: !!S.trimmed,
     gatt: state.gatt.map(s => ({ uuid: s.uuid, chars: s.chars.map(c => ({ uuid: c.uuid, props: c.props })) })),
     decoder: JSON.parse(decoderToJson(decoder)),
-    entries: S.entries.map(e => ({ t: e.t, k: e.k, s: e.s, u: e.u, h: e.h, n: e.n })),
+    entries: S.entries.map(e => ({ t: e.t, k: e.k, s: e.s, u: e.u, h: e.h, n: e.n, v: e.v, a: e.a })),
   };
 }
 function sessionJson() { return JSON.stringify(sessionObject()); }
@@ -1553,7 +1580,7 @@ function loadLogObject(o, fileName, note) {
   if (fileDec && fileDec.fields.length && !decoder.fields.length) { decoder = fileDec; saveDecoder(); }
   for (const e of o.entries) {
     if (!e || typeof e.t !== 'number' || !KIND[e.k]) continue;
-    pushEntry({ t: e.t, k: e.k, s: e.s, u: e.u, h: e.h, n: e.n });
+    pushEntry(e.k === 'gps' ? { t: e.t, k: 'gps', v: num(e.v, NaN), a: e.a } : { t: e.t, k: e.k, s: e.s, u: e.u, h: e.h, n: e.n });
   }
   state.session.savedMark = state.session.pushed;
   state.win = 'all';
@@ -2465,6 +2492,8 @@ function bindSettings() {
   bool('#setWrite', 'allowWrite', () => { if (!settings.allowWrite) stopWriteRepeat(); renderWriteCard(); renderControl(); });
   /* the same switch in the settings card and in the «Руль молчит» banner */
   bool('#setAutoWake', 'autoWake', () => { $('#wakeAuto').checked = settings.autoWake; });
+  bool('#setGps', 'gpsSpeed', () => { syncGpsBoxes(); syncGps(); });
+  bool('#gpsSpeed', 'gpsSpeed', () => { syncGpsBoxes(); syncGps(); if (settings.gpsSpeed) flash($('#gpsMsg'), 'Chrome спросит доступ к местоположению — разреши. В лог идёт только скорость.'); });
   bool('#wakeAuto', 'autoWake', () => { $('#setAutoWake').checked = settings.autoWake; });
   $('#logCollapse').checked = settings.collapse;
   $('#logCollapse').addEventListener('change', e => { settings.collapse = e.target.checked; saveSettings(); renderLog(); });
