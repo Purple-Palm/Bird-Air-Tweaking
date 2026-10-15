@@ -189,6 +189,85 @@ class NeedsMatchTest(unittest.TestCase):
         self.assertIn('Начало пакета', dec['needs_match'][0]['evidence'][0])
 
 
+REAL_FRAMED = os.path.join(ROOT, 'logs', '20261014-174148-log.json')
+
+
+class FramedRealLogTest(unittest.TestCase):
+    """The owner's log: after +MODE=3 the dashboard streams frames «: addr cmd len data sum16 CR LF»."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.res, cls.report = run_analyze([REAL_FRAMED])
+        cls.dec = cls.res['decoder']
+
+    def test_groups_are_frames(self):
+        pats = {g.pattern: g for g in self.res['groups'] if g.u == bl.norm_uuid('ffe1')}
+        self.assertEqual(set(pats), {'3A 17 00 0D', '3A 18 20 10'})
+        self.assertEqual((pats['3A 17 00 0D'].length, pats['3A 18 20 10'].length), (21, 24))
+        for g in pats.values():
+            self.assertEqual(g.framing, 'colon-sum16')
+            self.assertEqual((g.checksum['algo'], g.checksum['start']), ('SUM16', 1))
+        self.assertGreaterEqual(sum(len(g.items) for g in pats.values()), 268)
+
+    def test_proposes_mode_and_voltage(self):
+        self.assertEqual(self.dec['framing'], 'colon-sum16')
+        got = {f['key']: f for f in self.dec['fields']}
+        mode = got['mode']
+        self.assertEqual((mode['match'], mode['offset'], mode['type'], mode.get('mask'), mode['add']), ('3A 17 00 0D', 9, 'u8', 3, 0))
+        self.assertEqual(mode['confidence'], 'высокая')
+        self.assertIn('+MODE=1 → 09', mode['evidence'][0])
+        volt = got['voltage']
+        self.assertEqual((volt['match'], volt['offset'], volt['type']), ('3A 18 20 10', 9, 'u16le'))
+        self.assertAlmostEqual(volt['scale'], 0.001)
+        self.assertEqual(bl.check_decoder(self.dec), [])
+
+    def test_phone_commands_are_markers(self):
+        got = {(k, n) for _, _, k, n in analyze_log.collect_markers(self.res['logs'])}
+        self.assertEqual(got, {('mode', '+MODE=3'), ('mode', '+MODE=2'), ('mode', '+MODE=1'),
+                               ('light', '+HLGT=1'), ('light', '+HLGT=0'), (None, '+SVGT=?')})
+
+    def test_report(self):
+        self.assertIn('colon-sum16', self.report)
+        self.assertIn('ОПАСНО', self.report)      # the KEY? handshake write
+        self.assertIn('«+SVGT=0»', self.report)    # text between frames
+
+
+class FramedSyntheticTest(unittest.TestCase):
+    def test_mode_by_shift_and_plain_fields_set_aside(self):
+        import uart_frames as uf
+        s, u = bl.norm_uuid('ffe0'), bl.norm_uuid('ffe1')
+        lg = bl.new_log()
+        es = lg['entries']
+        mode = 2
+        for k in range(300):
+            t = k * 100
+            if k in (50, 120, 200, 260):
+                mode = {50: 1, 120: 3, 200: 2, 260: 1}[k]
+                es.append({'t': t - 50, 'k': 'tx', 's': s, 'u': u, 'h': bl.hex_of(b'+MODE=%d' % mode)})
+            f = uf.make_frame(0x17, 0x00, bytes([0, 0x55, mode + 10, (k * 7) & 0xFF, 0]))
+            es += [{'t': t, 'k': 'rx', 's': s, 'u': u, 'h': bl.hex_of(f[:6])}, {'t': t, 'k': 'rx', 's': s, 'u': u, 'h': bl.hex_of(f[6:])}]
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, '20261014-190000-frames.json')
+            bl.save_log(lg, p)
+            res, _ = run_analyze([p])
+        got = {f['key']: f for f in res['decoder']['fields']}
+        self.assertEqual((got['mode']['match'], got['mode']['offset'], got['mode']['add']), ('3A 17 00 05', 6, -10))
+        self.assertNotIn('mask', got['mode'])
+        g1 = next(g for g in res['groups'] if g.framing)
+        g2 = analyze_log.Group(s, bl.norm_uuid('ffe2'), {0: 0x5A}, 10, [(0, i, b'\x5a' + bytes(9)) for i in range(6)])
+        chosen = [{'group': g1, 'key': 'mode', 'name': '', 'off': 6, 'type': 'u8', 'scale': 1, 'score': 1.3, 'why': ['x'], 'add': -10},
+                  {'group': g2, 'key': 'speed_kmh', 'name': '', 'off': 3, 'type': 'u8', 'scale': 0.1, 'score': 1.0, 'why': ['y']}]
+        dec = analyze_log.candidate_decoder(chosen, [g1, g2], [], {'version': 3})
+        self.assertEqual((dec['framing'], dec['version']), ('colon-sum16', 4))
+        self.assertEqual([f['key'] for f in dec['fields']], ['mode'])
+        self.assertEqual([f['key'] for f in dec['unframed']], ['speed_kmh'])
+
+    def test_plain_logs_have_no_framing(self):
+        res, _ = run_analyze([os.path.join(ROOT, 'logs', '20261014-160502-log.json')])
+        self.assertNotIn('framing', res['decoder'])
+        self.assertFalse(any(g.framing for g in res['groups']))
+
+
 class LogFilesTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

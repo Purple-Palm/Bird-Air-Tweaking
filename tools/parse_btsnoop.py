@@ -814,8 +814,9 @@ def summary(cap, sel, log, g, keep_ids):
         groups.setdefault((e['u'], e['h']), []).append(e)
     for (u, h), lst in list(groups.items())[:MAX_LINES]:
         e = lst[0]
+        why = bl.danger_write(bl.bytes_of(h))
         p(f"  {e['t'] / 1000:8.2f} с  {short(u)}  {h or '(пусто)'}  ×{len(lst)}  {HOW[e['_how']]}"
-          + ('  — запись в OTA!' if bl.is_danger(e['s'], u) else ''))
+          + ('  — запись в OTA!' if bl.is_danger(e['s'], u) else '') + (f'\n             ОПАСНО: {why}' if why else ''))
     if len(groups) > MAX_LINES:
         p(f'  … и ещё {len(groups) - MAX_LINES} разных')
     if not tx:

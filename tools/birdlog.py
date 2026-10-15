@@ -49,6 +49,23 @@ def is_danger(svc, chr_):
             or chr_.startswith('8ec9') or svc.startswith('8ec9') or svc.startswith('00001530-1212'))
 
 
+# Writes that are known to hurt. Never send these, whatever the log of the Bird app shows.
+DANGER_WRITES = (
+    (bytes.fromhex('AE4B4559'), 'рукопожатие «KEY?»: руль отвечает «OK OK OK », перестаёт слать кадры и показывает '
+                                'гаечный ключ и ошибку 37 до перезагрузки (на ходу может отключить мотор) — не слать'),
+)
+
+
+def danger_write(b):
+    """Why a write of bytes `b` is dangerous, or None. Anywhere in `b`, not only at its start: the BLE
+    module passes the bytes straight into the dashboard's UART (the page blocks them the same way)."""
+    b = bytes(b or b'')
+    for seq, why in DANGER_WRITES:
+        if seq in b:
+            return why
+    return None
+
+
 def hex_of(b):
     return ' '.join('%02X' % x for x in b)
 
@@ -70,6 +87,121 @@ def entry_bytes(e):
 
 def char_key(e):
     return (e.get('s') or '', e.get('u') or '')
+
+
+# ---------------------------------------------------------------- decoder (birdair-lab-decoder)
+#
+# The same model as the page (assets/app.js: readNum, parsePattern, decodeEntry):
+# fields {key, name, uuid, match, offset, type, mask?, scale, add}; top-level "framing":
+# "colon-sum16" makes fields read whole controller frames (tools/uart_frames.py) instead of
+# raw notifications. A field's value: raw = read(type, offset); with mask,
+# raw = (raw & mask) >> (trailing zero bits of mask); value = raw * scale + add.
+
+TYPE_LEN = {'u8': 1, 's8': 1, 'u16le': 2, 's16le': 2, 'u16be': 2, 's16be': 2, 'u24le': 3, 'u32le': 4, 's32le': 4,
+            'u32be': 4, **{'bit%d' % i: 1 for i in range(8)}}
+FRAMINGS = ('colon-sum16',)
+METRICS = ('battery_pct', 'voltage', 'current', 'power', 'speed_kmh', 'speed_mph', 'temp', 'mode',
+           'odometer_km', 'odometer_mi', 'error', 'custom')
+
+
+def read_value(b, off, typ):
+    """Number of type `typ` at `off`, or None when the packet is too short (page: readNum)."""
+    n = TYPE_LEN.get(typ)
+    if not n or off < 0 or off + n > len(b):
+        return None
+    if typ.startswith('bit'):
+        return (b[off] >> int(typ[3:])) & 1
+    signed = typ.startswith('s')
+    order = 'big' if typ.endswith('be') else 'little'
+    return int.from_bytes(bytes(b[off:off + n]), order, signed=signed)
+
+
+def parse_pattern(s):
+    """'5A A5 ?? 25' -> [0x5A, 0xA5, None, 0x25]; '' -> []; invalid -> None (page: parsePattern)."""
+    out = []
+    for tok in re.split(r'[\s,]+', str(s or '').strip()):
+        if not tok:
+            continue
+        if tok in ('??', '?', '**', 'xx', 'XX'):
+            out.append(None)
+            continue
+        m = re.sub(r'^0x', '', tok, flags=re.I)
+        if not re.fullmatch(r'[0-9a-fA-F]{1,2}', m):
+            return None
+        out.append(int(m, 16))
+    return out
+
+
+def match_prefix(b, pat):
+    if not pat:
+        return True
+    return len(b) >= len(pat) and all(p is None or b[i] == p for i, p in enumerate(pat))
+
+
+def apply_mask(raw, mask):
+    """(raw & mask) >> trailing zero bits of mask; a missing or non-positive mask leaves raw as is."""
+    if raw is None or not isinstance(mask, int) or isinstance(mask, bool) or mask <= 0:
+        return raw
+    return (raw & mask) >> ((mask & -mask).bit_length() - 1)
+
+
+def field_value(f, b):
+    """Value of decoder field `f` read from packet (or frame) `b`; None if `b` does not fit.
+    Checks the match prefix, not the UUID."""
+    pat = parse_pattern(f.get('match'))
+    if pat is None or not match_prefix(b, pat):
+        return None
+    try:
+        off = int(f.get('offset') or 0)
+    except (TypeError, ValueError):
+        off = 0
+    raw = apply_mask(read_value(b, max(0, off), f.get('type') or 'u8'), f.get('mask'))
+    if raw is None:
+        return None
+    num = lambda x, d: x if isinstance(x, (int, float)) and not isinstance(x, bool) else d  # noqa: E731
+    return raw * num(f.get('scale'), 1) + num(f.get('add'), 0)
+
+
+def check_decoder(d):
+    """Problems of a birdair-lab-decoder (decoders/current.json, candidate.json), [] when fine."""
+    if not isinstance(d, dict):
+        return ['декодер не объект JSON']
+    errs = []
+    if d.get('format') != DECODER_FORMAT:
+        errs.append(f'format должен быть {DECODER_FORMAT}')
+    v = d.get('version')
+    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+        errs.append('version — целое число от 1')
+    if 'framing' in d and d['framing'] not in FRAMINGS:
+        errs.append(f"framing: неизвестное «{d['framing']}» (знаю {', '.join(FRAMINGS)})")
+    if not isinstance(d.get('fields'), list):
+        return errs + ['fields — список']
+    for i, f in enumerate(d['fields']):
+        where = f'поле {i + 1}'
+        if not isinstance(f, dict):
+            errs.append(where + ': не объект')
+            continue
+        where += f" ({f.get('key')})"
+        if f.get('key') not in METRICS:
+            errs.append(where + ': неизвестный key')
+        if f.get('uuid') and not norm_uuid(f['uuid']):
+            errs.append(where + ': uuid не UUID')
+        if parse_pattern(f.get('match')) is None:
+            errs.append(where + ': match — байты hex через пробел, ?? — любой байт')
+        if not isinstance(f.get('offset', 0), int) or isinstance(f.get('offset'), bool) or f.get('offset', 0) < 0:
+            errs.append(where + ': offset — целое ≥ 0')
+        if f.get('type', 'u8') not in TYPE_LEN:
+            errs.append(where + f": неизвестный type {f.get('type')}")
+        for k in ('scale', 'add'):
+            if k in f and (not isinstance(f[k], (int, float)) or isinstance(f[k], bool)):
+                errs.append(where + f': {k} — число')
+        if 'mask' in f:
+            m = f['mask']
+            if not isinstance(m, int) or isinstance(m, bool) or m <= 0:
+                errs.append(where + ': mask — целое > 0')
+            elif m >= 1 << (8 * TYPE_LEN.get(f.get('type', 'u8'), 4)):
+                errs.append(where + ': mask шире типа')
+    return errs
 
 
 def new_log(device=None, started_at=None, gatt=None):

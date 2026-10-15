@@ -9,6 +9,13 @@
 кандидатов на поля с доводами и реакцию байтов на метки. Пишет черновик декодера
 decoders/candidate.json; его поля можно вставить на странице в «Декодер → Конфиг текстом».
 
+Если в уведомлениях характеристики есть кадры контроллера «: адрес команда длина данные
+сумма16 CR LF» (tools/uart_frames.py, от 5 штук), она разбирается по кадрам: группа — адрес,
+команда и длина, смещения от 3A, а черновик получает "framing": "colon-sum16" и «Начало
+пакета» из 4 байт заголовка («3A 17 00 0D»). Команды телефона «+MODE=n», «+HLGT=n» (записи tx)
+считаются метками «Сменил режим» / «Фара»; байт, который после +MODE=1/2/3 принимает свои
+значения, предлагается как режим с найденной маской (mask) или сдвигом (add).
+
 Только стандартная библиотека. Читает .json, .json.gz и логи, разрезанные на части.
 """
 import argparse
@@ -18,14 +25,17 @@ import datetime
 import json
 import math
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import birdlog as bl  # noqa: E402
+import uart_frames as uf  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAX_SERIES = 20000   # longer groups are thinned evenly before field analysis
 CHECK_SAMPLE = 300   # packets per group used for checksum search
+FRAME_MIN = 5        # this many colon-sum16 frames on a characteristic and it is read frame by frame
 
 # ---------------------------------------------------------------- reading numbers
 
@@ -185,10 +195,21 @@ def find_checksums(pkts):
     return out
 
 
+# Controller frames «3A addr cmd len data sum16le 0D 0A»: the sum covers addr..data.
+FRAME_CHECKSUM = {'algo': 'SUM16', 'width': 16, 'start': 1, 'at': 'last2', 'order': 'le', 'ratio': 1.0,
+                  'trailer': 2, 'tail': '0D 0A'}
+
+
+def checksum_end(m, n):
+    """Offset of the first checksum byte in a packet of length n."""
+    trailer = m.get('trailer', 1 if m['at'].endswith('-1') else 0)
+    return n - (1 if m['width'] == 8 else 2) - trailer
+
+
 def describe_checksum(m, n):
-    end = n - (1 if m['width'] == 8 else 2) - (1 if m['at'].endswith('-1') else 0)
+    end = checksum_end(m, n)
     pos = f'байт {end}' if m['width'] == 8 else f"байты {end}–{end + 1} ({m['order'].upper()})"
-    return f"{pos} = {m['algo']} байтов {m['start']}..{end - 1} ({m['ratio']:.0%})"
+    return f"{pos} = {m['algo']} байтов {m['start']}..{end - 1} ({m['ratio']:.0%})" + (f", затем {m['tail']}" if m.get('tail') else '')
 
 
 # ---------------------------------------------------------------- markers
@@ -215,6 +236,25 @@ def marker_kind(label):
     return None
 
 
+# Commands the page (or the Bird app) writes to FFE1; they work as markers.
+TX_KINDS = {'MODE': 'mode', 'HLGT': 'light'}
+CMD_RE = re.compile(r'^\+([A-Z]{2,8})=([ -~]*)$')
+
+
+def tx_command(b):
+    """b'+MODE=3' -> ('MODE', '3'); anything that is not such an ASCII command -> None."""
+    if not b or not all(32 <= x < 127 for x in b):
+        return None
+    m = CMD_RE.match(bytes(b).decode('ascii').strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
+def command_value(label):
+    """'+MODE=3' -> 3; None when the label is not a command with a number."""
+    m = CMD_RE.match(str(label or '').strip())
+    return int(m.group(2)) if m and m.group(2).isdigit() else None
+
+
 # ---------------------------------------------------------------- grouping
 
 class Group:
@@ -226,6 +266,7 @@ class Group:
         self.label = ''
         self.checksum = None
         self.byte_info = []
+        self.framing = None           # 'colon-sum16': items are whole controller frames
 
     @property
     def pattern(self):
@@ -338,7 +379,21 @@ def partition(items):
 STANDARD = {bl.norm_uuid(x) for x in ('1800', '1801', '180a')}
 
 
-def build_groups(logs):
+def char_frames(logs):
+    """Controller frames per characteristic: {(s, u): {'items': [(log_index, t, frame)], 'asm': {log_index: Assembler}}},
+    only for characteristics with at least FRAME_MIN valid frames."""
+    out = collections.OrderedDict()
+    for li, lg in enumerate(logs):
+        for (s, u), asm in uf.assemble_log(lg, None).items():
+            if (s or '') in STANDARD:
+                continue
+            d = out.setdefault((s, u), {'items': [], 'asm': {}})
+            d['items'] += [(li, f.t, f.frame) for f in asm.frames]
+            d['asm'][li] = asm
+    return collections.OrderedDict((k, d) for k, d in out.items() if len(d['items']) >= FRAME_MIN)
+
+
+def build_groups(logs, frames=None):
     by_char = collections.OrderedDict()
     for li, lg in enumerate(logs):
         for e in lg['entries']:
@@ -346,8 +401,20 @@ def build_groups(logs):
                 b = bl.entry_bytes(e)
                 if b:
                     by_char.setdefault(bl.char_key(e), []).append((li, e['t'], b))
+    if frames is None:
+        frames = char_frames(logs)
     groups = []
     for (s, u), items in by_char.items():
+        if (s, u) in frames:
+            # Frame level: one group per (addr, cmd, len), offsets count from the 3A.
+            by_head = collections.OrderedDict()
+            for it in frames[(s, u)]['items']:
+                by_head.setdefault(uf.head(it[2]), []).append(it)
+            for (addr, cmd, n), its in by_head.items():
+                g = Group(s, u, {0: uf.COLON, 1: addr, 2: cmd, 3: n}, uf.HEAD + n + uf.TAIL, its)
+                g.framing, g.checksum = uf.FRAMING, dict(FRAME_CHECKSUM)
+                groups.append(g)
+            continue
         mine = []
         for fixed, its in partition(items):
             by_len = collections.defaultdict(list)
@@ -527,9 +594,7 @@ def evaluate(group, markers, w, kinds_present):
     n = min(len(b) for b in group.packets)
     skip = set(group.fixed)
     if group.checksum:
-        m = group.checksum
-        end = n - (1 if m['width'] == 8 else 2) - (1 if m['at'].endswith('-1') else 0)
-        skip |= set(range(end, n))
+        skip |= set(range(checksum_end(group.checksum, n), n))
     cands = []
 
     def add(key, s, score, scale, why, typ=None, name=''):
@@ -637,10 +702,25 @@ def evaluate(group, markers, w, kinds_present):
                 add('odometer_km', s, 0.35 + clip(inc / 50, 0, 0.3), 0.01,
                     [f'растёт без откатов: {inc} шагов', f'меняется в {s.trans:.0%} пакетов', 'масштаб не проверен'])
 
+    # riding mode from the phone's own +MODE=n commands: the byte takes one value per mode
+    for off in range(n):
+        if off in skip or len({b[off] for b in group.packets}) > 8:
+            continue
+        s = Series(group, off, 'u8')
+        if s.distinct < 2 or s.trans >= 0.05 or s.n < 5:
+            continue
+        found = commanded_mode(s, markers, w)
+        if found:
+            score, why, mask, plus = found
+            add('mode', s, score, 1, why)
+            cands[-1]['mask'], cands[-1]['add'] = mask, plus
+
     # flags: bits that toggle on «Фара» / «Зарядка»
     for off in range(n):
         if off in skip or len({b[off] for b in group.packets}) > 8:
             continue
+        if Series(group, off, 'u8').trans > 0.2:
+            continue          # a byte that changes this often is a measurement, its bits are not flags
         for bit in range(8):
             s = Series(group, off, 'u8', bit)
             if s.distinct != 2:
@@ -652,6 +732,74 @@ def evaluate(group, markers, w, kinds_present):
                     add('custom', s, score, 1, [f'бит {bit} переключается на «{KIND_RU[kind]}» в {ch[0]:.0%} случаев ({ch[1]}×)',
                                                 f'меняется в {s.trans:.1%} пакетов'], typ='bit%d' % bit, name=name)
     return cands
+
+
+def commanded_mode(s, markers, w):
+    """Does byte series `s` follow the +MODE=n commands among the markers?
+
+    For each command: the value the byte holds at the end of the window after it (up to the next
+    marker), and whether it differs from the value before. Needs 2+ different modes, each mapped to
+    one value and different modes to different values. Returns (score, why, mask, add) or None;
+    mask / add turn the raw byte into the mode number (narrowest bit field, else a constant shift).
+    """
+    by_log = collections.defaultdict(list)
+    for li, t, _, _ in markers:
+        by_log[li].append(t)
+    for ts in by_log.values():
+        ts.sort()
+    seen, changes = collections.defaultdict(set), []
+    for li, t, k, label in markers:
+        v = command_value(label)
+        if k != 'mode' or v is None:
+            continue
+        ts = by_log[li]
+        i = bisect.bisect_left(ts, t)
+        prv = ts[i - 1] if i > 0 else None
+        nxt = next((x for x in ts[i:] if x > t), None)
+        after = s.window(li, t + 1, min(t + w, nxt - 1) if nxt is not None else t + w)
+        before = s.window(li, max(t - w, prv + 1) if prv is not None else t - w, t - 1)
+        if not after:
+            continue
+        seen[v].add(after[-1])
+        if before:
+            changes.append(before[-1] != after[-1])
+    if len(seen) < 2 or any(len(x) != 1 for x in seen.values()):
+        return None
+    pairs = sorted((v, next(iter(x))) for v, x in seen.items())
+    if len({raw for _, raw in pairs}) != len(pairs):
+        return None
+    mask = plus = None
+    for width in range(1, 9):
+        for start in range(0, 9 - width):
+            m = ((1 << width) - 1) << start
+            if all(bl.apply_mask(raw, m) == v for v, raw in pairs):
+                mask = m
+                break
+        if mask is not None:
+            break
+    if mask == 0xFF:
+        mask, plus = None, 0
+    elif mask is None:
+        shifts = {v - raw for v, raw in pairs}
+        plus = shifts.pop() if len(shifts) == 1 else None
+    exact = mask is not None or plus is not None
+    ratio = sum(changes) / len(changes) if changes else 0.0
+    score = 0.55 + 0.25 * min(1, (len(pairs) - 1) / 2) + 0.3 * ratio + (0.2 if exact else 0) - clip(s.trans * 5, 0, 0.3)
+    why = ['после команд: ' + ', '.join(f'+MODE={v} → {raw:02X}' for v, raw in pairs)]
+    if mask is not None:
+        lo = (mask & -mask).bit_length() - 1
+        bits = f'бит {lo}' if mask == 1 << lo else f'биты {lo}–{mask.bit_length() - 1}'
+        why.append(f'{bits} (mask 0x{mask:02X}) = номер режима')
+    elif plus:
+        why.append(f'значение {plus:+d} = номер режима')
+    elif exact:
+        why.append('значение байта = номер режима')
+    else:
+        why.append('номер режима из байта не выводится — впиши соответствие вручную')
+    if changes:
+        why.append(f'меняется сразу после команды в {sum(changes)} из {len(changes)} случаев')
+    why.append(f'меняется в {s.trans:.1%} пакетов')
+    return score, why, mask, plus or 0
 
 
 def byte_map(group):
@@ -681,6 +829,8 @@ def reactions(groups, markers, w, kind, top=5):
         if len(g.items) < 5:
             continue
         n = min(len(b) for b in g.packets)
+        if g.framing:
+            n = checksum_end(g.checksum, n)      # data bytes only, not the sum and CR LF
         for off in range(n):
             if off in g.fixed:
                 continue
@@ -704,14 +854,27 @@ def rel(path):
         return path
 
 
-def stream_texts(logs, min_len=4):
-    """Printable lines in the byte stream of each characteristic, joined across packets."""
+def stream_texts(logs, min_len=4, frames=None):
+    """Printable lines in the byte stream of each characteristic, joined across packets.
+    With `frames` (char_frames) the rx stream of a framed characteristic is what lies between
+    the frames."""
     out = collections.OrderedDict()
-    for lg in logs:
+    frames = frames or {}
+    for li, lg in enumerate(logs):
         streams = collections.OrderedDict()
+        gaps = {}
+        for (s, u), d in frames.items():
+            asm = d['asm'].get(li)
+            if asm is not None:
+                gaps[u or ''] = b'\n'.join(b for _, b in asm.texts)
         for e in lg['entries']:
             if e['k'] in ('rx', 'tx') and e.get('h'):
-                streams.setdefault((e['k'], e.get('u') or ''), bytearray()).extend(bl.entry_bytes(e))
+                key = (e['k'], e.get('u') or '')
+                if e['k'] == 'rx' and key[1] in gaps:
+                    continue
+                streams.setdefault(key, bytearray()).extend(bl.entry_bytes(e))
+        for u, b in gaps.items():
+            streams[('rx', u)] = bytearray(b)
         for key, buf in streams.items():
             text = ''.join(chr(b) if 32 <= b < 127 else '\n' for b in buf)
             for line in text.split('\n'):
@@ -721,11 +884,16 @@ def stream_texts(logs, min_len=4):
 
 
 def collect_markers(logs):
+    """(log_index, t, kind, label) for the page's markers and the phone's +NAME=value commands."""
     out = []
     for li, lg in enumerate(logs):
         for e in lg['entries']:
             if e['k'] == 'mk':
                 out.append((li, e['t'], marker_kind(e.get('n')), e.get('n') or ''))
+            elif e['k'] == 'tx':
+                cmd = tx_command(bl.entry_bytes(e))
+                if cmd:
+                    out.append((li, e['t'], TX_KINDS.get(cmd[0]), f'+{cmd[0]}={cmd[1]}'))
     return out
 
 
@@ -790,18 +958,26 @@ def candidate_decoder(chosen, groups, sources, current):
         version = int(version) + 1
     except (TypeError, ValueError):
         version = 1
-    fields, needs_uuid, needs_match = [], [], []
+    fields, needs_uuid, needs_match, unframed = [], [], [], []
     kinds = collections.Counter((g.s, g.u) for g in groups if len(g.items) >= 5)
+    framing = next((c['group'].framing for c in chosen if c['group'].framing), None)
     for c in chosen:
         g = c['group']
         u = bl.norm_uuid(g.u)
         f = {
             'key': c['key'], 'name': c['name'] or None, 'uuid': u or '', 'match': g.pattern, 'offset': c['off'],
-            'type': c['type'], 'scale': c['scale'], 'add': 0,
+            'type': c['type'], 'mask': c.get('mask'), 'scale': c['scale'], 'add': c.get('add') or 0,
             'confidence': confidence(c['score']), 'evidence': [x for x in c['why'] if x],
         }
-        if f['name'] is None:
-            del f['name']
+        for k in ('name', 'mask'):
+            if f[k] is None:
+                del f[k]
+        if framing and not g.framing:
+            # With "framing" the page reads whole frames only, so a field of plain packets would never fire.
+            f['evidence'].insert(0, f'поле из обычных пакетов, а черновик читает кадры ({framing}): '
+                                    'на странице с этим декодером оно не сработает')
+            unframed.append(f)
+            continue
         if u and not g.pattern and kinds[(g.s, g.u)] > 1:
             # No constant leading bytes, yet the characteristic carries other kinds of packets: on the
             # page an empty match fits all of them, so the field would read the wrong bytes.
@@ -825,12 +1001,19 @@ def candidate_decoder(chosen, groups, sources, current):
         if g.checksum:
             checks.append({'uuid': bl.norm_uuid(g.u) or g.u, 'match': g.pattern, 'length': g.length,
                            'checksum': describe_checksum(g.checksum, g.length)})
-    return {
+    note = 'Черновик tools/analyze_log.py. Проверь поля с низкой уверенностью перед переносом в current.json.'
+    out = {
         'format': bl.DECODER_FORMAT, 'version': version,
         'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
-        'note': 'Черновик tools/analyze_log.py. Проверь поля с низкой уверенностью перед переносом в current.json.',
-        'sources': sources, 'json': False, 'fields': fields, 'needs_uuid': needs_uuid, 'needs_match': needs_match, 'checksums': checks,
+        'note': note, 'sources': sources, 'json': False,
     }
+    if framing:
+        out['note'] = note + ' Поля читают кадры «: адрес команда длина данные сумма16 CR LF», смещения от 3A.'
+        out['framing'] = framing
+    out.update({'fields': fields, 'needs_uuid': needs_uuid, 'needs_match': needs_match, 'checksums': checks})
+    if unframed:
+        out['unframed'] = unframed
+    return out
 
 
 def advice(kinds_present, chosen):
@@ -871,6 +1054,11 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
         p(f"== {', '.join(rel(f) for f in lg['_files'])}")
         p(f"   начало {lg.get('startedAt')}, записей {len(es)}, {dur:.1f} с" + (', демо' if lg.get('demo') else '') + (', обрезан' if lg.get('trimmed') else ''))
         p('   метки: ' + (', '.join(f'{k}×{v}' for k, v in mk.most_common()) if mk else 'нет'))
+        cmds = collections.Counter('+%s=%s' % c for c in (tx_command(bl.entry_bytes(e)) for e in es if e['k'] == 'tx') if c)
+        if cmds:
+            p('   команды телефона (тоже метки): ' + ', '.join(f'{k}×{v}' for k, v in cmds.items()))
+
+    frames = char_frames(logs)
 
     # characteristics
     p('\n## Характеристики')
@@ -898,9 +1086,16 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
             longest[c] = h if len(h) > len(longest.get(c, '')) else longest[c]
         if longest:
             p('     частые начала: ' + ', '.join(f'{h} ({c / total:.0%})' for c, h in sorted(longest.items(), reverse=True)[:4]))
+        if (s, u) in frames:
+            asms = list(frames[(s, u)]['asm'].values())
+            heads = collections.Counter(uf.head_hex(fr) for _, _, fr in frames[(s, u)]['items'])
+            p(f"     кадры «: адрес команда длина данные сумма16 CR LF» ({uf.FRAMING}): {sum(a.n_frames for a in asms)}"
+              f" (из них без «:», восстановлено: {sum(a.recovered for a in asms)}), байт вне кадров {sum(a.junk for a in asms)}"
+              f", отброшено начал «:» {sum(a.dropped for a in asms)} — разбор по кадрам: "
+              + ', '.join(f'{h} ×{c}' for h, c in heads.most_common()))
 
     # groups
-    groups = build_groups(logs)
+    groups = build_groups(logs, frames)
     markers = collect_markers(logs)
     kinds_present = {k for _, _, k, _ in markers if k}
     p('\n## Группы пакетов')
@@ -913,17 +1108,20 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
             ts[li].append(t)
         span = sum((max(x) - min(x)) / 1000 for x in ts.values() if len(x) > 1)
         rate = f', {len(g.items) / span:.1f}/с' if span > 0 else ''
-        p(f"  [{g.label}] {bl.short_uuid(g.u)}  начало «{g.pattern or 'любое'}»  длина {g.length}  ×{len(g.items)}{rate}")
-        cs = find_checksums(g.packets)
+        p(f"  [{g.label}] {bl.short_uuid(g.u)}  {'кадр' if g.framing else 'начало'} «{g.pattern or 'любое'}»  длина {g.length}  ×{len(g.items)}{rate}")
+        cs = [g.checksum] if g.framing else find_checksums(g.packets)
         g.checksum = cs[0] if cs else None
-        if cs:
+        if g.framing:
+            p('      контрольная сумма: ' + describe_checksum(g.checksum, g.length) + ' — проверена у каждого кадра')
+        elif cs:
             p('      контрольная сумма: ' + describe_checksum(cs[0], g.length) + (f' (и ещё {len(cs) - 1} совпадений)' if len(cs) > 1 else ''))
         else:
             p('      контрольная сумма: не найдена среди XOR, SUM8/16 и популярных CRC8/CRC16')
         bm = byte_map(g)
         line = []
+        data_end = checksum_end(g.checksum, g.length) if g.framing else g.length
         for off, kind, s in bm:
-            if off in g.fixed:
+            if off in g.fixed or off >= data_end:
                 continue
             line.append(f'{off}:{kind}')
         if line:
@@ -980,11 +1178,15 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
     if tx:
         p('\n## Записи в самокат (tx)')
         for (u, h), c in sorted(tx.items(), key=lambda kv: first[kv[0]])[:40]:
-            p(f'  {first[(u, h)] / 1000:8.2f} с  {u}  {h}  ×{c}')
+            b = bl.bytes_of(h)
+            cmd = tx_command(b)
+            why = bl.danger_write(b)
+            p(f'  {first[(u, h)] / 1000:8.2f} с  {u}  {h}  ×{c}' + (f'  «+{cmd[0]}={cmd[1]}»' if cmd else '')
+              + (f'\n            ОПАСНО: {why}' if why else ''))
         if len(tx) > 40:
             p(f'  … и ещё {len(tx) - 40} разных')
 
-    texts = stream_texts(logs)
+    texts = stream_texts(logs, frames=frames)
     if texts:
         p('\n## Текст в потоках (так выглядят AT-команды и отладочный вывод)')
         for (k, u), lines in texts.items():
@@ -1021,6 +1223,8 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
             current = bl.read_json_bytes(cur_path)
         except (OSError, ValueError):
             current = None
+        for err in bl.check_decoder(current) if current is not None else ['не читается как JSON']:
+            p(f'! decoders/current.json: {err}')
     dec = candidate_decoder(chosen, groups, sorted(set((current or {}).get('sources', [])) | set(sources)), current)
     if write_candidate and out_path:
         os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
