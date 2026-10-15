@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CapabilityClient: the watch app finds the phone by this name (core Wire.CAPABILITY_PHONE) -->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@array/android_wear_capabilities">
+    <string-array name="android_wear_capabilities" translatable="false">
+        <item>birdair_phone</item>
+    </string-array>
+</resources>
