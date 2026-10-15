@@ -89,6 +89,8 @@
        after: { '+MODE=1': { reply: [hex…], loop: [hex…] }, … }  — real notification chunks recorded after
          that command: reply = up to and including its echo/answer, loop = the stream that followed;
        wakes(text) — which commands start the stream (default: any «+…»);
+       window — the stream stops this many ms after the last «+…» command (the real dash: ~4500;
+         default: never);
        every — ms between notifications (default 15).
      }
      A command without an entry is echoed back. AE "KEY?" answers "OK OK OK " and stops the stream for
@@ -114,6 +116,7 @@
       if ((d.wakes || (() => true))(text)) {
         dashOn = true;
         if (seg.loop && seg.loop.length) { dashLoop = seg.loop; dashI = 0; }
+        if (d.window) { clearTimeout(d.windowTimer); d.windowTimer = setTimeout(() => { dashOn = false; }, d.window); }
       }
     } else return;
     if (!dashTimer) dashTimer = setInterval(dashTick, d.every || 15);

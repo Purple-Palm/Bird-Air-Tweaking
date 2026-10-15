@@ -35,13 +35,13 @@ test('a mode tap starts the stream: voltage, current, SoC and mode on the gauges
 
   await page.click('#t-dash');
   await expect(page.locator('#mVoltage .val')).toHaveText('39,8В');
-  await expect(page.locator('#batVal')).toHaveText('78%');                      // estimated from 39,85 V
-  await expect(page.locator('#batSub')).toContainText('оценка по напряжению');
+  await expect(page.locator('#batVal')).toHaveText('75%');                      // byte 17 of 3A 18, as the Bird app reads it
+  await expect(page.locator('#batSub')).not.toContainText('оценка по напряжению');
+  await expect(page.locator('#mOdo .val')).toHaveText('885,3mi');                // 00 37 A8 → 1424,8 km
   await expect(page.locator('#modeName')).toContainText('TAKEOFF');
   await expect(page.locator('#mCurrent .val')).toHaveText(/^0,\dА$/);
   await expect(page.locator('#pwrVal')).toHaveText(/^\d+Вт$/);
   await expect(page.locator('#spdVal')).toHaveText('—');                         // no speed field yet
-  await expect(page.locator('#mOdo .val')).toHaveText('—');
   await expect(page.locator('#rawBanner')).toBeHidden();
   await expect(page.locator('#wakeBanner')).toBeHidden();
   const v = await tel(page, 'voltage');
@@ -152,24 +152,61 @@ test('when +SVGT=? does not wake it, the banner says to press the mode', async (
   expect(await writesTo(page)).toEqual([SVGT]);
 });
 
-test('«Запрашивать сам» sends +SVGT=? once per connect, only while no frames come', async ({ page }) => {
-  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { autoWake: true }, ...V3_STORAGE } });
-  await connect(page, realDash());
-  await expect.poll(() => writesTo(page)).toEqual([SVGT]);
+test('«Живые данные» keep the stream alive with +SVGT=? pulses; «Выключить» lets it stop', async ({ page }) => {
+  await openApp(page, { bluetooth: true, storage: V3_STORAGE });
+  await page.evaluate(() => Object.assign(window.__bal.wakeLimits, { pulse: 400, silent: 800, retry: 800 }));
+  await connect(page, realDash({ window: 700 }));                          // the real dash: ~4.5 s per command
+  await expect(page.locator('#wakeBanner')).toBeVisible();
+  await expect(page.locator('#liveBar')).toBeHidden();
+  await page.click('#btnWake');
+  await expect(page.locator('#liveBar')).toBeVisible();
   await expect.poll(() => tel(page, 'voltage')).not.toBeNull();
-  await page.waitForTimeout(1500);
-  expect(await writesTo(page)).toEqual([SVGT]);
+  const t0 = Date.now(), f0 = (await frames(page)).total, w0 = (await writesTo(page)).length;
+  await page.waitForTimeout(2500);                                           // several windows long
+  const f1 = (await frames(page)).total, w = await writesTo(page);
+  expect(f1).toBeGreaterThan(f0 + 20);                                       // frames never stopped
+  expect(new Set(w)).toEqual(new Set([SVGT]));                               // only ever +SVGT=?
+  expect(w.length - w0).toBeGreaterThanOrEqual(3);
+  expect(w.length - w0).toBeLessThanOrEqual(Math.ceil((Date.now() - t0) / 400) + 1);   // at most one per pulse
   await expect(page.locator('#wakeBanner')).toBeHidden();
-  await page.evaluate(() => window.__fakeBle.drop());                      // a reconnect needs a new wake
+  expect((await entries(page, { k: 'tx' })).every(e => e.h === SVGT)).toBe(true);
+  await page.click('#btnLiveOff');
+  await expect(page.locator('#liveBar')).toBeHidden();
+  const n = (await writesTo(page)).length;
+  await expect(page.locator('#wakeBanner')).toBeVisible({ timeout: 4000 });  // the dash went quiet again
+  expect((await writesTo(page)).length).toBe(n);
+});
+
+test('«Включать сами»: pulses start after a connect, survive a dropped link, stop on «Отключить»', async ({ page }) => {
+  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { autoWake: true }, ...V3_STORAGE } });
+  await page.evaluate(() => Object.assign(window.__bal.wakeLimits, { pulse: 400 }));
+  await connect(page, realDash({ window: 700 }));
+  await expect(page.locator('#liveBar')).toBeVisible();
+  await expect.poll(async () => (await writesTo(page)).length, { timeout: 5000 }).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => tel(page, 'voltage')).not.toBeNull();
+  await page.evaluate(() => window.__fakeBle.drop());                      // the fake dash goes silent too
   await expect(page.locator('#connPill')).toContainText('На связи', { timeout: 10000 });
-  await expect.poll(() => writesTo(page)).toEqual([SVGT, SVGT]);
-  // the next reconnect finds the stream already running: nothing is sent
-  await page.evaluate(() => window.__fakeBle.drop());
-  await expect(page.locator('#connPill')).toContainText('На связи', { timeout: 10000 });
-  await inject(page, [chunk(8), chunk(9)]);
+  const n1 = (await writesTo(page)).length, f1 = (await frames(page)).total;
+  await expect.poll(async () => (await writesTo(page)).length, { timeout: 5000 }).toBeGreaterThan(n1 + 1);
+  await expect.poll(async () => (await frames(page)).total, { timeout: 5000 }).toBeGreaterThan(f1 + 10);
+  expect(new Set(await writesTo(page))).toEqual(new Set([SVGT]));
+  await page.click('#btnDisconnect');
+  await expect(page.locator('#connPill')).toContainText('Не подключено');
+  const n2 = (await writesTo(page)).length;
   await page.waitForTimeout(1500);
-  expect(await writesTo(page)).toEqual([SVGT, SVGT]);
+  expect((await writesTo(page)).length).toBe(n2);
+  await expect(page.locator('#liveBar')).toBeHidden();
   await expect(page.locator('#setAutoWake')).toBeChecked();
+});
+
+test('a single +SVGT=? (no «Живые данные») gives one ~window of data, then the banner is back', async ({ page }) => {
+  await openApp(page, { bluetooth: true, storage: V3_STORAGE });
+  await page.evaluate(() => Object.assign(window.__bal.wakeLimits, { silent: 800, retry: 800 }));
+  await connect(page, realDash({ window: 700 }));
+  await page.evaluate(() => window.__bal.sendWake(false));
+  await expect.poll(() => tel(page, 'voltage')).not.toBeNull();
+  await expect(page.locator('#wakeBanner')).toBeVisible({ timeout: 4000 });
+  expect(await writesTo(page)).toEqual([SVGT]);
 });
 
 test('KEY? is blocked in the write console, its repeat and the command API', async ({ page }) => {
@@ -227,8 +264,9 @@ test('the real log with decoder v3 applied from the repository', async ({ page }
   await page.setInputFiles('#fileImport', LOG_PATH);
   await expect(page.locator('#connPill')).toContainText('Лог из файла');
   await expect(page.locator('#mVoltage .val')).toHaveText('39,8В');
-  await expect(page.locator('#batVal')).toHaveText('78%');
+  await expect(page.locator('#batVal')).toHaveText('75%');
   await expect(page.locator('#modeName')).toContainText('TAKEOFF');        // the last mode tapped was +MODE=1
+  expect(await tel(page, 'odometer_km')).toBeCloseTo(1424.8, 3);
   await expect(page.locator('#spdVal')).toHaveText('—');
   expect(await tel(page, 'mode')).toBe(1);
   // every frame of the log: 268 complete ones and 16 that lost their 0x3A

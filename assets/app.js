@@ -135,7 +135,7 @@ function isDanger(svc, chr) {
 /* ============================================================
    decoder model
    ============================================================ */
-const TYPE_LEN = { u8: 1, s8: 1, u16le: 2, s16le: 2, u16be: 2, s16be: 2, u24le: 3, u32le: 4, s32le: 4, u32be: 4, bit0: 1, bit1: 1, bit2: 1, bit3: 1, bit4: 1, bit5: 1, bit6: 1, bit7: 1 };
+const TYPE_LEN = { u8: 1, s8: 1, u16le: 2, s16le: 2, u16be: 2, s16be: 2, u24le: 3, u24be: 3, u32le: 4, s32le: 4, u32be: 4, bit0: 1, bit1: 1, bit2: 1, bit3: 1, bit4: 1, bit5: 1, bit6: 1, bit7: 1 };
 function readNum(b, off, type) {
   const need = TYPE_LEN[type];
   if (!b || !need || off < 0 || off + need > b.length) return null;
@@ -147,6 +147,7 @@ function readNum(b, off, type) {
     case 'u16be': return (b[off] << 8) | b[off + 1];
     case 's16be': return (((b[off] << 8) | b[off + 1]) << 16) >> 16;
     case 'u24le': return b[off] | (b[off + 1] << 8) | (b[off + 2] << 16);
+    case 'u24be': return (b[off] << 16) | (b[off + 1] << 8) | b[off + 2];
     case 'u32le': return (b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24)) >>> 0;
     case 's32le': return b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24);
     case 'u32be': return ((b[off] << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3]) >>> 0;
@@ -159,7 +160,7 @@ const METRICS = {
   speed_kmh: 'Скорость, км/ч', speed_mph: 'Скорость, mph', temp: 'Температура, °C', mode: 'Режим (1, 2, 3)',
   odometer_km: 'Пробег, км', odometer_mi: 'Пробег, mi', error: 'Код ошибки', custom: 'Своё поле',
 };
-const TYPE_LABELS = { u8: 'u8', s8: 's8', u16le: 'u16le', s16le: 's16le', u16be: 'u16be', s16be: 's16be', u24le: 'u24le', u32le: 'u32le', s32le: 's32le', u32be: 'u32be', bit0: 'бит 0', bit1: 'бит 1', bit2: 'бит 2', bit3: 'бит 3', bit4: 'бит 4', bit5: 'бит 5', bit6: 'бит 6', bit7: 'бит 7' };
+const TYPE_LABELS = { u8: 'u8', s8: 's8', u16le: 'u16le', s16le: 's16le', u16be: 'u16be', s16be: 's16be', u24le: 'u24le', u24be: 'u24be', u32le: 'u32le', s32le: 's32le', u32be: 'u32be', bit0: 'бит 0', bit1: 'бит 1', bit2: 'бит 2', bit3: 'бит 3', bit4: 'бит 4', bit5: 'бит 5', bit6: 'бит 6', bit7: 'бит 7' };
 let fieldSeq = 1;
 function mkField(o = {}) {
   return { id: 'f' + (fieldSeq++) + Math.random().toString(36).slice(2, 5), key: 'custom', name: '', uuid: '', match: '', offset: 0, type: 'u8', scale: 1, add: 0, ...o };
@@ -230,8 +231,11 @@ const state = {
   win: '60', hoverT: null, showTable: false, tab: 'dash',
   an: { key: '', pattern: '', off: null, type: 'u8', mk: '', win: 3 },
   writeTimer: null, geo: null, rollMax: 300,
-  /* connAt / sentAt: nowT() of the last «Подключено» and of the last +SVGT=? sent to wake the dashboard */
-  wake: { connAt: null, sentAt: null, timer: null }, echo: null,
+  /* connAt / sentAt: nowT() of the last «Подключено» and of the last +SVGT=? sent to wake the dashboard;
+     since: nowT() of the first +SVGT=? not answered by data yet */
+  wake: { connAt: null, sentAt: null, since: null, timer: null }, echo: null,
+  /* «Живые данные»: on, a pulse in flight, performance.now() of the last pulse */
+  live: { on: false, busy: false, sentAt: -Infinity },
 };
 function saveSettings() { store.set('bal.settings', settings); }
 const decNonEmpty = d => !!d && (d.fields.length > 0 || !!d.json);
@@ -269,7 +273,9 @@ function saveDecoder() {
 /* ============================================================
    session & telemetry
    ============================================================ */
-const MAX_ENTRIES = 80000;
+/* The dashboard streams ~38 notifications/s; 250 000 entries ≈ 1 h 50 min of riding, ~55 MB in memory.
+   The oldest are dropped in steps of TRIM_STEP, not one by one. */
+const MAX_ENTRIES = 250000, TRIM_STEP = 10000;
 function newTel() { return { vals: new Map(), whOut: 0, whIn: 0, lastPT: null, powerTouched: false, jsonBuf: new Map(), frames: newFrames(), rxT: null }; }
 function newSession(o) {
   /* pushed counts every entry ever added; savedMark is its value at the last download, copy or send */
@@ -277,7 +283,7 @@ function newSession(o) {
   state.tel = newTel(); state.series = []; state.charStats = new Map(); state.rxTimes = []; state.hoverT = null; state.rollMax = 300;
   state.an.off = null;
   clearTimeout(state.wake.timer);
-  state.wake = { connAt: null, sentAt: null, timer: null };
+  state.wake = { connAt: null, sentAt: null, since: null, timer: null };
   state.echo = null;
 }
 function nowT() {
@@ -512,7 +518,7 @@ function pushEntry(e) {
   if (e.h && !e.b) e.b = hexToBytes(e.h) || new Uint8Array(0);
   S.entries.push(e);
   S.pushed++;
-  if (S.entries.length > MAX_ENTRIES) { S.entries.splice(0, S.entries.length - MAX_ENTRIES); S.trimmed = true; }
+  if (S.entries.length > MAX_ENTRIES + TRIM_STEP) { S.entries.splice(0, S.entries.length - MAX_ENTRIES); S.trimmed = true; }
   if (e.k === 'rx' || e.k === 'rd') {
     const key = e.s + '|' + e.u;
     const st = state.charStats.get(key) || { s: e.s, u: e.u, count: 0 };
@@ -524,6 +530,7 @@ function pushEntry(e) {
     if (e.k === 'rx' && state.echo && !S.offline) watchEcho(e);
   }
   feedTelemetry(e);
+  if (e.k === 'rx' && !S.offline && state.live.on) livePulse();
   requestRender();
 }
 function sys(text, err) { pushEntry({ k: 'sys', n: text, err: !!err }); }
@@ -754,6 +761,7 @@ function scheduleReconnect() {
 }
 function disconnect() {
   state.manual = true;
+  state.live.on = false;
   state.connGen++;
   clearTimeout(state.reconnectTimer);
   clearTimeout(state.wake.timer);
@@ -924,7 +932,7 @@ function renderRawBanner(wakeShown) {
 }
 /* The dashboard stays silent until the phone writes a «+…» command. Connected to the real scooter and
    no frame for WAKE.silent ms: offer +SVGT=? (a read-only version query). */
-const WAKE = { silent: 3000, auto: 1000, retry: 3000 };
+const WAKE = { silent: 3000, auto: 1000, retry: 3000, pulse: 3000 };
 /* When data last came: a controller frame or any decoded notification (a JSON board, raw-packet fields). */
 function lastLiveT() {
   const T = state.tel;
@@ -936,7 +944,7 @@ function wakeState() {
   if (state.conn !== 'connected' || state.demo || !state.session || state.session.offline || W.connAt == null || !ffe1Char()) return null;
   const now = nowT(), last = lastLiveT();
   if (now - Math.max(W.connAt, last) < WAKE.silent) return null;
-  return { failed: W.sentAt != null && last < W.sentAt && now - W.sentAt >= WAKE.retry };
+  return { failed: W.since != null && last < W.since && now - W.since >= WAKE.retry };
 }
 function renderWakeBanner() {
   const w = wakeState(), b = $('#wakeBanner');
@@ -948,28 +956,57 @@ function renderWakeBanner() {
   $('#wakeAuto').checked = !!settings.autoWake;
   return true;
 }
-/* After each connect: remember when, and with «Запрашивать сам» wake the dashboard once if it is silent. */
+/* After each connect: remember when, and with «Включать сами» turn «Живые данные» on. */
 function armWake(gen) {
   clearTimeout(state.wake.timer);
-  state.wake = { connAt: nowT(), sentAt: null, timer: null };
-  if (!settings.autoWake) return;
+  state.wake = { connAt: nowT(), sentAt: null, since: null, timer: null };
+  if (!settings.autoWake || state.live.on) return;
   state.wake.timer = setTimeout(() => {
-    if (gen !== state.connGen || state.conn !== 'connected' || lastLiveT() >= state.wake.connAt) return;
-    sendWake(true);
+    if (gen !== state.connGen || state.conn !== 'connected' || state.live.on) return;
+    /* something other than the dashboard streams here (a JSON board, raw-packet fields): leave it alone */
+    const F = state.tel.frames, connAt = state.wake.connAt;
+    if (lastLiveT() >= connAt && !(F.lastT != null && F.lastT >= connAt)) return;
+    startLive(true);
   }, WAKE.auto);
 }
-async function sendWake(auto) {
+async function sendWake(auto, quiet) {
   const msg = $('#wakeMsg'), info = ffe1Char();
-  if (state.conn !== 'connected' || state.demo || !info) { flash(msg, 'Нет связи с самокатом.', true); return false; }
+  if (state.conn !== 'connected' || state.demo || !info) { if (!quiet) flash(msg, 'Нет связи с самокатом.', true); return false; }
   const bytes = CMD.dashVersion.slice();   /* exactly «+SVGT=?», whatever else happens */
   try {
     await bleWrite(info, bytes);
-    state.wake.sentAt = nowT();
-    watchFor(info, bytes, msg, (auto ? 'Запросил данные сам' : 'Запрос отправлен') + ': +SVGT=?.');
+    const W = state.wake;
+    W.sentAt = nowT();
+    if (W.since == null || lastLiveT() >= W.since) W.since = W.sentAt;
+    if (!quiet) watchFor(info, bytes, msg, (auto ? 'Запросил данные сам' : 'Запрос отправлен') + ': +SVGT=?.');
     return true;
-  } catch (e) { flash(msg, 'Не отправилось: ' + errText(e), true); return false; }
+  } catch (e) { if (!quiet) flash(msg, 'Не отправилось: ' + errText(e), true); return false; }
+}
+/* «Живые данные». The dashboard streams for ~4.5 s after each command and then goes quiet
+   (logs/20261014-175429-log.json), so while this is on the page sends +SVGT=? every WAKE.pulse ms.
+   A pulse is checked on every notification (Chrome throttles timers in a hidden tab but still
+   delivers notifications) and on a 1 s timer (restarts a stream that stopped). Only ever these
+   7 bytes, only to FFE1, only while connected to the real scooter; «Отключить» turns it off. */
+function startLive(auto) {
+  state.live.on = true;
+  state.live.sentAt = -Infinity;
+  requestRender(true);
+  return livePulse(auto, true);
+}
+function stopLive() { state.live.on = false; requestRender(true); }
+async function livePulse(auto = true, first = false) {
+  const L = state.live;
+  if (!L.on || L.busy || state.conn !== 'connected' || state.demo || !state.session || state.session.offline || !ffe1Char()) return false;
+  if (performance.now() - L.sentAt < WAKE.pulse) return false;
+  L.busy = true; L.sentAt = performance.now();
+  try { return await sendWake(auto, !first); } finally { L.busy = false; }
+}
+function renderLiveBar() {
+  const on = state.live.on && !state.demo && (state.conn === 'connected' || state.conn === 'reconnecting');
+  $('#liveBar').hidden = !on;
 }
 function renderDashboard() {
+  renderLiveBar();
   renderRawBanner(renderWakeBanner());
   const mph = settings.units === 'mph';
   /* battery */
@@ -1531,7 +1568,7 @@ function clearLog() {
   if (!S) return;
   S.entries = []; S.gh = null; S.savedMark = S.pushed;
   S.startedAt = Date.now(); S.t0 = performance.now();   /* a new recording: its own file name */
-  if (state.wake.connAt != null) state.wake = { ...state.wake, connAt: 0, sentAt: null };   /* the clock restarted */
+  if (state.wake.connAt != null) state.wake = { ...state.wake, connAt: 0, sentAt: null, since: null };   /* the clock restarted */
   state.series = []; state.tel = newTel(); state.charStats = new Map();
   for (const i of state.chars.values()) { i.count = 0; i.last = null; }
   renderCharSelects(); requestRender(true);
@@ -2125,8 +2162,10 @@ function bindControl() {
   $('#btnWake').addEventListener('click', async e => {
     const b = e.currentTarget;
     b.disabled = true;
-    try { await sendWake(false); } finally { b.disabled = false; requestRender(true); }
+    try { await startLive(false); } finally { b.disabled = false; requestRender(true); }
   });
+  $('#btnLiveOff').addEventListener('click', stopLive);
+  setInterval(() => livePulse(), 1000);
 }
 
 /* ============================================================
@@ -2518,5 +2557,5 @@ if (!bleSupported()) { const pill = $('#connPill'); pill.dataset.tone = 'crit'; 
 renderDecoder();
 checkDecoderUpdate();
 requestRender(true);
-window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend, CMD, sendBleCommand, sendWake, wakeLimits: WAKE, normalizeDecoder, decoderToJson };
+window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend, CMD, sendBleCommand, sendWake, startLive, stopLive, wakeLimits: WAKE, normalizeDecoder, decoderToJson };
 })();

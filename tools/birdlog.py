@@ -97,7 +97,7 @@ def char_key(e):
 # raw notifications. A field's value: raw = read(type, offset); with mask,
 # raw = (raw & mask) >> (trailing zero bits of mask); value = raw * scale + add.
 
-TYPE_LEN = {'u8': 1, 's8': 1, 'u16le': 2, 's16le': 2, 'u16be': 2, 's16be': 2, 'u24le': 3, 'u32le': 4, 's32le': 4,
+TYPE_LEN = {'u8': 1, 's8': 1, 'u16le': 2, 's16le': 2, 'u16be': 2, 's16be': 2, 'u24le': 3, 'u24be': 3, 'u32le': 4, 's32le': 4,
             'u32be': 4, **{'bit%d' % i: 1 for i in range(8)}}
 FRAMINGS = ('colon-sum16',)
 METRICS = ('battery_pct', 'voltage', 'current', 'power', 'speed_kmh', 'speed_mph', 'temp', 'mode',

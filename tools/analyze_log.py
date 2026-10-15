@@ -41,7 +41,7 @@ FRAME_MIN = 5        # this many colon-sum16 frames on a characteristic and it i
 
 TYPES = {
     'u8': 1, 's8': 1, 'u16le': 2, 's16le': 2, 'u16be': 2, 's16be': 2,
-    'u24le': 3, 'u32le': 4, 'u32be': 4,
+    'u24le': 3, 'u24be': 3, 'u32le': 4, 'u32be': 4,
 }
 
 
@@ -61,6 +61,8 @@ def read_num(b, off, typ):
         return v - 65536 if typ == 's16be' and v > 32767 else v
     if typ == 'u24le':
         return b[off] | b[off + 1] << 8 | b[off + 2] << 16
+    if typ == 'u24be':
+        return b[off] << 16 | b[off + 1] << 8 | b[off + 2]
     if typ == 'u32le':
         return b[off] | b[off + 1] << 8 | b[off + 2] << 16 | b[off + 3] << 24
     if typ == 'u32be':
