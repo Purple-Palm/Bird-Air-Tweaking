@@ -1,7 +1,10 @@
 // «Скорость по GPS»: the phone's GPS speed goes into the log (speed and accuracy only, never
 // coordinates), shows on the speed tile until a decoder speed field exists, and stops with the session.
 const { test, expect, openApp } = require('./helpers');
-const { V3_STORAGE, realDash } = require('./real-dash');
+const { V3, realDash } = require('./real-dash');
+
+/* The repository decoder without its speed field: the speed tile falls back to GPS. */
+const NO_SPEED = { 'bal.decoder.repo': { ...V3, fields: V3.fields.filter(f => f.key !== 'speed_kmh') }, 'bal.decoder.active': 'repo' };
 
 /* A scripted navigator.geolocation: the test pushes positions with window.__gps.fix(). */
 const fakeGeo = () => {
@@ -30,7 +33,7 @@ async function connect(page) {
 
 test('GPS speed: only speed and accuracy reach the log; speed tile shows it «по GPS»', async ({ page }) => {
   await page.addInitScript(fakeGeo);
-  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { units: 'kmh' }, ...V3_STORAGE } });
+  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { units: 'kmh' }, ...NO_SPEED } });
   expect(await page.evaluate(() => window.__gps.watchers.size)).toBe(0);    // the demo never asks for GPS
   await connect(page);
   expect(await page.evaluate(() => window.__gps.watchers.size)).toBe(0);    // off by default
@@ -60,7 +63,7 @@ test('GPS speed: only speed and accuracy reach the log; speed tile shows it «п
 
 test('GPS denied: the box unticks and says how to allow it', async ({ page }) => {
   await page.addInitScript(fakeGeo);
-  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { gpsSpeed: true }, ...V3_STORAGE } });
+  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { gpsSpeed: true }, ...NO_SPEED } });
   await connect(page);
   expect(await page.evaluate(() => window.__gps.watchers.size)).toBe(1);    // on from the settings
   await page.evaluate(() => window.__gps.deny());

@@ -41,7 +41,7 @@ test('a mode tap starts the stream: voltage, current, SoC and mode on the gauges
   await expect(page.locator('#modeName')).toContainText('TAKEOFF');
   await expect(page.locator('#mCurrent .val')).toHaveText(/^0,\dА$/);
   await expect(page.locator('#pwrVal')).toHaveText(/^\d+Вт$/);
-  await expect(page.locator('#spdVal')).toHaveText('—');                         // no speed field yet
+  await expect(page.locator('#spdVal')).toHaveText('0,0mph');                    // standing still
   await expect(page.locator('#rawBanner')).toBeHidden();
   await expect(page.locator('#wakeBanner')).toBeHidden();
   const v = await tel(page, 'voltage');
@@ -267,7 +267,7 @@ test('the real log with decoder v3 applied from the repository', async ({ page }
   await expect(page.locator('#batVal')).toHaveText('75%');
   await expect(page.locator('#modeName')).toContainText('TAKEOFF');        // the last mode tapped was +MODE=1
   expect(await tel(page, 'odometer_km')).toBeCloseTo(1424.8, 3);
-  await expect(page.locator('#spdVal')).toHaveText('—');
+  await expect(page.locator('#spdVal')).toHaveText('0,0mph');
   expect(await tel(page, 'mode')).toBe(1);
   // every frame of the log: 268 complete ones and 16 that lost their 0x3A
   expect(await frames(page)).toEqual({ total: 284, bad: 0, types: ['17 00 0D', '18 20 10'] });
@@ -391,4 +391,23 @@ test('a JSON board streaming on FFE1 is not a silent dashboard: no wake banner, 
   await page.waitForTimeout(2500);
   await expect(page.locator('#wakeBanner')).toBeHidden();
   expect(await writesTo(page)).toEqual([]);
+});
+
+test('decoder v5 on riding frames: speed u16 BE, regen shown when the current goes into the battery', async ({ page }) => {
+  await openApp(page, { bluetooth: true, storage: { 'bal.settings': { units: 'kmh' }, ...V3_STORAGE } });
+  await connect(page, realDash());
+  // 3A 17 00 0D from the ride (t=552 s): avg 14,9 km/h, speed 01 00 = 25,6 km/h, FLY, trip 5,2 km, odometer 1424,8
+  await inject(page, [hx(frame(0x17, 0x00, [0x00, 0x95, 0x01, 0x00, 0x00, 0x0B, 0x00, 0x34, 0x00, 0x37, 0xA8, 0x01, 0x01]))]);
+  await expect.poll(() => tel(page, 'speed_kmh')).toBeCloseTo(25.6, 3);
+  await expect(page.locator('#spdVal')).toHaveText('25,6км/ч');
+  await expect(page.locator('#spdSub')).not.toContainText('GPS');
+  const custom = await page.evaluate(() => window.__bal.decoder.fields.filter(f => f.key === 'custom').map(f => [f.name, f._last]));
+  expect(custom).toEqual(expect.arrayContaining([['Поездка с включения, км', 5.2], ['Средняя скорость с включения, км/ч', 14.9]]));
+  // 3A 18 20 10 with the current +5000 mA (into the battery) while moving: regen
+  const regen = [0x03, 0x00, 0x00, 0x1F, 0x22, 0x40, 0x92, 0x88, 0x13, 0x10, 0x0A, 0x0B, 0x11, 0x3A, 0x69, 0x00];
+  await inject(page, [hx(frame(0x18, 0x20, regen))]);
+  await expect.poll(() => tel(page, 'current')).toBeCloseTo(-5, 3);
+  await expect(page.locator('#pwrState .txt')).toHaveText('Рекуперация');
+  expect(await tel(page, 'temp')).toBe(31);
+  expect(await tel(page, 'battery_pct')).toBe(58);
 });
