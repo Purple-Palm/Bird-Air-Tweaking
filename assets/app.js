@@ -436,6 +436,7 @@ function setConn(id, detail) {
   $('#btnDisconnect').textContent = id === 'reconnecting' ? 'Не переподключаться' : 'Отключить';
   renderBanners();
   renderWriteCard();
+  if (state.tab === 'control') renderControl();
 }
 function bleSupported() { return !!(navigator.bluetooth && navigator.bluetooth.requestDevice) && window.isSecureContext; }
 function errText(e) {
@@ -721,7 +722,7 @@ function demoTick() {
    rendering scheduler
    ============================================================ */
 let queued = false, queuedForce = false, lastRender = 0;
-const lastPart = { log: 0, an: 0, exp: 0, dec: 0 };
+const lastPart = { log: 0, an: 0, exp: 0, dec: 0, ctl: 0 };
 /* A forced request upgrades one already queued: a log from a file gets no periodic re-render to catch up. */
 function requestRender(now) {
   if (now) queuedForce = true;
@@ -751,6 +752,7 @@ function renderAll(force) {
     renderGhName();
   }
   if (state.tab === 'decoder' && due('dec', 400, force)) renderDecoderValues();
+  if (state.tab === 'control' && due('ctl', 400, force)) renderControl();
 }
 setInterval(() => { if (state.session && !state.session.offline) requestRender(); }, 500);
 window.addEventListener('resize', () => requestRender(true));
@@ -1743,6 +1745,96 @@ $('#wrRepeat').addEventListener('change', e => {
 });
 
 /* ============================================================
+   control page — documented Bird Air commands on the owner's own scooter.
+   ASCII commands from the Bird app (see docs/bird-air-protocol.md). Writes to FFE1 only,
+   gated by «Разрешить отправку», OTA never touched, passcode entered by the owner.
+   ============================================================ */
+const ascii = s => new Uint8Array(Array.from(s, c => c.charCodeAt(0)));
+const CMD = {
+  mode: { 1: ascii('+MODE=1'), 2: ascii('+MODE=2'), 3: ascii('+MODE=3') },
+  lightOn: ascii('+HLGT=1'), lightOff: ascii('+HLGT=0'),
+  dashVersion: ascii('+SVGT=?'), dashHardware: ascii('+HVGT=?'),
+  challenge: new Uint8Array([0xAE, 0x4B, 0x45, 0x59, 0x3F, 0xD6]),      // AE "KEY?" D6
+};
+/* AE "KEY" + [code, checksum], checksum = (0xAE+0x4B+0x45+0x59 + code) & 0xFF (sendPasscode). */
+function passcodePacket(code) {
+  const base = [0xAE, 0x4B, 0x45, 0x59];
+  const sum = (base.reduce((a, b) => a + b, 0) + code) & 0xFF;
+  return new Uint8Array([...base, code & 0xFF, sum]);
+}
+function ffe1Char() {
+  for (const info of state.chars.values()) {
+    if (info.uuid === normUuid('ffe1') && !info.danger && (info.props.write || info.props.wnr)) return info;
+  }
+  return null;
+}
+/* One documented command to FFE1. Mirrors the write-console guards; no OTA, needs allowWrite + link. */
+async function sendBleCommand(bytes, label, msgEl) {
+  const msg = msgEl || $('#ctlMsg');
+  if (!settings.allowWrite) { flash(msg, 'Отправка команд выключена. Включи её выше.', true); return false; }
+  if (state.conn !== 'connected') { flash(msg, 'Нет связи с самокатом.', true); return false; }
+  const info = ffe1Char();
+  if (!info || !info.obj) { flash(msg, 'Характеристика 0xFFE1 не найдена — подключись к самокату.', true); return false; }
+  if (info.danger) { flash(msg, 'В эту характеристику писать нельзя.', true); return false; }
+  try {
+    const c = info.obj;
+    if (info.props.wnr && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(bytes);
+    else if (c.writeValueWithResponse) await c.writeValueWithResponse(bytes);
+    else await c.writeValue(bytes);
+    pushEntry({ k: 'tx', s: info.service, u: info.uuid, b: bytes });
+    const txt = printable(bytes);
+    flash(msg, label + ' отправлено' + (txt ? ': ' + txt.trim() : '') + '. Ответ ищи в логе (раздел «Данные»).');
+    return true;
+  } catch (e) { flash(msg, label + ' не отправилось: ' + errText(e), true); return false; }
+}
+async function tapCommand(btn, bytes, label, msgEl) {
+  if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+  try { await sendBleCommand(bytes, label, msgEl); }
+  finally { if (btn) { btn.disabled = false; btn.classList.remove('busy'); renderControl(); } }
+}
+function renderControl() {
+  const gate = $('#ctlGate'), gt = $('#ctlGateText'), gb = $('#ctlGateBtns');
+  const live = state.conn === 'connected';
+  const ready = settings.allowWrite && live;
+  gate.hidden = ready;
+  gb.replaceChildren();
+  if (!ready) {
+    if (!settings.allowWrite) {
+      gt.textContent = 'Управление выключено. Кнопки меняют состояние самоката, поэтому включи отправку команд явно.';
+      gb.append(h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => { settings.allowWrite = true; saveSettings(); $('#setWrite').checked = true; renderWriteCard(); renderControl(); } }, 'Включить отправку'));
+    } else {
+      gt.textContent = state.demo ? 'Это демо — настоящих команд нет. Подключи самокат, чтобы управлять.' : 'Нет связи с самокатом. Подключись, чтобы управлять.';
+      if (!live) gb.append(h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: connect }, 'Подключить самокат'));
+    }
+  }
+  $('#ctlCard').hidden = !ready;
+  $('#ctlProbeCard').hidden = !ready;
+  const ffe1 = ready && ffe1Char();
+  for (const b of $$('#ctlModes .bigbtn')) {
+    b.disabled = !ffe1;
+    b.setAttribute('aria-pressed', String(Math.round(telV('mode')) === Number(b.dataset.mode)));
+  }
+  $('#ctlLightOn').disabled = !ffe1;
+  $('#ctlLightOff').disabled = !ffe1;
+  for (const id of ['#ctlVer', '#ctlHandshake', '#ctlSendPass']) $(id).disabled = !ffe1;
+}
+function bindControl() {
+  for (const b of $$('#ctlModes .bigbtn')) {
+    b.addEventListener('click', () => { const m = Number(b.dataset.mode); tapCommand(b, CMD.mode[m], 'Режим ' + m); });
+  }
+  $('#ctlLightOn').addEventListener('click', e => tapCommand(e.currentTarget, CMD.lightOn, 'Фара вкл'));
+  $('#ctlLightOff').addEventListener('click', e => tapCommand(e.currentTarget, CMD.lightOff, 'Фара выкл'));
+  $('#ctlVer').addEventListener('click', e => tapCommand(e.currentTarget, CMD.dashVersion, 'Запрос версии', $('#ctlProbeMsg')));
+  $('#ctlHandshake').addEventListener('click', e => tapCommand(e.currentTarget, CMD.challenge, 'Рукопожатие', $('#ctlProbeMsg')));
+  $('#ctlSendPass').addEventListener('click', e => {
+    const v = $('#ctlPass').value.trim();
+    const code = parseInt(v, 10);
+    if (!v || !Number.isFinite(code) || code < 0 || code > 255) { flash($('#ctlPassMsg'), 'Код — одно число от 0 до 255.', true); return; }
+    tapCommand(e.currentTarget, passcodePacket(code), 'Код доступа', $('#ctlPassMsg'));
+  });
+}
+
+/* ============================================================
    decoder editor
    ============================================================ */
 let decTimer = null;
@@ -2026,7 +2118,7 @@ function bindSettings() {
   bool('#setSub', 'autoSubscribe');
   bool('#setReconnect', 'autoReconnect');
   bool('#setWake', 'wakeLock', () => { if (!settings.wakeLock) releaseWakeLock(); else if (state.conn === 'connected') acquireWakeLock(); });
-  bool('#setWrite', 'allowWrite', () => { if (!settings.allowWrite) stopWriteRepeat(); renderWriteCard(); });
+  bool('#setWrite', 'allowWrite', () => { if (!settings.allowWrite) stopWriteRepeat(); renderWriteCard(); renderControl(); });
   $('#logCollapse').checked = settings.collapse;
   $('#logCollapse').addEventListener('change', e => { settings.collapse = e.target.checked; saveSettings(); renderLog(); });
   $('#logFilter').addEventListener('change', () => renderLog());
@@ -2035,7 +2127,7 @@ function bindSettings() {
 /* ============================================================
    tabs, chart controls, buttons
    ============================================================ */
-const TABS = ['dash', 'data', 'decoder', 'guide'];
+const TABS = ['dash', 'data', 'control', 'decoder', 'guide'];
 function showTab(id) {
   if (!TABS.includes(id)) id = 'dash';
   state.tab = id;
@@ -2047,6 +2139,7 @@ function showTab(id) {
   if (id === 'guide') renderChecks();
   if (id === 'decoder') renderDecoder();
   if (id === 'data') { renderExplorer(); renderCharSelects(); }
+  if (id === 'control') renderControl();
   requestRender(true);
 }
 for (const t of $$('.tab')) t.addEventListener('click', () => showTab(t.dataset.tab));
@@ -2107,6 +2200,7 @@ async function renderChecks() {
 (() => { const b = $('#build'), v = b.dataset.build || ''; b.textContent = v && !v.startsWith('__') ? 'сборка ' + v : 'локальная копия'; })();
 bindSettings();
 bindGitHub();
+bindControl();
 syncWinSeg();
 const initialTab = (location.hash || '').slice(1);
 showTab(TABS.includes(initialTab) ? initialTab : store.get('bal.tab', 'dash'));
@@ -2116,5 +2210,5 @@ if (!bleSupported()) { const pill = $('#connPill'); pill.dataset.tone = 'crit'; 
 renderDecoder();
 checkDecoderUpdate();
 requestRender(true);
-window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend };
+window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend, CMD, passcodePacket, sendBleCommand };
 })();

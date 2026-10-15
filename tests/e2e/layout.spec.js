@@ -12,7 +12,7 @@ for (const spacing of [null, '0.08em']) test(`no horizontal scroll at 390 px on 
   await openApp(page, { storage: { 'bal.settings': { allowWrite: true } } });
   if (spacing) await page.addStyleTag({ content: `* { letter-spacing: ${spacing} !important; }` });
   await page.waitForTimeout(1500);
-  for (const tab of ['dash', 'data', 'decoder', 'guide']) {
+  for (const tab of ['dash', 'data', 'control', 'decoder', 'guide']) {
     await page.click('#t-' + tab);
     if (tab === 'dash') await page.click('#btnTable');
     if (tab === 'data') {

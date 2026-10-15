@@ -42,6 +42,7 @@
     <nav class="tabs" role="tablist" aria-label="Разделы">
       <button class="tab" role="tab" id="t-dash" data-tab="dash" aria-controls="v-dash" aria-selected="true" type="button">Приборы</button>
       <button class="tab" role="tab" id="t-data" data-tab="data" aria-controls="v-data" aria-selected="false" type="button">Данные</button>
+      <button class="tab" role="tab" id="t-control" data-tab="control" aria-controls="v-control" aria-selected="false" type="button">Управление</button>
       <button class="tab" role="tab" id="t-decoder" data-tab="decoder" aria-controls="v-decoder" aria-selected="false" type="button">Декодер</button>
       <button class="tab" role="tab" id="t-guide" data-tab="guide" aria-controls="v-guide" aria-selected="false" type="button">Инструкция</button>
     </nav>
@@ -305,6 +306,53 @@
         </div>
       </details>
     </div>
+  </section>
+
+  <!-- ===================== CONTROL ===================== -->
+  <section class="view" id="v-control" role="tabpanel" aria-labelledby="t-control" hidden>
+    <div class="banner" id="ctlGate">
+      <span id="ctlGateText"></span>
+      <span class="row" id="ctlGateBtns"></span>
+    </div>
+
+    <div class="card ctl" id="ctlCard" hidden>
+      <div class="card-head"><h2>Режим</h2><span class="empty" id="ctlModeNote">команда уйдёт в самокат по нажатию</span></div>
+      <div class="bigbtns" id="ctlModes">
+        <button class="bigbtn" data-mode="1" type="button"><b>TAKEOFF</b><small>до 9 mph</small></button>
+        <button class="bigbtn" data-mode="2" type="button"><b>GLIDE</b><small>до 12,5 mph</small></button>
+        <button class="bigbtn" data-mode="3" type="button"><b>FLY</b><small>до 16 mph</small></button>
+      </div>
+
+      <h2>Фара</h2>
+      <div class="bigbtns two">
+        <button class="bigbtn" id="ctlLightOn" type="button"><b>Фара вкл</b></button>
+        <button class="bigbtn" id="ctlLightOff" type="button"><b>Фара выкл</b></button>
+      </div>
+      <p class="msg" id="ctlMsg" role="status"></p>
+    </div>
+
+    <div class="card" id="ctlProbeCard" hidden>
+      <div class="card-head"><h2>Диагностика и рукопожатие</h2></div>
+      <p class="hint">Если приборы пустые, самокат, скорее всего, не отдаёт телеметрию без «рукопожатия» приложения. Сначала безопасный запрос версии — он только спрашивает, ничего не меняет. Если руль ответит (строка появится в логе и ниже), значит он слушает, и дальше разберём поток телеметрии.</p>
+      <div class="row">
+        <button class="btn" id="ctlVer" type="button">Запросить версию (+SVGT=?)</button>
+        <button class="btn" id="ctlHandshake" type="button">Рукопожатие (KEY?)</button>
+      </div>
+      <p class="msg" id="ctlProbeMsg" role="status"></p>
+      <details>
+        <summary>Мой код доступа (passcode)</summary>
+        <div class="view" style="margin-top:10px">
+          <p class="hint">Код нужен только если самокат требует его для команд. Это твой код от твоего самоката — я его не подбираю. Если не знаешь — оставь пустым: кнопки режима сработают, только если самокат пускает без кода.</p>
+          <div class="row">
+            <label class="f">Код (число)<input id="ctlPass" class="mono" inputmode="numeric" autocomplete="off" placeholder="например 1234"></label>
+            <button class="btn" id="ctlSendPass" type="button">Отправить код</button>
+          </div>
+          <p class="msg" id="ctlPassMsg" role="status"></p>
+        </div>
+      </details>
+    </div>
+
+    <p class="hint" id="ctlWarn">Эти кнопки меняют состояние самоката и шлют только задокументированные команды приложения Bird (переключение заводских режимов и фара). Характеристики обновления прошивки (OTA) не трогаются никогда.</p>
   </section>
 
   <!-- ===================== GUIDE ===================== -->
