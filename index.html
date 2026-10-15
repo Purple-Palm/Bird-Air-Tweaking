@@ -71,6 +71,14 @@
       <span id="idleText">Подключи самокат, загрузи записанный лог или включи демо.</span>
       <button class="btn btn-sm" id="btnDemoStart" type="button">Показать демо</button>
     </div>
+    <div class="banner warn" id="wakeBanner" role="status" hidden>
+      <span id="wakeText">Руль молчит: данные он начинает слать после команды с телефона.</span>
+      <span class="row">
+        <button class="btn btn-sm btn-primary" id="btnWake" type="button">Запросить данные (+SVGT=?)</button>
+        <label class="check"><input type="checkbox" id="wakeAuto"><span>Запрашивать сам при подключении</span></label>
+      </span>
+      <p class="msg" id="wakeMsg"></p>
+    </div>
     <div class="banner" id="rawBanner" hidden>
       <span id="rawText"></span>
       <button class="btn btn-sm btn-primary" id="btnRawSend" type="button">Отправить лог</button>
@@ -180,6 +188,12 @@
       </div>
     </div>
 
+    <div class="card" id="frameCard" hidden>
+      <div class="card-head"><h2>Кадры контроллера</h2><span class="empty" id="frameNote"></span></div>
+      <p class="hint">Руль пересылает по 0xFFE1 кадры контроллера: <code>3A</code>, адрес, команда, длина, данные, сумма (2 байта), <code>0D 0A</code>. Ниже — данные последнего кадра каждого типа; подсвечены байты, которые менялись за последние 5 с. Номер байта — как в декодере: от <code>3A</code>, данные начинаются с байта 4.</p>
+      <div id="frameList" class="frames"></div>
+    </div>
+
     <div class="card" id="anCard">
       <div class="card-head"><h2>Разбор байтов</h2></div>
       <div class="fgrid">
@@ -216,10 +230,10 @@
 
     <div class="card" id="writeCard" hidden>
       <h2>Отправка команд</h2>
-      <div class="warnbox">Запись меняет состояние самоката. Случайные байты могут сбить настройки или перевести Bluetooth-модуль в режим обновления прошивки, и руль перестанет работать. Отправляй только команды, которые видел в логе приложения Bird. Характеристики обновления прошивки (OTA) заблокированы.</div>
+      <div class="warnbox">Запись меняет состояние самоката. Случайные байты могут сбить настройки или перевести Bluetooth-модуль в режим обновления прошивки, и руль перестанет работать. Отправляй только команды, которые видел в логе приложения Bird. Характеристики обновления прошивки (OTA) заблокированы. Байты <code>AE 4B 45 59</code> («KEY?») тоже заблокированы: после них руль теряет связь с контроллером, показывает гаечный ключ и ошибку 37 до выключения самоката.</div>
       <div class="fgrid">
         <label class="f">Куда<select id="wrChar"></select></label>
-        <label class="f">Байты (hex)<input id="wrHex" class="mono" placeholder="5A A5 01 3E 20 01 B0" autocomplete="off"></label>
+        <label class="f">Байты (hex)<input id="wrHex" class="mono" placeholder="2B 53 56 47 54 3D 3F" autocomplete="off"></label>
       </div>
       <div class="row">
         <button class="btn" id="wrSend" type="button">Отправить</button>
@@ -243,6 +257,7 @@
       <label class="check"><input type="checkbox" id="setReconnect"><span>Переподключаться, если связь оборвалась<small>Чинит главную беду приложения Bird: соединение держится, пока открыта страница.</small></span></label>
       <label class="check"><input type="checkbox" id="setWake"><span>Не гасить экран, пока самокат подключён</span></label>
       <label class="check"><input type="checkbox" id="setWrite"><span>Разрешить отправку команд в самокат<small>Только для разбора протокола. По умолчанию выключено.</small></span></label>
+      <label class="check"><input type="checkbox" id="setAutoWake"><span>Запрашивать данные у руля при подключении<small>Руль молчит, пока телефон не пришлёт команду. Через секунду после подключения страница сама отправит безопасный запрос версии <code>+SVGT=?</code>, если кадров ещё нет. По умолчанию выключено.</small></span></label>
     </div>
 
     <div class="card" id="ghCard">
@@ -293,6 +308,7 @@
         <button class="btn btn-danger" id="decClear" type="button">Удалить все поля</button>
       </div>
       <label class="check"><input type="checkbox" id="decJson"><span>Поток JSON от своей платы (ESP32)<small>Строки вида {"v":38.2,"i":-2.1,"spd":18.5,"soc":64}. Ключи: v, i, p, soc, spd (км/ч) или mph, t, mode, odo.</small></span></label>
+      <label class="check"><input type="checkbox" id="decFraming"><span>UART-кадры «: … CR LF» (сумма16)<small>Руль Bird Air шлёт кадры контроллера <code>3A</code> адрес команда длина данные сумма16 <code>0D 0A</code>, порезанные на уведомления по 20 байт. С галочкой поля читаются из целого кадра с верной суммой, байт 0 — <code>3A</code>; «Начало пакета» — начало кадра, например <code>3A 18 20 10</code>.</small></span></label>
       <div id="decFields" class="view"></div>
       <details>
         <summary>Конфиг текстом</summary>
@@ -332,27 +348,15 @@
     </div>
 
     <div class="card" id="ctlProbeCard">
-      <div class="card-head"><h2>Диагностика и рукопожатие</h2></div>
-      <p class="hint">Если приборы пустые, самокат, скорее всего, не отдаёт телеметрию без «рукопожатия» приложения. Сначала безопасный запрос версии — он только спрашивает, ничего не меняет. Если руль ответит (строка появится в логе и ниже), значит он слушает, и дальше разберём поток телеметрии.</p>
+      <div class="card-head"><h2>Диагностика</h2></div>
+      <p class="hint">Руль молчит, пока телефон не пришлёт ему команду «+…»; после неё он начинает пересылать кадры контроллера. Запрос версии — безопасный: он только спрашивает, ничего не меняет. Руль отвечает строкой вроде «+SVGT=0» — она появится ниже и в логе. Если кадров так и нет, нажми свой текущий режим выше: после команды режима поток точно идёт.</p>
       <div class="row">
         <button class="btn" id="ctlVer" type="button">Запросить версию (+SVGT=?)</button>
-        <button class="btn" id="ctlHandshake" type="button">Рукопожатие (KEY?)</button>
       </div>
       <p class="msg" id="ctlProbeMsg" role="status"></p>
-      <details>
-        <summary>Мой код доступа (passcode)</summary>
-        <div class="view" style="margin-top:10px">
-          <p class="hint">Код нужен только если самокат требует его для команд. Это твой код от твоего самоката — я его не подбираю. Если не знаешь — оставь пустым: кнопки режима сработают, только если самокат пускает без кода.</p>
-          <div class="row">
-            <label class="f">Код (число)<input id="ctlPass" class="mono" inputmode="numeric" autocomplete="off" placeholder="например 1234"></label>
-            <button class="btn" id="ctlSendPass" type="button">Отправить код</button>
-          </div>
-          <p class="msg" id="ctlPassMsg" role="status"></p>
-        </div>
-      </details>
     </div>
 
-    <p class="hint" id="ctlWarn">Эти кнопки меняют состояние самоката и шлют только задокументированные команды приложения Bird (переключение заводских режимов и фара). Характеристики обновления прошивки (OTA) не трогаются никогда.</p>
+    <p class="hint" id="ctlWarn">Эти кнопки меняют состояние самоката и шлют только задокументированные команды приложения Bird (переключение заводских режимов и фара). Характеристики обновления прошивки (OTA) не трогаются никогда. «Рукопожатие» KEY? (<code>AE 4B 45 59 …</code>) отсюда убрано и заблокировано везде: на этом самокате оно рвёт связь руля с контроллером — гаечный ключ и ошибка 37 до выключения, а на ходу так может пропасть тяга.</p>
   </section>
 
   <!-- ===================== GUIDE ===================== -->
@@ -396,7 +400,7 @@
 
     <div class="card guide">
       <h2>Если самокат молчит</h2>
-      <p class="hint">Значит, данные он отдаёт только после «рукопожатия» с приложением Bird. Тогда нужно подсмотреть, что приложение ему пишет. Android умеет записывать весь Bluetooth-обмен:</p>
+      <p class="hint">Руль Bird Air начинает слать данные только после команды с телефона. На «Приборах» появится баннер «Руль молчит» — нажми в нём «Запросить данные (+SVGT=?)». Если и после этого тихо, открой «Управление» и нажми свой текущий режим: после команды режима поток идёт. Если и это не помогло, нужно подсмотреть, что пишет самокату приложение Bird. Android умеет записывать весь Bluetooth-обмен:</p>
       <ol>
         <li>Настройки → Сведения о телефоне → Сведения о ПО → 7 раз нажми «Номер сборки». Появятся «Параметры разработчика».</li>
         <li>В «Параметрах разработчика» включи журнал HCI Bluetooth (Enable Bluetooth HCI snoop log) в полном режиме «Включено», не «Отфильтрованный». Выключи и снова включи Bluetooth.</li>

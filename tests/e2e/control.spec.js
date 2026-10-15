@@ -40,23 +40,21 @@ test('mode and light buttons send the documented commands, never OTA', async ({ 
   expect(tx).toContain(str('+MODE=3'));
 });
 
-test('handshake and passcode use the right bytes; passcode checksum', async ({ page }) => {
+// AE "KEY?" stopped the dashboard's link to the controller (wrench, error 37): no handshake or passcode UI is left.
+test('no KEY? handshake or passcode in the control tab, and the API refuses them', async ({ page }) => {
   await openApp(page, { bluetooth: true, tab: 'control', storage: { 'bal.settings': { allowWrite: true } } });
   await connect(page);
-  // checksum = (0xAE+0x4B+0x45+0x59 + code) & 0xFF
-  const pkt = await page.evaluate(() => Array.from(window.__bal.passcodePacket(10)));
-  expect(pkt.slice(0, 4)).toEqual([0xAE, 0x4B, 0x45, 0x59]);
-  expect(pkt[4]).toBe(10);
-  expect(pkt[5]).toBe((0xAE + 0x4B + 0x45 + 0x59 + 10) & 0xFF);
-  await page.click('#ctlHandshake');
-  await expect.poll(() => writesTo(page, FFE1)).toContain('AE 4B 45 59 3F D6');
-  await page.locator('#ctlProbeCard details summary').click();
-  await page.fill('#ctlPass', '10');
-  await page.click('#ctlSendPass');
-  await expect.poll(() => writesTo(page, FFE1)).toContain(pkt.map(x => x.toString(16).padStart(2, '0')).join(' ').toUpperCase());
-  await page.fill('#ctlPass', '999');
-  await page.click('#ctlSendPass');
-  await expect(page.locator('#ctlPassMsg')).toContainText('от 0 до 255');
+  for (const id of ['#ctlHandshake', '#ctlPass', '#ctlSendPass', '#ctlPassMsg']) await expect(page.locator(id)).toHaveCount(0);
+  await expect(page.locator('#v-control details')).toHaveCount(0);
+  const labels = await page.locator('#v-control button').allTextContents();
+  expect(labels.filter(t => /KEY|рукопожат|код доступа|passcode/i.test(t))).toEqual([]);
+  await expect(page.locator('#ctlVer')).toBeEnabled();
+  await expect(page.locator('#ctlProbeCard h2')).toHaveText('Диагностика');
+  expect(await page.evaluate(() => [typeof window.__bal.passcodePacket, 'challenge' in window.__bal.CMD])).toEqual(['undefined', false]);
+  const sent = await page.evaluate(() => window.__bal.sendBleCommand(new Uint8Array([0xAE, 0x4B, 0x45, 0x59, 10, 0x01]), 'Код'));
+  expect(sent).toBe(false);
+  await expect(page.locator('#ctlMsg')).toHaveText('Заблокировано: KEY? останавливает связь руля с контроллером (ошибка 37).');
+  expect(await writesTo(page, FFE1)).toEqual([]);
 });
 
 test('with the write switch off, a command is refused', async ({ page }) => {

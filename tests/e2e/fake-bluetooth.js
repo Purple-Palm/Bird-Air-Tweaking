@@ -2,7 +2,8 @@
    One scooter like the real one: 1800/2A00 (read, notify), FFE0/FFE1 (notify, write without response), 180A/2A29 (read "HL Corp")
    and Telink OTA 1912/2B12 (read, write, notify), which the page must never touch.
    Tests drive it through window.__fakeBle: notify(uuid, bytes), drop(), calls, failConnects, discoverDelay,
-   connectDelay (disconnect() during it aborts the connect, as in Chrome), requestError {name, message}. */
+   connectDelay (disconnect() during it aborts the connect, as in Chrome), requestError {name, message}.
+   fake.dash (off unless a test sets it) models the real dashboard behind FFE1, see dashWrite() below. */
 (() => {
   const BASE = '-0000-1000-8000-00805f9b34fb';
   const full = u => (/^[0-9a-f]{4}$/i.test(u) ? '0000' + u + BASE : u).toLowerCase();
@@ -36,7 +37,11 @@
     }
     async startNotifications() { this._op('startNotifications'); this._notifying = true; return this; }
     async stopNotifications() { calls.push(['stopNotifications', this.uuid]); this._notifying = false; return this; }
-    async writeValue(v) { this._op('write'); calls.push(['writeData', this.uuid, hex(v)]); }
+    async writeValue(v) {
+      this._op('write');
+      calls.push(['writeData', this.uuid, hex(v)]);
+      if (this.uuid === full('ffe1')) dashWrite(view(v).slice());
+    }
     writeValueWithResponse(v) { return this.writeValue(v); }
     writeValueWithoutResponse(v) { return this.writeValue(v); }
     _emit(bytes) {
@@ -65,7 +70,7 @@
   service('00010203-0405-0607-0809-0a0b0c0d1912', [['00010203-0405-0607-0809-0a0b0c0d2b12', { read: true, write: true, writeWithoutResponse: true, notify: true }, [0]]]);
 
   const fake = {
-    device, services, calls, failConnects: 0, discoverDelay: 0, connectDelay: 0, requestError: null,
+    device, services, calls, failConnects: 0, discoverDelay: 0, connectDelay: 0, requestError: null, dash: null,
     get connected() { return connected; },
     char(u) { for (const s of services) for (const c of s._chars) if (c.uuid === full(u)) return c; return null; },
     notify(u, bytes) { return this.char(u)._emit(bytes); },
@@ -73,9 +78,46 @@
       if (!connected) return;
       connected = false;
       for (const s of services) for (const c of s._chars) c._notifying = false;
+      dashStop();
       device.dispatchEvent(new Event('gattserverdisconnected'));
     },
   };
+
+  /* The real dashboard (logs/20261014-174148-log.json): silent until the phone writes an ASCII «+…»
+     command, then it answers and keeps relaying the controller's UART frames, cut into notifications.
+     fake.dash = {
+       after: { '+MODE=1': { reply: [hex…], loop: [hex…] }, … }  — real notification chunks recorded after
+         that command: reply = up to and including its echo/answer, loop = the stream that followed;
+       wakes(text) — which commands start the stream (default: any «+…»);
+       every — ms between notifications (default 15).
+     }
+     A command without an entry is echoed back. AE "KEY?" answers "OK OK OK " and stops the stream for
+     good (on the scooter: wrench and error 37 until a power cycle). A dropped link silences it again. */
+  const ascii = s => Array.from(s, c => c.charCodeAt(0));
+  let dashTimer = null, dashQueue = [], dashLoop = null, dashI = 0, dashOn = false;
+  function dashStop() { clearInterval(dashTimer); dashTimer = null; dashQueue = []; dashOn = false; }
+  function dashTick() {
+    const c = fake.char('ffe1');
+    if (dashQueue.length) c._emit(dashQueue.shift());
+    else if (dashOn && dashLoop && dashLoop.length) c._emit(dashLoop[dashI++ % dashLoop.length]);
+  }
+  function dashWrite(b) {
+    const d = fake.dash;
+    if (!d) return;
+    const text = String.fromCharCode(...b);
+    if (b[0] === 0xAE && b[1] === 0x4B && b[2] === 0x45 && b[3] === 0x59) {
+      d.halted = true; dashOn = false; dashLoop = null;
+      dashQueue.push(ascii('OK OK OK '));
+    } else if (text.startsWith('+') && !d.halted) {
+      const seg = (d.after || {})[text] || { reply: [ascii(text)], loop: null };
+      dashQueue.push(...seg.reply);
+      if ((d.wakes || (() => true))(text)) {
+        dashOn = true;
+        if (seg.loop && seg.loop.length) { dashLoop = seg.loop; dashI = 0; }
+      }
+    } else return;
+    if (!dashTimer) dashTimer = setInterval(dashTick, d.every || 15);
+  }
   const gatt = {
     device,
     get connected() { return connected; },

@@ -164,16 +164,39 @@ let fieldSeq = 1;
 function mkField(o = {}) {
   return { id: 'f' + (fieldSeq++) + Math.random().toString(36).slice(2, 5), key: 'custom', name: '', uuid: '', match: '', offset: 0, type: 'u8', scale: 1, add: 0, ...o };
 }
+/* decoder.framing: 'colon-sum16' = fields read whole controller frames (see «controller frames»), absent = raw packets. */
+const FRAMING = 'colon-sum16';
+/* Field mask: 3, "0x03", "0b11". undefined when empty, null when it is not a mask. */
+function parseMask(v) {
+  if (v == null || v === '') return undefined;
+  let n;
+  if (typeof v === 'number') n = v;
+  else {
+    const s = String(v).trim().toLowerCase().replace(/[\s_]/g, '');
+    if (!s) return undefined;
+    if (/^0x[0-9a-f]{1,8}$/.test(s)) n = parseInt(s.slice(2), 16);
+    else if (/^0b[01]{1,32}$/.test(s)) n = parseInt(s.slice(2), 2);
+    else if (/^\d{1,10}$/.test(s)) n = parseInt(s, 10);
+    else return null;
+  }
+  return Number.isInteger(n) && n > 0 && n <= 0xffffffff ? n : null;
+}
+function maskText(m) { if (!m) return ''; const s = m.toString(16).toUpperCase(); return '0x' + s.padStart(s.length + (s.length % 2), '0'); }
+/* (raw & mask) shifted down by the mask's trailing zero bits: mask 0x0C turns bits 2–3 into 0…3. */
+function applyMask(raw, m) { return ((raw & m) >>> 0) >>> (31 - Math.clz32(m & -m)); }
 function normalizeDecoder(d) {
   if (!d || !Array.isArray(d.fields)) return null;
-  return { json: !!d.json, fields: d.fields.filter(f => f && typeof f === 'object').map(f => mkField({
+  const out = { json: !!d.json, fields: d.fields.filter(f => f && typeof f === 'object').map(f => mkField({
     key: METRICS[f.key] ? f.key : 'custom', name: String(f.name || ''), uuid: f.uuid ? (normUuid(f.uuid) || '') : '',
     match: String(f.match || ''), offset: Math.max(0, parseInt(f.offset, 10) || 0), type: TYPE_LEN[f.type] ? f.type : 'u8',
-    scale: num(f.scale, 1), add: num(f.add, 0),
+    mask: parseMask(f.mask) || undefined, scale: num(f.scale, 1), add: num(f.add, 0),
   })) };
+  if (d.framing === FRAMING) out.framing = FRAMING;
+  return out;
 }
+/* Keys that are undefined drop out of JSON, so an old decoder serializes exactly as before. */
 function decoderToJson(d) {
-  return JSON.stringify({ json: d.json, fields: d.fields.map(f => ({ key: f.key, name: f.name || undefined, uuid: f.uuid || undefined, match: f.match || undefined, offset: f.offset, type: f.type, scale: f.scale, add: f.add || undefined })) }, null, 1);
+  return JSON.stringify({ json: d.json, framing: d.framing === FRAMING ? FRAMING : undefined, fields: d.fields.map(f => ({ key: f.key, name: f.name || undefined, uuid: f.uuid || undefined, match: f.match || undefined, offset: f.offset, type: f.type, mask: f.mask || undefined, scale: f.scale, add: f.add || undefined })) }, null, 1);
 }
 const DEMO_DECODER = () => ({ json: false, fields: [
   mkField({ key: 'battery_pct', uuid: DEMO_CHR, match: '5A A5 ?? 25', offset: 4, type: 'u8' }),
@@ -190,7 +213,7 @@ const PACK_AH = 5.2;
 /* ============================================================
    state
    ============================================================ */
-const settings = Object.assign({ extraUuids: '', namePrefix: '', autoSubscribe: true, autoReconnect: true, wakeLock: true, units: 'mph', allowWrite: false, collapse: true },
+const settings = Object.assign({ extraUuids: '', namePrefix: '', autoSubscribe: true, autoReconnect: true, wakeLock: true, units: 'mph', allowWrite: false, collapse: true, autoWake: false },
   store.get('bal.settings', {}));
 /* Two decoder slots: «мой» (bal.decoder, what the user edits) and «из репозитория» (bal.decoder.repo,
    the last decoders/current.json the user applied). bal.decoder.active says which one runs. */
@@ -207,6 +230,8 @@ const state = {
   win: '60', hoverT: null, showTable: false, tab: 'dash',
   an: { key: '', pattern: '', off: null, type: 'u8', mk: '', win: 3 },
   writeTimer: null, geo: null, rollMax: 300,
+  /* connAt / sentAt: nowT() of the last «Подключено» and of the last +SVGT=? sent to wake the dashboard */
+  wake: { connAt: null, sentAt: null, timer: null }, echo: null,
 };
 function saveSettings() { store.set('bal.settings', settings); }
 const decNonEmpty = d => !!d && (d.fields.length > 0 || !!d.json);
@@ -245,12 +270,15 @@ function saveDecoder() {
    session & telemetry
    ============================================================ */
 const MAX_ENTRIES = 80000;
-function newTel() { return { vals: new Map(), whOut: 0, whIn: 0, lastPT: null, powerTouched: false, jsonBuf: new Map() }; }
+function newTel() { return { vals: new Map(), whOut: 0, whIn: 0, lastPT: null, powerTouched: false, jsonBuf: new Map(), frames: newFrames(), rxT: null }; }
 function newSession(o) {
   /* pushed counts every entry ever added; savedMark is its value at the last download, copy or send */
   state.session = { startedAt: Date.now(), t0: performance.now(), entries: [], pushed: 0, savedMark: 0, trimmed: false, live: false, offline: false, demo: false, device: null, ...o };
   state.tel = newTel(); state.series = []; state.charStats = new Map(); state.rxTimes = []; state.hoverT = null; state.rollMax = 300;
   state.an.off = null;
+  clearTimeout(state.wake.timer);
+  state.wake = { connAt: null, sentAt: null, timer: null };
+  state.echo = null;
 }
 function nowT() {
   const S = state.session;
@@ -336,21 +364,104 @@ function decodeJson(e) {
   state.tel.jsonBuf.set(key, buf);
   return touched;
 }
+/* ============================================================
+   controller frames. After any «+…» command from the phone the dashboard relays the controller's
+   UART frames over FFE1: 3A ':' | addr | cmd | len | data[len] | sum16 LE | 0D 0A,
+   sum16 = (addr + cmd + len + Σdata) & 0xFFFF. BLE cuts them into notifications of up to 20 bytes
+   and now and then loses the leading 0x3A. Frames are derived from the log, never logged.
+   ============================================================ */
+const FR = { max: 640, keep: 300, window: 5000 };
+/* sys entry written after each service discovery: a new link, so partial frames are dropped there. */
+const SYS_FOUND = 'Найдено сервисов: ';
+function newFrames() { return { asm: new Map(), types: new Map(), total: 0, bad: 0, junk: 0, lastT: null }; }
+/* A frame at b[i]. lost: the 0x3A went missing, so b[i] is the address and ':' is virtual at i-1.
+   → {frame} (normalized, starts with 0x3A) | {need} (wait for bytes) | {sum: true} (CRLF fine, checksum wrong) | {} (not a frame) */
+function frameAt(b, i, lost) {
+  const h = lost ? i - 1 : i;
+  if (b.length - h < 4) return { need: true };
+  const len = b[h + 3], total = len + 8, end = h + total;
+  if (b.length - h < total) return { need: true };
+  if (b[end - 2] !== 0x0d || b[end - 1] !== 0x0a) return {};
+  let s = 0;
+  for (let k = h + 1; k < h + 4 + len; k++) s += b[k];
+  if ((s & 0xffff) !== (b[h + 4 + len] | (b[h + 5 + len] << 8))) return { sum: true };
+  const f = new Uint8Array(total);
+  f[0] = 0x3a;
+  f.set(b.subarray(h + 1, end), 1);
+  return { frame: f, end };
+}
+/* Is there a complete frame with its 0x3A at b[from…]? */
+function strictLater(b, from) {
+  for (let k = b.indexOf(0x3a, from); k >= 0; k = b.indexOf(0x3a, k + 1)) if (frameAt(b, k, false).frame) return true;
+  return false;
+}
+/* Feeds one notification into a characteristic's assembler; returns the complete, checksum-valid frames.
+   Same rules as tools/uart_frames.py (Assembler), byte for byte, whatever the notification boundaries:
+   a.edge: the bytes consumed so far end in CRLF (or nothing consumed yet) — the only place a frame without
+   its 0x3A is accepted; a.prev: the last byte consumed (-1: none), so a CRLF split across notifications counts. */
+function assemble(a, bytes, F) {
+  const b = new Uint8Array(a.buf.length + bytes.length);
+  b.set(a.buf); b.set(bytes, a.buf.length);
+  const out = [];
+  let pos = 0, edge = a.edge, prev = a.prev;
+  /* Skip one byte as junk. */
+  const skip = () => { const x = b[pos++]; edge = prev === 0x0d && x === 0x0a; prev = x; F.junk++; };
+  while (pos < b.length) {
+    const colon = b[pos] === 0x3a;
+    if (!colon && !edge) { skip(); continue; }
+    const r = frameAt(b, pos, !colon);
+    if (r.frame) { out.push(r.frame); pos = r.end; edge = true; prev = 0x0a; continue; }
+    /* Incomplete here; if a complete frame already starts later, this start was text or junk. */
+    if (r.need) { if (!strictLater(b, pos + 1)) break; skip(); continue; }
+    if (r.sum && colon) {
+      F.bad++;
+      const st = frameType(F, bytesToHex(b.subarray(pos + 1, pos + 4)), a.key);
+      st.bad++;
+    }
+    skip();
+  }
+  a.buf = b.slice(pos);
+  a.edge = edge; a.prev = prev;
+  if (a.buf.length > FR.max) { F.junk += a.buf.length - FR.keep; a.buf = a.buf.slice(-FR.keep); a.edge = false; a.prev = -1; }
+  return out;
+}
+function frameType(F, key, ck) {
+  let st = F.types.get(key);
+  if (!st) F.types.set(key, st = { key, ck, count: 0, bad: 0, times: [], data: null, changed: [] });
+  return st;
+}
+function feedFrames(e) {
+  const F = state.tel.frames, key = e.s + '|' + e.u;
+  let a = F.asm.get(key);
+  if (!a) F.asm.set(key, a = { key, buf: new Uint8Array(0), edge: true, prev: -1 });
+  const out = assemble(a, e.b, F);
+  for (const f of out) {
+    const st = frameType(F, bytesToHex(f.subarray(1, 4)), key), data = f.subarray(4, 4 + f[3]);
+    F.total++; F.lastT = e.t;
+    st.count++; st.ck = key;
+    st.times.push(e.t);
+    while (st.times.length && st.times[0] < e.t - FR.window) st.times.shift();
+    if (st.data) for (let i = 0; i < data.length; i++) if (st.data[i] !== data[i]) st.changed[i] = e.t;
+    st.data = data.slice();
+  }
+  return out;
+}
 function compileField(f) {
   const pat = parsePattern(f.match);
   f._bad = pat === undefined;
   f._pat = pat || [];
 }
-function decodeEntry(e) {
+/* Fields against one packet (raw notification) or one frame; offsets count from its first byte. */
+function applyFields(b, e) {
   let touched = false;
-  if (decoder.json) touched = decodeJson(e) || touched;
   for (const f of decoder.fields) {
     if (f._pat === undefined) compileField(f);
     if (f._bad) continue;
     if (f.uuid && f.uuid !== e.u) continue;
-    if (!matchPrefix(e.b, f._pat)) continue;
-    const raw = readNum(e.b, f.offset | 0, f.type);
+    if (!matchPrefix(b, f._pat)) continue;
+    let raw = readNum(b, f.offset | 0, f.type);
     if (raw == null) continue;
+    if (f.mask) raw = applyMask(raw, f.mask);
     const v = raw * num(f.scale, 1) + num(f.add, 0);
     f._last = v;
     if (f.key === 'speed_mph') setTel('speed_kmh', v * 1.609344, e.t);
@@ -359,7 +470,23 @@ function decodeEntry(e) {
     else setTel(f.key, v, e.t);
     touched = true;
   }
+  return touched;
+}
+function decodeEntry(e) {
+  let touched = false;
+  if (decoder.json) touched = decodeJson(e) || touched;
+  /* Frames are assembled whatever the decoder (the frame card and the wake banner use them);
+     fields read them only with framing on. */
+  const frames = e.k === 'rx' && e.b && !state.session.demo ? feedFrames(e) : [];
+  if (decoder.framing === FRAMING) { for (const f of frames) touched = applyFields(f, e) || touched; }
+  else touched = applyFields(e.b, e) || touched;
+  if (touched && e.k === 'rx') state.tel.rxT = e.t;   /* live data of any kind: the wake banner stays away */
   if (touched) afterTelemetry(e.t);
+}
+/* Telemetry side of one log entry: the same for live data, a log from a file and a rebuild. */
+function feedTelemetry(e) {
+  if (e.k === 'rx' || e.k === 'rd') decodeEntry(e);
+  else if (e.k === 'sys' && String(e.n || '').startsWith(SYS_FOUND)) state.tel.frames.asm.clear();
 }
 function afterTelemetry(t) {
   const tel = state.tel;
@@ -393,9 +520,10 @@ function pushEntry(e) {
     state.charStats.set(key, st);
     const info = state.chars.get(key);
     if (info) { info.last = e; info.count = st.count; }
-    decodeEntry(e);
     if (!S.offline) state.rxTimes.push(performance.now());
+    if (e.k === 'rx' && state.echo && !S.offline) watchEcho(e);
   }
+  feedTelemetry(e);
   requestRender();
 }
 function sys(text, err) { pushEntry({ k: 'sys', n: text, err: !!err }); }
@@ -406,9 +534,9 @@ function addMarker(label) {
 function rebuildTelemetry() {
   const S = state.session;
   if (!S) return;
-  state.tel = newTel(); state.series = []; state.rollMax = 300;
+  state.tel = newTel(); state.series = []; state.rollMax = 300;   /* fresh frame assemblers too */
   for (const f of decoder.fields) { f._pat = undefined; f._last = undefined; }
-  for (const e of S.entries) if (e.k === 'rx' || e.k === 'rd') decodeEntry(e);
+  for (const e of S.entries) feedTelemetry(e);
   requestRender(true);
 }
 
@@ -520,6 +648,7 @@ async function openGatt() {
   stale();
   setConn('connected', dev.name || '(без имени)');
   sys('Подключено');
+  armWake(gen);
   acquireWakeLock();
 }
 /* Throws if the link drops midway, so openGatt() never reports a connection that is already gone. */
@@ -550,7 +679,7 @@ async function discover(stale = () => {}) {
   }
   alive();
   state.gatt = gatt; state.chars = found;
-  sys('Найдено сервисов: ' + state.gatt.length + ', характеристик: ' + state.chars.size);
+  sys(SYS_FOUND + state.gatt.length + ', характеристик: ' + state.chars.size);   /* also resets the frame assemblers */
   if (!state.gatt.length) sys('Сервисов не видно. Добавь UUID из nRF Connect в «Настройки → Свои UUID» и переподключись.', true);
   renderExplorer();
   renderCharSelects();
@@ -599,6 +728,7 @@ async function unsubscribe(info) {
 }
 function onDisconnected() {
   setTimeout(() => autoSend(true), 300);
+  clearTimeout(state.wake.timer);
   for (const info of state.chars.values()) {
     if (info.obj && info.handler) info.obj.removeEventListener('characteristicvaluechanged', info.handler);
     info.subscribed = false;
@@ -626,6 +756,7 @@ function disconnect() {
   state.manual = true;
   state.connGen++;
   clearTimeout(state.reconnectTimer);
+  clearTimeout(state.wake.timer);
   stopWriteRepeat();
   const g = state.device && state.device.gatt;
   if (g && g.connected) g.disconnect();
@@ -722,7 +853,7 @@ function demoTick() {
    rendering scheduler
    ============================================================ */
 let queued = false, queuedForce = false, lastRender = 0;
-const lastPart = { log: 0, an: 0, exp: 0, dec: 0, ctl: 0 };
+const lastPart = { log: 0, an: 0, exp: 0, dec: 0, ctl: 0, frm: 0 };
 /* A forced request upgrades one already queued: a log from a file gets no periodic re-render to catch up. */
 function requestRender(now) {
   if (now) queuedForce = true;
@@ -747,6 +878,7 @@ function renderAll(force) {
   if (state.tab === 'dash') { renderDashboard(); drawPowerChart(); if (state.showTable && due('log', 1000, force)) renderChartTable(); }
   if (state.tab === 'data') {
     if (due('exp', 400, force)) refreshExplorerValues();
+    if (due('frm', 500, force)) renderFrames();
     if (due('log', 350, force)) renderLog();
     if (due('an', 900, force)) renderAnalyzer();
     renderGhName();
@@ -776,18 +908,69 @@ function renderBanners() {
   }
 }
 /* Connected but nothing decodes yet: say why the gauges are empty and what to do. */
-function renderRawBanner() {
+function renderRawBanner(wakeShown) {
   const S = state.session, d = decoder;
-  const raw = state.conn === 'connected' && !state.demo && d && !d.fields.length && !d.json;
+  const raw = state.conn === 'connected' && !state.demo && d && !d.fields.length && !d.json && !wakeShown;
   $('#rawBanner').hidden = !raw;
   if (!raw) return;
-  const n = S ? S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length : 0;
-  const t = 'Самокат на связи, пакетов: ' + n + '. Цифр на приборах пока нет: протокол ещё не расшифрован, декодер пустой. '
-    + (ghCfg.auto && ghToken() ? 'Лог уходит в GitHub сам — напиши мне «новый лог».' : 'Отправь лог и напиши мне «новый лог»: я найду, где лежат скорость, заряд и ток.');
+  const n = S ? S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length : 0, nf_ = state.tel.frames.total;
+  const repo = [decSrc.repo, decSrc.remote].find(x => x && x.fields && x.fields.length);
+  const t = nf_
+    ? 'Самокат на связи, пакетов: ' + n + ', из них кадров контроллера: ' + nf_ + '. Цифр на приборах нет: выбран пустой декодер. '
+      + (repo ? 'В репозитории есть декодер ' + decLabel(repo) + ' — включи его в разделе «Декодер» («Из репозитория» или «Применить»).' : 'Отправь лог и напиши мне «новый лог».')
+    : 'Самокат на связи, пакетов: ' + n + '. Цифр на приборах пока нет: протокол ещё не расшифрован, декодер пустой. '
+      + (ghCfg.auto && ghToken() ? 'Лог уходит в GitHub сам — напиши мне «новый лог».' : 'Отправь лог и напиши мне «новый лог»: я найду, где лежат скорость, заряд и ток.');
   if ($('#rawText').textContent !== t) $('#rawText').textContent = t;
 }
+/* The dashboard stays silent until the phone writes a «+…» command. Connected to the real scooter and
+   no frame for WAKE.silent ms: offer +SVGT=? (a read-only version query). */
+const WAKE = { silent: 3000, auto: 1000, retry: 3000 };
+/* When data last came: a controller frame or any decoded notification (a JSON board, raw-packet fields). */
+function lastLiveT() {
+  const T = state.tel;
+  if (!T) return -Infinity;
+  return Math.max(T.frames.lastT != null ? T.frames.lastT : -Infinity, T.rxT != null ? T.rxT : -Infinity);
+}
+function wakeState() {
+  const W = state.wake;
+  if (state.conn !== 'connected' || state.demo || !state.session || state.session.offline || W.connAt == null || !ffe1Char()) return null;
+  const now = nowT(), last = lastLiveT();
+  if (now - Math.max(W.connAt, last) < WAKE.silent) return null;
+  return { failed: W.sentAt != null && last < W.sentAt && now - W.sentAt >= WAKE.retry };
+}
+function renderWakeBanner() {
+  const w = wakeState(), b = $('#wakeBanner');
+  b.hidden = !w;
+  if (!w) { if ($('#wakeMsg').textContent) flash($('#wakeMsg'), ''); return false; }
+  const t = w.failed ? 'Не помогло. Открой «Управление» и нажми свой текущий режим — после команды режима поток точно идёт.'
+    : 'Руль молчит: данные он начинает слать после команды с телефона.';
+  if ($('#wakeText').textContent !== t) $('#wakeText').textContent = t;
+  $('#wakeAuto').checked = !!settings.autoWake;
+  return true;
+}
+/* After each connect: remember when, and with «Запрашивать сам» wake the dashboard once if it is silent. */
+function armWake(gen) {
+  clearTimeout(state.wake.timer);
+  state.wake = { connAt: nowT(), sentAt: null, timer: null };
+  if (!settings.autoWake) return;
+  state.wake.timer = setTimeout(() => {
+    if (gen !== state.connGen || state.conn !== 'connected' || lastLiveT() >= state.wake.connAt) return;
+    sendWake(true);
+  }, WAKE.auto);
+}
+async function sendWake(auto) {
+  const msg = $('#wakeMsg'), info = ffe1Char();
+  if (state.conn !== 'connected' || state.demo || !info) { flash(msg, 'Нет связи с самокатом.', true); return false; }
+  const bytes = CMD.dashVersion.slice();   /* exactly «+SVGT=?», whatever else happens */
+  try {
+    await bleWrite(info, bytes);
+    state.wake.sentAt = nowT();
+    watchFor(info, bytes, msg, (auto ? 'Запросил данные сам' : 'Запрос отправлен') + ': +SVGT=?.');
+    return true;
+  } catch (e) { flash(msg, 'Не отправилось: ' + errText(e), true); return false; }
+}
 function renderDashboard() {
-  renderRawBanner();
+  renderRawBanner(renderWakeBanner());
   const mph = settings.units === 'mph';
   /* battery */
   const soc = socNow();
@@ -854,7 +1037,8 @@ function renderDashboard() {
   const live = S && !S.offline;
   setVal($('#mRate .val'), S ? (live ? nf(rate, 1) : nf(S.entries.length, 0)) : '—', S ? (live ? 'пак/с' : 'записей') : '');
   $('#mRate').classList.toggle('stale', !S || (live && rate === 0));
-  $('#mRateSub').textContent = S ? 'всего ' + nf(S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length, 0) + ' пакетов' : 'пакеты от самоката';
+  const F = state.tel && state.tel.frames;
+  $('#mRateSub').textContent = S ? 'всего ' + nf(S.entries.filter(e => e.k === 'rx' || e.k === 'rd').length, 0) + ' пакетов' + (F && F.total ? ', кадров ' + nf(F.total, 0) : '') : 'пакеты от самоката';
   /* custom fields */
   const cust = decoder.fields.filter(f => f.key === 'custom');
   const box = $('#customs');
@@ -1190,6 +1374,54 @@ function renderCharSelects() {
 }
 
 /* ============================================================
+   controller frames card (Data tab)
+   ============================================================ */
+/* Rows are built once per frame type and then updated in place, so a tap on a button is never lost to a refresh. */
+const frameUi = { of: null, rows: new Map() };
+function frameRow(st) {
+  const ui = { count: h('span'), rate: h('span'), bad: h('span'), bytes: h('div', { class: 'frm-bytes', 'aria-label': 'Данные последнего кадра' }), sig: null };
+  ui.root = h('div', { class: 'frm', 'data-type': st.key },
+    h('div', { class: 'frm-head' }, h('code', { text: '3A ' + st.key }), ui.count, ui.rate, ui.bad,
+      h('button', { class: 'btn btn-sm', type: 'button', text: 'Разобрать байты', onclick: () => {
+        state.an.key = st.ck; state.an.pattern = '3A ' + st.key; state.an.off = null;
+        $('#anPat').value = state.an.pattern;
+        renderCharSelects(); renderAnalyzer(true);
+        $('#anCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } })),
+    ui.bytes);
+  return ui;
+}
+function renderFrames() {
+  const F = state.tel && state.tel.frames, card = $('#frameCard');
+  const show = !!F && (F.total > 0 || F.bad > 0);
+  card.hidden = !show;
+  if (!show) return;
+  const now = nowT(), recent = t => t != null && now - t <= FR.window;
+  $('#frameNote').textContent = 'кадров: ' + nf(F.total, 0) + (F.bad ? ' · сбоев суммы: ' + nf(F.bad, 0) : '') + (F.junk ? ' · пропущено байт: ' + nf(F.junk, 0) : '');
+  const types = Array.from(F.types.values()).sort((a, b) => (a.key < b.key ? -1 : 1));
+  if (frameUi.of !== F || types.some(st => !frameUi.rows.has(st.key))) {
+    if (frameUi.of !== F) frameUi.rows.clear();
+    frameUi.of = F;
+    for (const st of types) if (!frameUi.rows.has(st.key)) frameUi.rows.set(st.key, frameRow(st));
+    $('#frameList').replaceChildren(...types.map(st => frameUi.rows.get(st.key).root));
+  }
+  for (const st of types) {
+    const ui = frameUi.rows.get(st.key);
+    ui.count.textContent = nf(st.count, 0) + ' шт.';
+    ui.rate.textContent = nf(st.times.filter(recent).length / (FR.window / 1000), 1) + ' в с';
+    ui.bad.className = st.bad ? 'bad' : '';
+    ui.bad.textContent = st.bad ? 'сбоев суммы: ' + nf(st.bad, 0) : 'сбоев нет';
+    const chg = st.data ? Array.from(st.data, (x, i) => recent(st.changed[i])) : [];
+    const sig = st.data ? bytesToHex(st.data) + '|' + chg.join() : '';
+    if (sig === ui.sig) continue;
+    ui.sig = sig;
+    ui.bytes.replaceChildren(...(st.data ? Array.from(st.data, (x, i) => h('span', {
+      class: 'b' + (chg[i] ? ' chg' : ''), title: 'байт ' + (4 + i) + ' кадра' + (chg[i] ? ' — менялся за 5 с' : ''),
+    }, h('i', { text: String(4 + i) }), hex2(x).toUpperCase())) : [h('em', { text: 'целых кадров нет' })]));
+  }
+}
+
+/* ============================================================
    log
    ============================================================ */
 const KIND = { rx: '↓', rd: '●', tx: '↑', mk: '⚑', sys: 'i' };
@@ -1299,6 +1531,7 @@ function clearLog() {
   if (!S) return;
   S.entries = []; S.gh = null; S.savedMark = S.pushed;
   S.startedAt = Date.now(); S.t0 = performance.now();   /* a new recording: its own file name */
+  if (state.wake.connAt != null) state.wake = { ...state.wake, connAt: 0, sentAt: null };   /* the clock restarted */
   state.series = []; state.tel = newTel(); state.charStats = new Map();
   for (const i of state.chars.values()) { i.count = 0; i.last = null; }
   renderCharSelects(); requestRender(true);
@@ -1692,6 +1925,68 @@ $('#anGrid').addEventListener('pointerdown', pickCol);
 $('#anGrid').addEventListener('keydown', pickCol);
 
 /* ============================================================
+   writes. Every write to the scooter goes through bleWrite(): no OTA/DFU characteristic,
+   and never AE "KEY…" — on the owner's scooter AE 4B 45 59 3F D6 made the dashboard answer
+   "OK OK OK ", drop the link to the controller and show a wrench with error 37 until a power cycle
+   (losing that link can cut the motor while riding).
+   ============================================================ */
+const KEY_SEQ = [0xAE, 0x4B, 0x45, 0x59];
+const KEY_BLOCK_MSG = 'Заблокировано: KEY? останавливает связь руля с контроллером (ошибка 37).';
+/* Anywhere in the payload, not only at its start: the BLE bridge passes bytes straight into the UART. */
+function isKeyPayload(b) {
+  if (!b) return false;
+  for (let i = 0; i + KEY_SEQ.length <= b.length; i++) {
+    let k = 0;
+    while (k < KEY_SEQ.length && b[i + k] === KEY_SEQ[k]) k++;
+    if (k === KEY_SEQ.length) return true;
+  }
+  return false;
+}
+function blockedError(text) { return Object.assign(new Error(text), { name: 'BlockedError' }); }
+function joinBytes(a, b) { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; }
+/* The last bytes written to each characteristic: consecutive writes reach the UART as one stream, so
+   «AE» and then «4B 45 59 …» is KEY? too. Kept across reconnects — the dashboard's UART stays the same. */
+const wrTail = new Map();
+async function bleWrite(info, bytes) {
+  if (!info || !info.obj) throw Object.assign(new Error('нет характеристики для записи'), { name: 'InvalidStateError' });
+  if (info.danger || isDanger(info.service, info.uuid)) throw blockedError('Это характеристика обновления прошивки. Писать в неё нельзя.');
+  const joined = joinBytes(wrTail.get(info.key) || new Uint8Array(0), bytes);
+  if (isKeyPayload(joined)) throw blockedError(KEY_BLOCK_MSG);
+  wrTail.set(info.key, joined.slice(-(KEY_SEQ.length - 1)));   /* before the await: a failed write may still have gone out */
+  const c = info.obj;
+  if (info.props.wnr && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(bytes);
+  else if (c.writeValueWithResponse) await c.writeValueWithResponse(bytes);
+  else await c.writeValue(bytes);
+  pushEntry({ k: 'tx', s: info.service, u: info.uuid, b: bytes });
+}
+/* After an ASCII command, watch that characteristic for ~1.5 s: the dashboard echoes «+MODE=3»,
+   and answers a query like «+SVGT=?» with «+SVGT=0». The text may sit inside a notification with frame bytes. */
+const ECHO_MS = 1500;
+function watchFor(info, bytes, msg, lead) {
+  const cmd = printable(bytes);
+  if (!cmd || !cmd.startsWith('+')) return;
+  const eq = cmd.indexOf('='), q = cmd.endsWith('?') && eq > 0;
+  const w = {
+    key: info.key, cmd, msg, lead, buf: '', done: false,
+    re: q ? new RegExp(cmd.slice(0, eq + 1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[0-9A-Za-z._-]+') : null,
+    timer: setTimeout(() => { if (state.echo === w && !w.done) { state.echo = null; flash(msg, lead + ' Руль не ответил за 1,5 с — ответ ищи в логе («Данные»).'); } }, ECHO_MS),
+  };
+  clearTimeout(state.echo && state.echo.timer);
+  state.echo = w;
+  flash(msg, lead);
+}
+function watchEcho(e) {
+  const w = state.echo;
+  if (w.done || (e.s + '|' + e.u) !== w.key || !e.b) return;
+  for (const x of e.b) w.buf += String.fromCharCode(x);
+  w.buf = w.buf.slice(-200);
+  const m = w.re && w.buf.match(w.re);
+  if (!w.buf.includes(w.cmd) && !m) return;
+  w.done = true; clearTimeout(w.timer); state.echo = null;
+  flash(w.msg, w.lead + (w.buf.includes(w.cmd) ? ' Руль подтвердил.' : ' Руль ответил: ' + m[0] + '.'));
+}
+
+/* ============================================================
    write console
    ============================================================ */
 function renderWriteCard() {
@@ -1700,16 +1995,32 @@ function renderWriteCard() {
   $('#wrSend').disabled = !live || !!state.writeTimer;
   renderExplorerButtons();
 }
+/* The console's hex, strictly: tokens split by spaces or commas, each «0x»? + an even run of hex digits.
+   Anything else is refused rather than dropped (a Cyrillic «С» must not turn «3С» into «3»).
+   → {bytes} | {error} */
+function parseWriteHex(str) {
+  const out = [];
+  for (const tok of String(str || '').trim().split(/[\s,]+/).filter(Boolean)) {
+    const t = tok.replace(/^0x/i, ''), bad = t.match(/[^0-9a-f]/i);
+    if (bad) return { error: 'Не hex: «' + bad[0] + '» в «' + tok + '» — проверь раскладку.' };
+    if (!t.length || t.length % 2) return { error: 'В «' + tok + '» не хватает цифры: байт — две hex-цифры.' };
+    for (let i = 0; i < t.length; i += 2) out.push(parseInt(t.slice(i, i + 2), 16));
+  }
+  return { bytes: new Uint8Array(out) };
+}
 /* What to write and where, checked once. A repeat keeps sending exactly this job, never whatever
    the fields hold at the next tick. */
-function writeJob() {
+function writeJob(repeat) {
   const msg = $('#wrMsg');
   if (!settings.allowWrite) return null;
   const info = state.chars.get($('#wrChar').value);
   if (!info || !info.obj || state.conn !== 'connected') { flash(msg, 'Нет подключения или не выбрана характеристика.', true); return null; }
   if (info.danger) { flash(msg, 'Это характеристика обновления прошивки. Писать в неё нельзя.', true); return null; }
-  const bytes = hexToBytes($('#wrHex').value);
-  if (!bytes || !bytes.length) { flash(msg, 'Введи байты в hex, например: 5A A5 01 3E 20 01 B0', true); return null; }
+  const p = parseWriteHex($('#wrHex').value), bytes = p.bytes;
+  if (p.error) { flash(msg, p.error, true); return null; }
+  if (!bytes.length) { flash(msg, 'Введи байты в hex, например: 2B 53 56 47 54 3D 3F', true); return null; }
+  /* a repeat joins the payload to itself on the UART: «59 3F D6 AE 4B 45» twice holds KEY? */
+  if (isKeyPayload(bytes) || (repeat && isKeyPayload(joinBytes(bytes, bytes)))) { flash(msg, KEY_BLOCK_MSG, true); return null; }
   return { key: info.key, bytes };
 }
 async function sendWrite(job) {
@@ -1721,13 +2032,9 @@ async function sendWrite(job) {
     return;
   }
   try {
-    const c = info.obj;
-    if (info.props.wnr && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(job.bytes);
-    else if (c.writeValueWithResponse) await c.writeValueWithResponse(job.bytes);
-    else await c.writeValue(job.bytes);
-    pushEntry({ k: 'tx', s: info.service, u: info.uuid, b: job.bytes });
-    flash(msg, 'Отправлено ' + job.bytes.length + ' байт в ' + shortUuid(info.uuid) + '.');
-  } catch (e) { flash(msg, 'Не отправилось: ' + errText(e), true); stopWriteRepeat(); }
+    await bleWrite(info, job.bytes);
+    flash(msg, 'Отправлено ' + job.bytes.length + ' байт в ' + shortUuid(info.uuid) + ': ' + bytesToHex(job.bytes) + '.');
+  } catch (e) { flash(msg, e.name === 'BlockedError' ? e.message : 'Не отправилось: ' + errText(e), true); stopWriteRepeat(); }
 }
 function lockWrite(on) {
   for (const id of ['#wrChar', '#wrHex', '#wrEvery']) $(id).disabled = on;
@@ -1737,7 +2044,7 @@ function stopWriteRepeat() { clearInterval(state.writeTimer); state.writeTimer =
 $('#wrSend').addEventListener('click', () => { const job = writeJob(); if (job) sendWrite(job); });
 $('#wrRepeat').addEventListener('change', e => {
   clearInterval(state.writeTimer); state.writeTimer = null;
-  const job = e.target.checked ? writeJob() : null;
+  const job = e.target.checked ? writeJob(true) : null;
   if (!job) { stopWriteRepeat(); return; }
   lockWrite(true);
   state.writeTimer = setInterval(() => sendWrite(job), Math.max(200, num($('#wrEvery').value, 1000)));
@@ -1747,45 +2054,35 @@ $('#wrRepeat').addEventListener('change', e => {
 /* ============================================================
    control page — documented Bird Air commands on the owner's own scooter.
    ASCII commands from the Bird app (see docs/bird-air-protocol.md). Writes to FFE1 only,
-   gated by «Разрешить отправку», OTA never touched, passcode entered by the owner.
+   gated by «Разрешить отправку», OTA never touched, KEY?/passcode never sent (see bleWrite).
    ============================================================ */
 const ascii = s => new Uint8Array(Array.from(s, c => c.charCodeAt(0)));
 const CMD = {
   mode: { 1: ascii('+MODE=1'), 2: ascii('+MODE=2'), 3: ascii('+MODE=3') },
   lightOn: ascii('+HLGT=1'), lightOff: ascii('+HLGT=0'),
   dashVersion: ascii('+SVGT=?'), dashHardware: ascii('+HVGT=?'),
-  challenge: new Uint8Array([0xAE, 0x4B, 0x45, 0x59, 0x3F, 0xD6]),      // AE "KEY?" D6
 };
-/* AE "KEY" + [code, checksum], checksum = (0xAE+0x4B+0x45+0x59 + code) & 0xFF (sendPasscode). */
-function passcodePacket(code) {
-  const base = [0xAE, 0x4B, 0x45, 0x59];
-  const sum = (base.reduce((a, b) => a + b, 0) + code) & 0xFF;
-  return new Uint8Array([...base, code & 0xFF, sum]);
-}
 function ffe1Char() {
   for (const info of state.chars.values()) {
-    if (info.uuid === normUuid('ffe1') && !info.danger && (info.props.write || info.props.wnr)) return info;
+    if (info.uuid === normUuid('ffe1') && !info.danger && info.obj && (info.props.write || info.props.wnr)) return info;
   }
   return null;
 }
-/* One documented command to FFE1. Mirrors the write-console guards; no OTA, needs allowWrite + link. */
+/* One documented command to FFE1. Mirrors the write-console guards; no OTA, no KEY?, needs allowWrite + link. */
 async function sendBleCommand(bytes, label, msgEl) {
   const msg = msgEl || $('#ctlMsg');
+  if (isKeyPayload(bytes)) { flash(msg, KEY_BLOCK_MSG, true); return false; }
   if (!settings.allowWrite) { flash(msg, 'Отправка команд выключена. Включи её выше.', true); return false; }
   if (state.conn !== 'connected') { flash(msg, 'Нет связи с самокатом.', true); return false; }
   const info = ffe1Char();
-  if (!info || !info.obj) { flash(msg, 'Характеристика 0xFFE1 не найдена — подключись к самокату.', true); return false; }
-  if (info.danger) { flash(msg, 'В эту характеристику писать нельзя.', true); return false; }
+  if (!info) { flash(msg, 'Характеристика 0xFFE1 не найдена — подключись к самокату.', true); return false; }
   try {
-    const c = info.obj;
-    if (info.props.wnr && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(bytes);
-    else if (c.writeValueWithResponse) await c.writeValueWithResponse(bytes);
-    else await c.writeValue(bytes);
-    pushEntry({ k: 'tx', s: info.service, u: info.uuid, b: bytes });
+    await bleWrite(info, bytes);
     const txt = printable(bytes);
-    flash(msg, label + ' отправлено' + (txt ? ': ' + txt.trim() : '') + '. Ответ ищи в логе (раздел «Данные»).');
+    watchFor(info, bytes, msg, label + ' отправлено' + (txt ? ': ' + txt.trim() : '') + '.');
+    if (!txt || !txt.startsWith('+')) flash(msg, label + ' отправлено. Ответ ищи в логе (раздел «Данные»).');
     return true;
-  } catch (e) { flash(msg, label + ' не отправилось: ' + errText(e), true); return false; }
+  } catch (e) { flash(msg, e.name === 'BlockedError' ? e.message : label + ' не отправилось: ' + errText(e), true); return false; }
 }
 async function tapCommand(btn, bytes, label, msgEl) {
   if (btn) { btn.disabled = true; btn.classList.add('busy'); }
@@ -1815,7 +2112,7 @@ function renderControl() {
   }
   $('#ctlLightOn').disabled = !ffe1;
   $('#ctlLightOff').disabled = !ffe1;
-  for (const id of ['#ctlVer', '#ctlHandshake', '#ctlSendPass']) $(id).disabled = !ffe1;
+  $('#ctlVer').disabled = !ffe1;
 }
 function bindControl() {
   for (const b of $$('#ctlModes .bigbtn')) {
@@ -1824,12 +2121,11 @@ function bindControl() {
   $('#ctlLightOn').addEventListener('click', e => tapCommand(e.currentTarget, CMD.lightOn, 'Фара вкл'));
   $('#ctlLightOff').addEventListener('click', e => tapCommand(e.currentTarget, CMD.lightOff, 'Фара выкл'));
   $('#ctlVer').addEventListener('click', e => tapCommand(e.currentTarget, CMD.dashVersion, 'Запрос версии', $('#ctlProbeMsg')));
-  $('#ctlHandshake').addEventListener('click', e => tapCommand(e.currentTarget, CMD.challenge, 'Рукопожатие', $('#ctlProbeMsg')));
-  $('#ctlSendPass').addEventListener('click', e => {
-    const v = $('#ctlPass').value.trim();
-    const code = parseInt(v, 10);
-    if (!v || !Number.isFinite(code) || code < 0 || code > 255) { flash($('#ctlPassMsg'), 'Код — одно число от 0 до 255.', true); return; }
-    tapCommand(e.currentTarget, passcodePacket(code), 'Код доступа', $('#ctlPassMsg'));
+  /* The wake button is the owner's explicit tap and can only ever send «+SVGT=?», so it does not need «Разрешить отправку». */
+  $('#btnWake').addEventListener('click', async e => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    try { await sendWake(false); } finally { b.disabled = false; requestRender(true); }
   });
 }
 
@@ -1863,7 +2159,9 @@ function renderDecoderCharOptions() {
 }
 function renderDecoder() {
   $('#decJson').checked = !!decoder.json;
-  $('#decNote').textContent = state.demo ? 'Сейчас работает демо-конфиг. Он не сохраняется.' : (decoder.fields.length ? 'Полей: ' + decoder.fields.length : '');
+  $('#decFraming').checked = decoder.framing === FRAMING;
+  $('#decNote').textContent = state.demo ? 'Сейчас работает демо-конфиг. Он не сохраняется.'
+    : (decoder.fields.length ? 'Полей: ' + decoder.fields.length : '') + (decoder.framing === FRAMING ? (decoder.fields.length ? ' · ' : '') + 'читает кадры «:»' : '');
   const box = $('#decFields');
   if (!decoder.fields.length) {
     box.replaceChildren(h('p', { class: 'empty', text: 'Полей нет. Добавь первое кнопкой выше или из «Разбора байтов» кнопкой «→ В декодер».' }));
@@ -1881,9 +2179,11 @@ function renderDecoder() {
         h('div', { class: 'fgrid' },
           h('label', { class: 'f' }, 'Характеристика', uuidSel),
           h('label', { class: 'f' }, 'Начало пакета', inp('match', { class: 'mono', placeholder: '5A A5 ?? 25 — пусто: любой' }))),
-        h('div', { class: 'fgrid4' },
+        h('div', { class: 'fgrid5' },
           h('label', { class: 'f' }, 'Номер байта', inp('offset', { type: 'number', min: 0, step: 1, inputmode: 'numeric' })),
           h('label', { class: 'f' }, 'Как читать', sel('type', TYPE_LABELS)),
+          h('label', { class: 'f', title: 'Оставить только эти биты и сдвинуть вниз: 0x03 — младшие 2 бита, 0x0C — биты 2–3' }, 'Маска битов',
+            h('input', { 'data-k': 'mask', class: 'mono', value: maskText(f.mask), placeholder: 'нет', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' })),
           h('label', { class: 'f' }, 'Умножить на', inp('scale', { inputmode: 'decimal' })),
           h('label', { class: 'f' }, 'Прибавить', inp('add', { inputmode: 'decimal' }))),
         h('div', { class: 'fout' }, val, h('button', { class: 'btn btn-sm btn-danger', type: 'button', text: 'Удалить поле', 'data-del': f.id })));
@@ -1900,6 +2200,7 @@ function renderDecoderValues() {
     if (!f._ui) continue;
     if (f._pat === undefined) compileField(f);
     if (f._bad) { f._ui.className = 'fval bad'; f._ui.textContent = 'Ошибка в «Начале пакета»: байты в hex, ?? — любой'; continue; }
+    if (f._maskBad) { f._ui.className = 'fval bad'; f._ui.textContent = 'Маска — число: 3, 0x03 или 0b11. Пока читаю без маски.'; continue; }
     f._ui.className = 'fval';
     const unit = { battery_pct: '%', voltage: 'В', current: 'А', power: 'Вт', speed_kmh: 'км/ч', speed_mph: 'mph', temp: '°C', odometer_km: 'км', odometer_mi: 'mi' }[f.key] || '';
     f._ui.textContent = f._last == null ? 'пока нет совпадений' : nf(f._last, Math.abs(f._last) < 100 && f._last % 1 ? 2 : 0) + (unit ? ' ' + unit : '');
@@ -1914,6 +2215,7 @@ $('#decFields').addEventListener('input', ev => {
   if (k === 'offset') f.offset = Math.max(0, parseInt(el.value, 10) || 0);
   else if (k === 'scale') f.scale = num(el.value, 1);
   else if (k === 'add') f.add = num(el.value, 0);
+  else if (k === 'mask') { const m = parseMask(el.value); f.mask = m || undefined; f._maskBad = m === null; }
   else f[k] = el.value;
   f._pat = undefined;
   decoderChanged();
@@ -1943,6 +2245,10 @@ $('#decClear').addEventListener('click', ev => {
   decoder.fields = []; renderDecoder(); decoderChanged();
 });
 $('#decJson').addEventListener('change', e => { decoder.json = e.target.checked; decoderChanged(); });
+$('#decFraming').addEventListener('change', e => {
+  if (e.target.checked) decoder.framing = FRAMING; else delete decoder.framing;
+  renderDecoder(); decoderChanged();
+});
 $('#decCopy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('#decText').value); flash($('#decMsg'), 'Конфиг скопирован.'); }
   catch { $('#decText').select(); flash($('#decMsg'), 'Выделил текст — скопируй вручную.'); }
@@ -2118,6 +2424,9 @@ function bindSettings() {
   bool('#setReconnect', 'autoReconnect');
   bool('#setWake', 'wakeLock', () => { if (!settings.wakeLock) releaseWakeLock(); else if (state.conn === 'connected') acquireWakeLock(); });
   bool('#setWrite', 'allowWrite', () => { if (!settings.allowWrite) stopWriteRepeat(); renderWriteCard(); renderControl(); });
+  /* the same switch in the settings card and in the «Руль молчит» banner */
+  bool('#setAutoWake', 'autoWake', () => { $('#wakeAuto').checked = settings.autoWake; });
+  bool('#wakeAuto', 'autoWake', () => { $('#setAutoWake').checked = settings.autoWake; });
   $('#logCollapse').checked = settings.collapse;
   $('#logCollapse').addEventListener('change', e => { settings.collapse = e.target.checked; saveSettings(); renderLog(); });
   $('#logFilter').addEventListener('change', () => renderLog());
@@ -2209,5 +2518,5 @@ if (!bleSupported()) { const pill = $('#connPill'); pill.dataset.tone = 'crit'; 
 renderDecoder();
 checkDecoderUpdate();
 requestRender(true);
-window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend, CMD, passcodePacket, sendBleCommand };
+window.__bal = { state, get decoder() { return decoder; }, pushEntry, startDemo, stopDemo, rebuildTelemetry, sessionObject, anonymizeLog, packLog, ghLimits: GH, decSrc, checkDecoderUpdate, autoSend, CMD, sendBleCommand, sendWake, wakeLimits: WAKE, normalizeDecoder, decoderToJson };
 })();

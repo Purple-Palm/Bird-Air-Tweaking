@@ -115,6 +115,9 @@ main.wrap { padding-block: 16px 40px; }
 .banner b { color: var(--ink); font-weight: 600; }
 .banner.top { margin-bottom: 14px; border-style: solid; border-color: color-mix(in srgb, var(--flow) 45%, var(--hair)); background: color-mix(in srgb, var(--flow) 8%, var(--surface)); }
 .banner.top.problem { border-color: color-mix(in srgb, var(--crit) 45%, var(--hair)); background: color-mix(in srgb, var(--crit) 8%, var(--surface)); }
+.banner.warn { border-style: solid; border-color: color-mix(in srgb, var(--warn) 55%, var(--hair)); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); color: var(--ink); }
+.banner > .msg { flex-basis: 100%; }
+.banner > .msg:empty { display: none; }
 
 /* ---------- instruments ---------- */
 .cluster { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
@@ -217,6 +220,20 @@ table.data th { font-weight: 600; color: var(--ink-2); font-size: 12px; }
 .hexbox { font-family: var(--f-mono); font-size: 12px; background: var(--well); border-radius: 7px; padding: 6px 8px; overflow-wrap: anywhere; color: var(--ink); }
 .hexbox em { font-style: normal; color: var(--muted); }
 
+/* ---------- controller frames ---------- */
+.frames { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+.frm { border: 1px solid var(--hair); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; min-width: 0; }
+.frm-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.frm-head code { color: var(--ink); font-size: 13px; font-weight: 500; }
+.frm-head .bad { color: var(--crit-ink); font-weight: 500; }
+.frm-head .btn { margin-left: auto; }
+.frm-bytes { display: flex; flex-wrap: wrap; gap: 3px; font-family: var(--f-mono); font-size: 12px; min-width: 0; }
+.frm-bytes .b { display: inline-grid; justify-items: center; min-width: 26px; padding: 2px 3px 3px; border-radius: 5px; background: var(--well); color: var(--ink); line-height: 1.25; }
+.frm-bytes .b i { font-style: normal; font-size: 10px; color: var(--muted); }
+.frm-bytes .b.chg { background: color-mix(in srgb, var(--raw) 30%, var(--surface)); outline: 1px solid color-mix(in srgb, var(--raw) 60%, transparent); }
+.frm-bytes .b.chg i { color: var(--ink-2); }
+.frm-bytes em { font-family: var(--f-ui); font-style: normal; color: var(--muted); font-size: 13px; }
+
 /* ---------- byte grid ---------- */
 table.bytes { border-collapse: separate; border-spacing: 2px; font-family: var(--f-mono); font-size: 12px; }
 table.bytes th, table.bytes td { min-width: 26px; padding: 3px 4px; text-align: center; border-radius: 4px; }
@@ -239,7 +256,8 @@ label.check input { margin-top: 3px; }
 label.check small { display: block; color: var(--ink-2); font-size: 13px; }
 .fgrid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .fgrid4 { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-@media (min-width: 720px) { .fgrid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.fgrid5 { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 720px) { .fgrid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } .fgrid5 { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 .field { border: 1px solid var(--hair); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
 .fout { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .fval { font-family: var(--f-cond); font-weight: 600; font-size: 18px; font-variant-numeric: tabular-nums; }
