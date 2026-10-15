@@ -336,10 +336,10 @@
       <p class="hint">Если приборы пустые, самокат, скорее всего, не отдаёт телеметрию без «рукопожатия» приложения. Сначала безопасный запрос версии — он только спрашивает, ничего не меняет. Если руль ответит (строка появится в логе и ниже), значит он слушает, и дальше разберём поток телеметрии.</p>
       <div class="row">
         <button class="btn" id="ctlVer" type="button">Запросить версию (+SVGT=?)</button>
-        <button class="btn" id="ctlHandshake" type="button">Рукопожатие (KEY?)</button>
+        <button class="btn" id="ctlHandshake" type="button" hidden>Рукопожатие (KEY?)</button>
       </div>
       <p class="msg" id="ctlProbeMsg" role="status"></p>
-      <details>
+      <details hidden>
         <summary>Мой код доступа (passcode)</summary>
         <div class="view" style="margin-top:10px">
           <p class="hint">Код нужен только если самокат требует его для команд. Это твой код от твоего самоката — я его не подбираю. Если не знаешь — оставь пустым: кнопки режима сработают, только если самокат пускает без кода.</p>

@@ -40,23 +40,15 @@ test('mode and light buttons send the documented commands, never OTA', async ({ 
   expect(tx).toContain(str('+MODE=3'));
 });
 
-test('handshake and passcode use the right bytes; passcode checksum', async ({ page }) => {
+test('KEY? / passcode: no UI, and the bytes are refused when sent', async ({ page }) => {
   await openApp(page, { bluetooth: true, tab: 'control', storage: { 'bal.settings': { allowWrite: true } } });
   await connect(page);
-  // checksum = (0xAE+0x4B+0x45+0x59 + code) & 0xFF
-  const pkt = await page.evaluate(() => Array.from(window.__bal.passcodePacket(10)));
-  expect(pkt.slice(0, 4)).toEqual([0xAE, 0x4B, 0x45, 0x59]);
-  expect(pkt[4]).toBe(10);
-  expect(pkt[5]).toBe((0xAE + 0x4B + 0x45 + 0x59 + 10) & 0xFF);
-  await page.click('#ctlHandshake');
-  await expect.poll(() => writesTo(page, FFE1)).toContain('AE 4B 45 59 3F D6');
-  await page.locator('#ctlProbeCard details summary').click();
-  await page.fill('#ctlPass', '10');
-  await page.click('#ctlSendPass');
-  await expect.poll(() => writesTo(page, FFE1)).toContain(pkt.map(x => x.toString(16).padStart(2, '0')).join(' ').toUpperCase());
-  await page.fill('#ctlPass', '999');
-  await page.click('#ctlSendPass');
-  await expect(page.locator('#ctlPassMsg')).toContainText('от 0 до 255');
+  await expect(page.locator('#ctlHandshake')).toBeHidden();
+  await expect(page.locator('#ctlProbeCard details')).toBeHidden();
+  const sent = await page.evaluate(() => window.__bal.sendBleCommand(window.__bal.CMD.challenge, 'test', document.querySelector('#ctlProbeMsg')));
+  expect(sent).toBe(false);
+  await expect(page.locator('#ctlProbeMsg')).toContainText('ошибка 37');
+  expect(await writesTo(page, FFE1)).toEqual([]);
 });
 
 test('with the write switch off, a command is refused', async ({ page }) => {

@@ -1712,8 +1712,13 @@ function writeJob() {
   if (!bytes || !bytes.length) { flash(msg, 'Введи байты в hex, например: 5A A5 01 3E 20 01 B0', true); return null; }
   return { key: info.key, bytes };
 }
+/* KEY? / passcode (AE 4B 45 59 …) belongs to the firmware-update wizard; on the owner's scooter it
+   stopped the dash–controller link (wrench, error 37). Never send it. */
+const isKeyCmd = b => !!b && b.length >= 4 && b[0] === 0xAE && b[1] === 0x4B && b[2] === 0x45 && b[3] === 0x59;
+const KEY_BLOCKED = 'Заблокировано: KEY? останавливает связь руля с контроллером (ошибка 37).';
 async function sendWrite(job) {
   const msg = $('#wrMsg');
+  if (job && isKeyCmd(job.bytes)) { flash(msg, KEY_BLOCKED, true); stopWriteRepeat(); return; }
   const info = job && state.chars.get(job.key);
   if (!settings.allowWrite || !info || !info.obj || info.danger || state.conn !== 'connected') {
     if (job) flash(msg, 'Связи нет — запись остановлена.', true);
@@ -1771,6 +1776,7 @@ function ffe1Char() {
 /* One documented command to FFE1. Mirrors the write-console guards; no OTA, needs allowWrite + link. */
 async function sendBleCommand(bytes, label, msgEl) {
   const msg = msgEl || $('#ctlMsg');
+  if (isKeyCmd(bytes)) { flash(msg, KEY_BLOCKED, true); return false; }
   if (!settings.allowWrite) { flash(msg, 'Отправка команд выключена. Включи её выше.', true); return false; }
   if (state.conn !== 'connected') { flash(msg, 'Нет связи с самокатом.', true); return false; }
   const info = ffe1Char();
