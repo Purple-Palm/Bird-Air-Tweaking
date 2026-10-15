@@ -1820,13 +1820,13 @@ async function sendToGitHub(auto, forced) {
   ghBusy = true; btn.disabled = true;
   const say = text => { if (!auto) flash(msg, text); };
   const mark = S.pushed;
+  say('Готовлю файл…');
   try {
     if (state.live.on) { state.live.sentAt = -Infinity; await livePulse(); }   /* a fresh ~4.5 s window before the heavy part */
     const o = sessionObject();
     await yieldTask();
     if (anon) anonymizeLog(o);
     await yieldTask();
-    say('Готовлю файл…');
     const old = prev && prev.anon === anon && prev.dest === dest ? prev : null;
     const shas = new Map(old ? old.files.map(f => [f.path, f.sha]) : []);
     /* A fresh name comes from the recording's start; if it is taken (sent before a reload), add -2, -3… */
