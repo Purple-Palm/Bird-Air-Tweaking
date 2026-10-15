@@ -1807,8 +1807,7 @@ function renderControl() {
       if (!live) gb.append(h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: connect }, 'Подключить самокат'));
     }
   }
-  $('#ctlCard').hidden = !ready;
-  $('#ctlProbeCard').hidden = !ready;
+  // The buttons stay on screen, greyed out until writes are on and the scooter is connected.
   const ffe1 = ready && ffe1Char();
   for (const b of $$('#ctlModes .bigbtn')) {
     b.disabled = !ffe1;

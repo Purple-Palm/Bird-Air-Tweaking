@@ -14,8 +14,11 @@ test('control tab is gated by the write switch and a connection', async ({ page 
   await openApp(page, { bluetooth: true, tab: 'control' });
   await expect(page.locator('#ctlGate')).toBeVisible();
   await expect(page.locator('#ctlGateText')).toContainText('включи отправку');
-  await expect(page.locator('#ctlCard')).toBeHidden();
+  await expect(page.locator('#ctlCard')).toBeVisible();          // buttons are on screen…
+  await expect(page.locator('#ctlModes .bigbtn').first()).toBeDisabled();   // …but locked
+  await expect(page.locator('#ctlLightOn')).toBeDisabled();
   await page.click('#ctlGateBtns button');                 // enable writes
+  await expect(page.locator('#ctlModes .bigbtn').first()).toBeDisabled();   // still no connection
   await expect(page.locator('#ctlGateText')).toContainText('управлять');
   await page.click('#ctlGateBtns button');                 // connect (stops the demo)
   await expect(page.locator('#connPill')).toContainText('На связи');
