@@ -59,7 +59,6 @@ class MainActivity : ComponentActivity() {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         keepOn.value = prefs.getBoolean(KEEP_ON, true)
         openedAtMs = SystemClock.elapsedRealtime()
-        RideService.hiddenByUser = false
         WatchFeed.acquire(this)
         askForNotifications()
         // until onDestroy, ambient included
@@ -73,15 +72,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // singleTask and usually alive in the background: opening it again lands here, not in onCreate
     override fun onStart() {
         super.onStart()
         openedAtMs = SystemClock.elapsedRealtime()
+        RideService.hiddenByUser = false
         WatchFeed.hello()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         openedAtMs = SystemClock.elapsedRealtime()
+        RideService.hiddenByUser = false
         WatchFeed.hello()
     }
 
@@ -102,7 +104,8 @@ class MainActivity : ComponentActivity() {
                 }
                 screen.value = s
                 shownAt = SystemClock.elapsedRealtime()
-                if (s.health.live) startRideService()
+                // not only once live: opened while the phone still connects, the wrist may go down first (Timeout #2)
+                if (s.health.active) startRideService()
             }
     }
 

@@ -55,6 +55,41 @@ class GitHubApiTest {
         assertNull(GitHubApi.getRepo(cfg, token).body)
     }
 
+    @Test fun staleShaIsFetchedAgain() {
+        val r = GitHubApi.getContents(cfg.copy(branch = "dev"), token, "logs/x-app.json.gz")
+        assertEquals("GET", r.method)
+        assertEquals("https://api.github.com/repos/Purple-Palm/Bird-Air-Tweaking/contents/logs/x-app.json.gz?ref=dev", r.url)
+        assertNull(r.body)
+        assertEquals("3d21ec53a331a6f037a91c368710b99387d012c1", GitHubApi.parseSha("""{"name":"x-app.json.gz","sha":"3d21ec53a331a6f037a91c368710b99387d012c1","size":2048000,"content":"","encoding":"none"}"""))
+        assertNull(GitHubApi.parseSha("""[{"sha":"1"}]"""))
+        assertNull(GitHubApi.parseSha("<html>"))
+        assertNull(GitHubApi.parseSha(null))
+        assertTrue(GitHubApi.isStaleSha(409))
+        assertTrue(GitHubApi.isStaleSha(422))
+        assertFalse(GitHubApi.isStaleSha(403))
+    }
+
+    @Test fun dropUploadsAreSpacedOut() {
+        val was = ScooterRepo.gh.value to ScooterRepo.hasToken.value
+        try {
+            ScooterRepo.gh.value = GhConfig(auto = true)
+            ScooterRepo.hasToken.value = true
+            val now = 10_000_000L
+            val s = Session(now - 600_000, 0).apply { rx.set(5) }
+            assertTrue(LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            s.ghTryAt = now - 30_000
+            assertFalse("a flapping link: not again within a minute", LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            assertTrue("«Отключить» sends anyway", LogStore.autoDue(s, force = true, nowMs = now))
+            s.ghTryAt = now - LogStore.DROP_EVERY_MS
+            assertTrue(LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            ScooterRepo.gh.value = GhConfig(auto = false)
+            assertFalse(LogStore.autoDue(s, force = true, nowMs = now))
+        } finally {
+            ScooterRepo.gh.value = was.first
+            ScooterRepo.hasToken.value = was.second
+        }
+    }
+
     @Test fun errorsInRussian() {
         val e = { s: Int, m: String? -> GitHubApi.errorText(s, m, cfg) }
         assertTrue(e(0, null).startsWith("Нет связи с api.github.com"))

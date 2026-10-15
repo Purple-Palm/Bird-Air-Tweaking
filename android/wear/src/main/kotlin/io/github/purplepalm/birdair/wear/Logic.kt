@@ -42,6 +42,9 @@ enum class Health(val label: String?) {
 
     val live: Boolean get() = this == LIVE
 
+    /** The phone is on a ride or about to be: the Ongoing Activity should exist before the wrist goes down. */
+    val active: Boolean get() = this != NO_PHONE && this != IDLE
+
     /** [label] as the gauge shows it: broken where the round top has room. */
     val gaugeLabel: String? get() = if (this == NO_PHONE) "нет данных\nс телефона" else label
 
@@ -92,11 +95,20 @@ object Arc {
     /** Sweep from 12 o'clock: positive clockwise (traction), negative counter-clockwise (regen). */
     fun sweep(fraction: Float): Float = if (fraction.isNaN()) 0f else fraction.coerceIn(-1f, 1f) * MAX_DEG
 
-    /** drawArc arguments (start, positive sweep) for [fraction]; null when the arc is too short to draw. */
-    fun span(fraction: Float, minDeg: Float = 0.5f): Pair<Float, Float>? {
+    /** The bar: [dir] +1 traction / −1 regen; [body] the signed sweep of its straight part from 12 o'clock. */
+    data class Bar(val dir: Float, val body: Float)
+
+    /**
+     * The bar for [fraction]: square at 12 o'clock, a round tip [capDeg] long (half the band, in degrees) past
+     * the body, so the tip lands on the value and nothing shows on the wrong side of zero; a value shorter than
+     * the tip is the tip alone. Null when too small to draw.
+     */
+    fun bar(fraction: Float, capDeg: Float, minDeg: Float = 0.5f): Bar? {
         val s = sweep(fraction)
         if (abs(s) < minDeg) return null
-        return if (s > 0) ZERO_DEG to s else (ZERO_DEG + s) to -s
+        val dir = if (s > 0) 1f else -1f
+        val body = abs(s) - capDeg
+        return Bar(dir, if (body > 0) dir * body else 0f)
     }
 
     /** The faint track behind: the whole ±[MAX_DEG] range. */

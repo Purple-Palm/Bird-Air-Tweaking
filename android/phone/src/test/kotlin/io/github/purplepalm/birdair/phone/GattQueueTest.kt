@@ -49,6 +49,9 @@ class GattQueueTest {
         assertEquals(GattQueue.TIMEOUT, q.run(GattQueue.Op.DISCOVER, 50) { true }.status)
         assertEquals(GattQueue.NOT_STARTED, q.run(GattQueue.Op.DISCOVER, 50) { false }.status)
         assertEquals(GattQueue.NOT_STARTED, q.run(GattQueue.Op.DISCOVER, 50) { throw SecurityException("no permission") }.status)
+        // the Bluetooth process died: BluetoothGatt rethrows the DeadObjectException as a RuntimeException
+        assertEquals(GattQueue.THREW, q.run(GattQueue.Op.WRITE_CHAR, 50) { throw RuntimeException("android.os.DeadObjectException") }.status)
+        assertEquals(GattQueue.THREW, q.run(GattQueue.Op.WRITE_CHAR, 50) { throw IllegalStateException() }.status)
         // a write callback does not finish a discovery
         val r = q.run(GattQueue.Op.DISCOVER, 80) { assertFalse(q.complete(GattQueue.Op.WRITE_CHAR, 0)); true }
         assertEquals(GattQueue.TIMEOUT, r.status)

@@ -12,10 +12,13 @@ import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import io.github.purplepalm.birdair.core.Commands
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Uuids
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -33,9 +36,10 @@ import java.util.concurrent.Executors
 
 /**
  * The BLE link to the dash: connect by address, discover, subscribe to FFE1, pulse +SVGT=? and reconnect
- * after any drop the owner did not ask for (1, 2, 4, 8, 10 s). GATT operations go one at a time through a
- * [GattQueue]; link state runs on one thread of its own, GATT callbacks only complete operations and pass
- * notifications on. Every write to the scooter goes through [write].
+ * after any drop the owner did not ask for (1, 2, 4, 8, 10 s). A link that gets no notification for
+ * [SILENCE_MS] counts as dropped too; after [GIVE_UP_MS] without any data the loop stops ([Host.gaveUp]).
+ * GATT operations go one at a time through a [GattQueue]; link state runs on one thread of its own, GATT
+ * callbacks only complete operations and pass notifications on. Every write to the scooter goes through [write].
  */
 @SuppressLint("MissingPermission")   // the service starts only with BLUETOOTH_CONNECT granted; SecurityException is caught
 class ScooterLink(private val ctx: Context, private val host: Host) {
@@ -62,7 +66,11 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
     }
 
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "scooter-link") }
-    private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher())
+    // run() catches what the Bluetooth API throws; this is the last line, so a bug never kills the process mid-ride
+    private val scope = CoroutineScope(SupervisorJob() + executor.asCoroutineDispatcher() + CoroutineExceptionHandler { _, e ->
+        Log.e(TAG, "link loop failed", e)
+        try { host.sys("Сбой связи (${e.javaClass.simpleName}) — нажми «Отключить» и «Подключить»", true) } catch (x: Exception) { }
+    })
     private val kick = Channel<Unit>(Channel.CONFLATED)
     /** A notification found the pulse overdue (the page checks on every notification too: timers may lag). */
     private val pulseNow = Channel<Unit>(Channel.CONFLATED)
@@ -72,8 +80,11 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var queue: GattQueue? = null
+    @Volatile private var events: Events? = null
     @Volatile private var ffe1: BluetoothGattCharacteristic? = null
     @Volatile private var subscribed = false
+    /** elapsedRealtime of the last notification. */
+    @Volatile private var rxAt = 0L
 
     /** The owner wants the link up. */
     @Volatile var wanted = false
@@ -99,6 +110,18 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
     /** Bluetooth came back on: skip the rest of the reconnect wait. */
     fun kick() { kick.trySend(Unit) }
 
+    /**
+     * Bluetooth is going off. Android may never report the drop (with «BLE scanning» on, the stack stays half up
+     * and unregisters the app silently), so the connection ends here and the loop waits for [kick].
+     */
+    fun adapterOff() {
+        val ev = events ?: return
+        if (ev.status == null) ev.status = ADAPTER_OFF
+        ev.up.complete(false)
+        ev.lost.complete(ADAPTER_OFF)
+        queue?.close()
+    }
+
     fun release() {
         stop()
         scope.cancel()
@@ -110,13 +133,18 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
     private suspend fun run(address: String) {
         var attempt = 0
         var first = true
+        val startAt = SystemClock.elapsedRealtime()
         fatal = null
         while (wanted && currentCoroutineContext().isActive) {
-            val wasUp = connectOnce(address, first)
+            val wasUp = try { connectOnce(address, first) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                host.sys("Сбой Bluetooth (${e.javaClass.simpleName}) — переподключаюсь", true); false
+            }
             first = false
             fatal?.let { wanted = false; host.gaveUp(it); return }
             if (!wanted) break
             if (wasUp) { attempt = 0; host.lost() }
+            // scooter switched off and forgotten: no wake lock and radio all night
+            if (SystemClock.elapsedRealtime() - maxOf(startAt, rxAt) >= GIVE_UP_MS) { wanted = false; host.gaveUp(GONE); return }
             val wait = Backoff.delayMs(attempt++)
             host.state(Link.RECONNECTING, "Нет связи — переподключаюсь через ${wait / 1000} с", true)
             while (kick.tryReceive().isSuccess) { /* drop old kicks */ }
@@ -143,12 +171,14 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
         val ev = Events()
         val q = GattQueue()
         queue = q
+        events = ev
         host.state(if (first) Link.CONNECTING else Link.RECONNECTING, "Подключаюсь…")
         val g = try { dev.connectGatt(ctx, false, Callback(ev, q), BluetoothDevice.TRANSPORT_LE) } catch (e: SecurityException) {
             fatal = "Нет разрешения «Устройства поблизости»"; return false
         }
         if (g == null) { host.sys("Android не начал подключение", true); return false }
         gatt = g
+        var wasUp = false
         try {
             val up = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { ev.up.await() }
             if (up != true) {
@@ -165,24 +195,49 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
             if (!enableNotify(g, q, ch)) return false
             ffe1 = ch
             subscribed = true
+            wasUp = true
             host.state(Link.CONNECTED, "Подключено, уведомления FFE1 включены")
             host.up()
             coroutineScope {
                 val pulse = launch { pulseLoop() }
+                val dog = launch { watchdog(ev) }
                 val status = ev.lost.await()
                 pulse.cancel()
+                dog.cancel()
                 subscribed = false
-                if (wanted) host.sys("Связь потеряна (статус $status)", true)
+                if (wanted) host.sys(lostText(status), true)
             }
             return true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {   // the Bluetooth API throws when its process died (Bluetooth off, a stack crash)
+            host.sys("Сбой Bluetooth (${e.javaClass.simpleName}) — переподключаюсь", true)
+            return wasUp
         } finally {
             subscribed = false
             ffe1 = null
             q.close()
             if (gatt === g) gatt = null
             if (queue === q) queue = null
+            if (events === ev) events = null
             try { g.disconnect() } catch (e: Exception) { }
             try { g.close() } catch (e: Exception) { }
+        }
+    }
+
+    private fun lostText(status: Int): String = when (status) {
+        ADAPTER_OFF -> "Bluetooth выключается — связь закрыта"
+        SILENCE -> "Нет данных ${SILENCE_MS / 1000} с — переподключаюсь"
+        GattQueue.THREW -> "Сбой Bluetooth при записи — переподключаюсь"
+        else -> "Связь потеряна (статус $status)"
+    }
+
+    /** Subscribed, yet nothing comes (no drop callback, a wedged write queue): count it as a drop. */
+    private suspend fun watchdog(ev: Events) {
+        val since = SystemClock.elapsedRealtime()
+        while (true) {
+            delay(1000)
+            if (SystemClock.elapsedRealtime() - maxOf(since, rxAt) >= SILENCE_MS) { ev.lost.complete(SILENCE); return }
         }
     }
 
@@ -200,7 +255,7 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
 
     /** Notifications on FFE1: local switch, then the CCCD write; subscribed only once that write succeeded. */
     private suspend fun enableNotify(g: BluetoothGatt, q: GattQueue, ch: BluetoothGattCharacteristic): Boolean {
-        val on = try { g.setCharacteristicNotification(ch, true) } catch (e: SecurityException) { false }
+        val on = try { g.setCharacteristicNotification(ch, true) } catch (e: Exception) { false }
         if (!on) { host.sys("Android не включил уведомления FFE1 — переподключаюсь", true); return false }
         val cccd = ch.getDescriptor(CCCD)
         if (cccd == null) { host.sys("У FFE1 нет дескриптора 0x2902 — переподключаюсь", true); return false }
@@ -242,11 +297,13 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
         val ch = ffe1
         val g = gatt
         val q = queue
+        val ev = events
         if (ch == null || g == null || q == null || !subscribed) return WriteResult.NotConnected
         val svc = ch.service?.uuid?.toString()
         val chr = ch.uuid.toString()
         WriteGuard.check(svc, chr, payload)?.let { host.sys("Запись заблокирована: $it", true); return WriteResult.Refused(it) }
         val r = q.run(GattQueue.Op.WRITE_CHAR, WRITE_TIMEOUT_MS) { radioWrite(g, ch, payload) }
+        if (r.status == GattQueue.THREW) ev?.lost?.complete(GattQueue.THREW)   // this gatt is dead: reconnect
         if (!r.ok) return WriteResult.Failed(r.describe())
         host.tx(svc!!, chr, payload)
         return WriteResult.Ok
@@ -293,8 +350,10 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
 
         private fun notified(c: BluetoothGattCharacteristic, value: ByteArray) {
             if (ev.lost.isCompleted) return
+            val now = SystemClock.elapsedRealtime()
+            rxAt = now
             host.rx(c.service?.uuid?.toString() ?: Uuids.SERVICE, c.uuid.toString(), value)
-            if (subscribed && SystemClock.elapsedRealtime() - pulseAt >= Commands.PULSE_MS) pulseNow.trySend(Unit)
+            if (subscribed && now - pulseAt >= Commands.PULSE_MS) pulseNow.trySend(Unit)
         }
     }
 
@@ -308,5 +367,14 @@ class ScooterLink(private val ctx: Context, private val host: Host) {
         const val WRITE_TIMEOUT_MS = 2_000L
         /** The Bird app waits 500 ms after subscribing before its first +SVGT=?. */
         const val FIRST_PULSE_MS = 500L
+        /** Subscribed with no notification this long (4 pulses; the ride log never went 1.5 s without one): reconnect. */
+        const val SILENCE_MS = 10_000L
+        /** No data at all this long, reconnects included: stop trying. */
+        const val GIVE_UP_MS = 10 * 60_000L
+        /** Synthetic drop statuses (GATT statuses are ≥ 0, [GattQueue]'s −1…−4). */
+        const val ADAPTER_OFF = -10
+        const val SILENCE = -11
+        const val GONE = "Самокат 10 минут не на связи — перестал подключаться. Нажми «Подключить», когда будешь рядом с ним"
+        private const val TAG = "BirdAir"
     }
 }

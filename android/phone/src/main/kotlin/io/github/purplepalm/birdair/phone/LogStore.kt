@@ -21,6 +21,8 @@ object LogStore {
     private const val KEEP = 40
     /** Automatic sending: at most this often while connected. */
     const val AUTO_EVERY_MS = 5 * 60 * 1000L
+    /** After a drop: at most this often, so a flapping link does not commit the whole log every few seconds. */
+    const val DROP_EVERY_MS = 60_000L
 
     private val saveLock = Mutex()
     private val ghLock = Mutex()
@@ -70,23 +72,28 @@ object LogStore {
         return Intent.createChooser(send, "Поделиться логом").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
-    /** Automatic sending is on, set up, and there is something new with scooter data in it. */
-    fun autoDue(s: Session, force: Boolean): Boolean {
+    /**
+     * Automatic sending is on, set up, and there is something new with scooter data in it. [force]: now (a drop,
+     * «Отключить»), not on the 5-min schedule, but only if no upload was asked for within [minGapMs].
+     */
+    fun autoDue(s: Session, force: Boolean, minGapMs: Long = 0, nowMs: Long = System.currentTimeMillis()): Boolean {
         val cfg = ScooterRepo.gh.value
         if (!cfg.auto || !cfg.complete || !ScooterRepo.hasToken.value) return false
         if (s.rx.get() == 0L) return false
         if (s.ghPushed == s.recorder.pushed && s.ghDest == cfg.dest) return false
-        if (force) return true
+        if (force) return nowMs - s.ghTryAt >= minGapMs
         val last = maxOf(if (s.gh != null) s.ghAt else s.startedAtMs, s.ghFailedAt)
-        return System.currentTimeMillis() - last >= AUTO_EVERY_MS
+        return nowMs - last >= AUTO_EVERY_MS
     }
 
     /**
      * Saves, then PUTs the log to GitHub: one recording = one file, sent again it is overwritten with the sha of
-     * the previous response. A name taken by someone else (422 sha) moves to -2, -3…. The outcome goes to
-     * [ScooterRepo.log]; true when the file is on GitHub.
+     * the previous response. A name taken by someone else (422 sha) moves to -2, -3…. When that sha went stale
+     * (a PUT whose answer was lost, the file changed in the repo: 409/422), the current one is fetched and the
+     * PUT tried once more. The outcome goes to [ScooterRepo.log]; true when the file is on GitHub.
      */
     suspend fun upload(ctx: Context, s: Session, auto: Boolean): Boolean = withContext(Dispatchers.IO) {
+        s.ghTryAt = System.currentTimeMillis()
         ghLock.withLock {
             val cfg = ScooterRepo.gh.value
             val token = GitHubApi.cleanToken(ScooterRepo.prefs.token)
@@ -106,15 +113,21 @@ object LogStore {
                 val base = s.base()
                 // overwrite only with a known sha; without one GitHub would answer 422
                 val prev = s.gh?.takeIf { s.ghDest == cfg.dest && !it.sha.isNullOrEmpty() }
+                var sha = prev?.sha
+                var refreshed = false
                 var got: GhPut? = null
                 var attempt = 1
                 while (got == null) {
                     val path = prev?.path ?: GitHubApi.path(cfg.folder, GitHubApi.fileName(base, attempt))
-                    val req = GitHubApi.put(cfg, token, path, bytes, GitHubApi.commitMessage(base, n), prev?.sha)
+                    val req = GitHubApi.put(cfg, token, path, bytes, GitHubApi.commitMessage(base, n), sha)
                     try {
                         got = GitHubApi.parsePut(path, GitHubHttp.call(req, cfg).body)
                     } catch (e: GhError) {
-                        if (prev == null && GitHubApi.isShaConflict(e.status, e.ghMessage) && attempt < 9) attempt++ else throw e
+                        when {
+                            prev == null && GitHubApi.isShaConflict(e.status, e.ghMessage) && attempt < 9 -> attempt++
+                            prev != null && !refreshed && GitHubApi.isStaleSha(e.status) -> { refreshed = true; sha = currentSha(cfg, token, path) }
+                            else -> throw e
+                        }
                     }
                 }
                 val put: GhPut = got
@@ -133,6 +146,13 @@ object LogStore {
                 ScooterRepo.log.update { it.copy(ghBusy = false) }
             }
         }
+    }
+
+    /** The sha of [path] on the branch now; null when the file is gone (the PUT then creates it again). */
+    private fun currentSha(cfg: GhConfig, token: String, path: String): String? = try {
+        GitHubApi.parseSha(GitHubHttp.call(GitHubApi.getContents(cfg, token, path), cfg).body)
+    } catch (e: GhError) {
+        if (e.status == 404) null else throw e
     }
 
     /** «Проверить доступ»: the repo and the branch, like the page's checkGitHub(). */

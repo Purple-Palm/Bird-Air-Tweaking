@@ -14,7 +14,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class GattQueue {
     enum class Op { DISCOVER, WRITE_DESC, WRITE_CHAR }
 
-    /** [status]: the callback's GATT status (0 = success) or one of [TIMEOUT], [NOT_STARTED], [CANCELLED]. */
+    /** [status]: the callback's GATT status (0 = success) or one of [TIMEOUT], [NOT_STARTED], [CANCELLED], [THREW]. */
     data class Result(val status: Int) {
         val ok: Boolean get() = status == 0
         fun describe(): String = when (status) {
@@ -22,6 +22,7 @@ class GattQueue {
             TIMEOUT -> "нет ответа"
             NOT_STARTED -> "Android не принял операцию"
             CANCELLED -> "связь прервалась"
+            THREW -> "сбой Bluetooth"
             else -> "статус $status"
         }
     }
@@ -33,13 +34,17 @@ class GattQueue {
     private var pending: Pending? = null
     @Volatile private var closed = false
 
-    /** Starts [start] (returns false when Android refused it) once the previous operation has finished. */
+    /**
+     * Starts [start] (returns false when Android refused it) once the previous operation has finished. A throw
+     * from [start] never leaves here: without permission it is [NOT_STARTED]; anything else (a dead Bluetooth
+     * process: DeadObjectException as a RuntimeException) is [THREW], and the connection is gone.
+     */
     suspend fun run(op: Op, timeoutMs: Long, start: () -> Boolean): Result = mutex.withLock {
         if (closed) return@withLock Result(CANCELLED)
         val p = Pending(op, CompletableDeferred())
         synchronized(lock) { pending = p }
         try {
-            val started = try { start() } catch (e: SecurityException) { false }
+            val started = try { start() } catch (e: SecurityException) { false } catch (e: Exception) { return@withLock Result(THREW) }
             if (!started) return@withLock Result(NOT_STARTED)
             withTimeoutOrNull(timeoutMs) { p.done.await() } ?: Result(TIMEOUT)
         } finally {
@@ -69,5 +74,6 @@ class GattQueue {
         const val TIMEOUT = -1
         const val NOT_STARTED = -2
         const val CANCELLED = -3
+        const val THREW = -4
     }
 }

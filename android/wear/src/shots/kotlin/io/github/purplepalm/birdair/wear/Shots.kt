@@ -47,6 +47,9 @@ class Shots {
         gauge(Samples.riding.copy(speedKmh = 29.8, powerW = 1180.0, peakW = 1200.0, batteryPct = 100.0, mode = 3))
     }
     @Test fun noPhone() = shot("no-phone") { gauge(Samples.riding, Health.NO_PHONE) }
+    // idle draw at a standstill: a short tip on the traction side, square at 12 o'clock
+    @Test fun standstill() = shot("standstill") { gauge(Samples.riding.copy(speedKmh = 0.0, currentA = 0.12, powerW = 4.9, peakW = 300.0)) }
+    @Test fun idle() = shot("idle") { gauge(Samples.riding, Health.IDLE) }
     @Test fun silent() = shot("silent") { gauge(Samples.silent, Health.SILENT) }
     @Test fun empty() = shot("empty") { gauge(Telemetry(), Health.NO_PHONE) }
     @Test fun ambient() = shot("ambient") { gauge(Samples.riding, ambient = AmbientState(burnIn = true, tick = 2)) }

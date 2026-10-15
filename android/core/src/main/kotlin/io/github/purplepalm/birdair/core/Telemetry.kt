@@ -180,7 +180,7 @@ class TelemetryTracker(decoder: Decoder) {
             "odometer_mi" -> put("odometer_km", v * MILE)
             "custom", "error" -> {
                 extras[f.name.ifEmpty { if (f.key == "error") "Код ошибки" else "Поле ${f.match} @${f.offset}".replace("  ", " ") }] = v
-                CUSTOM[f.name]?.let { put(it, v) }
+                role(f)?.let { put(it, v) }
             }
             else -> put(f.key, v)
         }
@@ -267,7 +267,7 @@ class TelemetryTracker(decoder: Decoder) {
         private const val TEMP2 = "temp2"
         private const val MOTOR = "motor"
 
-        /** Custom fields of decoder v5 that also fill typed fields. */
+        /** Custom fields of decoder v5 that also fill typed fields (DecoderTest checks the names against decoders/current.json). */
         val CUSTOM: Map<String, String> = mapOf(
             "Поездка с включения, км" to TRIP,
             "Средняя скорость с включения, км/ч" to AVG,
@@ -276,6 +276,23 @@ class TelemetryTracker(decoder: Decoder) {
             "Температура 2 (батарея?), °C" to TEMP2,
             "Мотор тянет (бит)" to MOTOR,
         )
+
+        /**
+         * The verified ones also by where they sit, so a later decoder that only renames them keeps them. Not the
+         * temperatures and the motor bit: their meaning is unchecked, a new name there may well be a new meaning.
+         */
+        private val CUSTOM_AT: Map<String, String> = mapOf(
+            at("3A 17 00 0D", 10, "u16be") to TRIP,
+            at("3A 17 00 0D", 5, "u8") to AVG,
+            at("3A 18 20 10", 13, "u16le") to REMAIN,
+            at("3A 18 20 10", 15, "u16le") to FULL,
+        )
+
+        private fun at(match: String, offset: Int, type: String) =
+            match.trim().uppercase().split(Regex("\\s+")).joinToString(" ") + "@" + offset + ":" + type
+
+        /** The typed field a custom decoder field fills, if any: by name, else (verified ones) by position. */
+        fun role(f: FieldSpec): String? = CUSTOM[f.name] ?: if (f.mask == null) CUSTOM_AT[at(f.match, f.offset, f.type)] else null
 
         /** JSON-line keys (decoder.json boards), the page's JSON_KEYS. */
         private val JSON_KEYS = mapOf(

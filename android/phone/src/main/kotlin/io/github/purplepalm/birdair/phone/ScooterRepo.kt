@@ -2,12 +2,14 @@ package io.github.purplepalm.birdair.phone
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
 import io.github.purplepalm.birdair.core.Decoder
 import io.github.purplepalm.birdair.core.GattService
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.LogRecorder
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,6 +34,8 @@ class Session(val startedAtMs: Long, private val t0: Long) {
     @Volatile var ghPushed = -1L
     @Volatile var ghAt = 0L
     @Volatile var ghFailedAt = 0L
+    /** When the last upload was asked for (wall clock): spaces out uploads after drops. */
+    @Volatile var ghTryAt = 0L
 
     fun now(): Long = SystemClock.elapsedRealtime() - t0
     fun base(): String = recorder.fileBase("log")
@@ -92,7 +96,8 @@ object ScooterRepo {
         private set
     private lateinit var app: Context
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // saves, uploads, taps: a throw that slipped through is logged, it does not end the process mid-ride
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e("BirdAir", "background task failed", e) })
     val tracker = TelemetryTracker(Decoder.EMPTY)
 
     @Volatile var session: Session? = null

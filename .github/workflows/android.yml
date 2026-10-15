@@ -5,23 +5,30 @@ name: Android
 
 on:
   push:
+    # branches only: tag pushes ignore paths and would replace android-latest
+    branches: ['**']
     paths:
       - 'android/**'
       - 'decoders/current.json'
+      # the Kotlin tests compare against these
+      - 'tools/uart_frames.py'
+      - 'tools/birdlog.py'
+      - 'logs/20261014-174148-log.json'
+      - 'logs/20261014-185422-log.json.gz'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: android-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     name: Build and test
     runs-on: ubuntu-latest
+    # a newer push cancels an older build, never a release half done (deleted, not yet created)
+    concurrency:
+      group: android-build-${{ github.ref }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: android

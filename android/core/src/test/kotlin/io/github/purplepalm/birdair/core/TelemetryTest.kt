@@ -85,6 +85,24 @@ class TelemetryTest {
         assertEquals(0, st.badSum)
     }
 
+    /** The typed slots are found by the decoder's field names: a rename in decoders/current.json must fail here. */
+    @Test fun customNamesAreInTheDecoder() {
+        val fields = Repo.decoder().spec.fields.filter { it.key == "custom" }
+        for (name in TelemetryTracker.CUSTOM.keys) {
+            val f = fields.singleOrNull { it.name == name }
+            assertNotNull(f, "decoders/current.json has no custom field «$name»: update TelemetryTracker.CUSTOM")
+            assertEquals(TelemetryTracker.CUSTOM[name], TelemetryTracker.role(f))
+        }
+        // a verified field renamed by a later decoder keeps its slot; an unverified one does not
+        val trip = fields.single { it.name == "Поездка с включения, км" }
+        assertEquals("trip_km", TelemetryTracker.role(trip.copy(name = "Поездка, км")))
+        val motor = fields.single { it.name == "Мотор тянет (бит)" }
+        assertNull(TelemetryTracker.role(motor.copy(name = "Тормоз (бит)")))
+        val tr = TelemetryTracker(Repo.decoder().let { d -> Decoder(d.spec.copy(fields = d.spec.fields.map { if (it.name == trip.name) it.copy(name = "Поездка, км") else it })) })
+        tr.onNotification(Uuids.SERVICE, Uuids.CHAR, MODE_FRAME, 0)
+        assertNotNull(tr.snapshot(0).tripKm)
+    }
+
     @Test fun streamingMeansAFrameWithinThreeSeconds() {
         val tr = TelemetryTracker(Repo.decoder())
         assertFalse(tr.snapshot(0).streaming)

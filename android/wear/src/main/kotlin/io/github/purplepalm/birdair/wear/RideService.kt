@@ -20,8 +20,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * A tiny foreground service behind the Ongoing Activity: while the scooter streams, the app sits on the
- * watch face (one tap back to the gauge) and its process — with [WatchFeed]'s listener — stays alive.
+ * A tiny foreground service behind the Ongoing Activity: while the phone is on a ride (from «подключаюсь»
+ * on), the app sits on the watch face (one tap back to the gauge) and its process — with [WatchFeed]'s
+ * listener — stays alive.
  * It writes nothing anywhere and stops itself after [Idle.AFTER_MS] without live data, or on «Скрыть».
  */
 class RideService : Service() {

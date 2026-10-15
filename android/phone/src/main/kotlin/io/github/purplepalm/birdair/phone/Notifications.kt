@@ -17,6 +17,7 @@ import io.github.purplepalm.birdair.core.Telemetry
 object Notifications {
     const val CHANNEL = "ride"
     const val ID = 1
+    private const val ALERT_ID = 2
 
     fun channel(ctx: Context) {
         val ch = NotificationChannel(CHANNEL, "Поездка", NotificationManager.IMPORTANCE_LOW).apply {
@@ -55,11 +56,33 @@ object Notifications {
     }
 
     /** Updates the shown notification; without POST_NOTIFICATIONS Android would drop it anyway. */
-    fun show(ctx: Context, n: Notification) {
+    fun show(ctx: Context, n: Notification, id: Int = ID) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        ctx.getSystemService(NotificationManager::class.java)?.notify(ID, n)
+        ctx.getSystemService(NotificationManager::class.java)?.notify(id, n)
     }
+
+    /** Why the service stopped by itself (scooter gone for long, no permission): stays after the service is gone. */
+    fun alert(ctx: Context, text: String) {
+        val open = PendingIntent.getActivity(
+            ctx, 2,
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = NotificationCompat.Builder(ctx, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_scooter)
+            .setContentTitle("Связь с самокатом остановлена")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setLocalOnly(true)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setContentIntent(open)
+            .build()
+        show(ctx, n, ALERT_ID)
+    }
+
+    fun cancelAlert(ctx: Context) { ctx.getSystemService(NotificationManager::class.java)?.cancel(ALERT_ID) }
 }
 
 /** Runtime permissions per Android version. */

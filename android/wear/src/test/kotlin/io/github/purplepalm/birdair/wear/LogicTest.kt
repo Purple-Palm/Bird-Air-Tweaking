@@ -35,15 +35,16 @@ class ArcTest {
     }
 
     @Test fun tractionClockwiseRegenCounterClockwise() {
-        // traction: starts at 12 o'clock and runs clockwise
-        assertEquals(-90f to 67.5f, Arc.span(0.5f))
-        // regen: the same length ending at 12 o'clock, i.e. drawn counter-clockwise from it
-        val (start, sweep) = Arc.span(-0.5f)!!
-        assertEquals(-157.5f, start, 1e-4f)
-        assertEquals(67.5f, sweep, 1e-4f)
-        assertEquals(-90f, start + sweep, 1e-4f)
-        assertNull(Arc.span(0f))
-        assertNull(Arc.span(0.001f))
+        // traction: from 12 o'clock clockwise, the round tip (3.4°) ends on the value
+        assertEquals(Arc.Bar(1f, 64.1f), Arc.bar(0.5f, 3.4f))
+        // regen: the same length counter-clockwise
+        assertEquals(Arc.Bar(-1f, -64.1f), Arc.bar(-0.5f, 3.4f))
+        // shorter than the tip (4.9 W idle draw on a 300 W scale): the tip alone, still on its own side of zero
+        assertEquals(Arc.Bar(1f, 0f), Arc.bar(4.9f / 300f, 3.4f))
+        assertEquals(Arc.Bar(-1f, 0f), Arc.bar(-0.02f, 3.4f))
+        assertNull(Arc.bar(0f, 3.4f))
+        assertNull(Arc.bar(0.001f, 3.4f))
+        assertNull(Arc.bar(Float.NaN, 3.4f))
         // the track is the whole ±135° range
         assertEquals(-225f to 270f, Arc.track)
     }

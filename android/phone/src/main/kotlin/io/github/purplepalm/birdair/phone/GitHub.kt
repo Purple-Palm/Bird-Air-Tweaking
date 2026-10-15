@@ -79,6 +79,10 @@ object GitHubApi {
 
     fun getRepo(cfg: GhConfig, token: String) = GhRequest("GET", repoUrl(cfg), headers(token, false), null)
 
+    /** GET /repos/{o}/{r}/contents/{path}?ref={branch}: the file's current sha (also for files over 1 MB). */
+    fun getContents(cfg: GhConfig, token: String, path: String) =
+        GhRequest("GET", contentsUrl(cfg, path) + "?ref=" + enc(cfg.branch.trim()), headers(token, false), null)
+
     fun getBranch(cfg: GhConfig, token: String) =
         GhRequest("GET", repoUrl(cfg) + "/branches/" + enc(cfg.branch.trim()), headers(token, false), null)
 
@@ -87,6 +91,14 @@ object GitHubApi {
         val c = try { body?.let { JSON.parseToJsonElement(it).jsonObject["content"]?.jsonObject } } catch (e: Exception) { null }
         return GhPut(path, c?.get("sha")?.jsonPrimitive?.contentOrNull, c?.get("html_url")?.jsonPrimitive?.contentOrNull)
     }
+
+    /** "sha" of a contents GET response. */
+    fun parseSha(body: String?): String? = try {
+        body?.let { JSON.parseToJsonElement(it).jsonObject["sha"]?.jsonPrimitive?.contentOrNull }?.takeIf { it.isNotEmpty() }
+    } catch (e: Exception) { null }
+
+    /** The sha we sent is not the file's (409 "does not match", 422): fetch the current one and try again. */
+    fun isStaleSha(status: Int): Boolean = status == 409 || status == 422
 
     /** "message" of an error response. */
     fun message(body: String?): String = try {

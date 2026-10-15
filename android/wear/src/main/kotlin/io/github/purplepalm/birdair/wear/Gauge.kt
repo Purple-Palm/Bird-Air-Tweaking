@@ -24,7 +24,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -78,8 +80,10 @@ fun GaugeScreen(s: Screen, ambient: AmbientState?) {
         val amb = ambient != null
         val shift = if (ambient?.burnIn == true) BurnIn.offset(ambient.tick) else 0f to 0f
         val t = s.t
+        val live = s.health.live
+        // old power is not shown as power: the arc rests at zero unless the data is live (as on the phone)
         val frac by animateFloatAsState(
-            Arc.fraction(t.powerW, t.peakW),
+            if (live) Arc.fraction(t.powerW, t.peakW) else 0f,
             if (amb) snap() else tween(150, easing = LinearOutSlowInEasing),
             label = "power",
         )
@@ -94,14 +98,14 @@ fun GaugeScreen(s: Screen, ambient: AmbientState?) {
                     fontSize = g.sp(14f),
                 )
                 BatteryAndMode(t, amb, g, Modifier.centreAt(172f))
-                Power(t, amb, g)
+                Power(t, live, amb, g)
             }
             StatusLine(s.health, amb, g, Modifier.centreAt(45f))
         }
     }
 }
 
-/** The arc: faint ±135° track, ticks at 0, ±50 % and the ends, then the value from 12 o'clock. */
+/** The arc: faint ±135° track, ticks at 0, ±50 % and the ends, then the value from 12 o'clock (see [Arc.bar]). */
 @Composable
 fun PowerArc(fraction: Float, ambient: Boolean, modifier: Modifier = Modifier) {
     val colour = argb(Arc.colorFor(fraction.toDouble()))
@@ -115,16 +119,27 @@ fun PowerArc(fraction: Float, ambient: Boolean, modifier: Modifier = Modifier) {
         if (ambient) drawArc(argb(Palette.AMB_LINE), ts, tw, false, tl, sz, style = Stroke(1.2f * u, cap = StrokeCap.Round))
         else drawArc(argb(Palette.HAIR), ts, tw, false, tl, sz, style = Stroke(band, cap = StrokeCap.Round))
         ticks(r - band / 2, u, ambient)
-        Arc.span(fraction)?.let { (start, sweep) ->
-            if (ambient) {
-                drawArc(colour, start, sweep, false, tl, sz, style = Stroke(3.5f * u, cap = StrokeCap.Round))
-            } else {
-                // a soft halo under the bar, then the bar
-                drawArc(colour.copy(alpha = 0.18f), start, sweep, false, tl, sz, style = Stroke(band + 9f * u, cap = StrokeCap.Round))
-                drawArc(colour, start, sweep, false, tl, sz, style = Stroke(band, cap = StrokeCap.Round))
-            }
+        val w = if (ambient) 3.5f * u else band
+        Arc.bar(fraction, Math.toDegrees((w / 2 / r).toDouble()).toFloat())?.let { b ->
+            // a soft halo under the bar, then the bar; one filled outline each, so the halo has no darker overlap
+            if (!ambient) drawPath(barPath(r, w + 9f * u, b), colour.copy(alpha = 0.18f))
+            drawPath(barPath(r, w, b), colour)
         }
     }
+}
+
+/** [b] as an outline [width] wide on radius [r]: square at 12 o'clock, a half-disc tip past the body. */
+private fun DrawScope.barPath(r: Float, width: Float, b: Arc.Bar): Path = Path().apply {
+    val ro = r + width / 2
+    val z = Math.toRadians(Arc.ZERO_DEG.toDouble())
+    moveTo(center.x + ro * cos(z).toFloat(), center.y + ro * sin(z).toFloat())
+    if (b.body != 0f) arcTo(Rect(center, ro), Arc.ZERO_DEG, b.body, false)
+    val e = Arc.ZERO_DEG + b.body
+    val ea = Math.toRadians(e.toDouble())
+    val tip = Offset(center.x + r * cos(ea).toFloat(), center.y + r * sin(ea).toFloat())
+    arcTo(Rect(tip, width / 2), e, 180f * b.dir, false)
+    if (b.body != 0f) arcTo(Rect(center, r - width / 2), e, -b.body, false)
+    close()
 }
 
 private const val EDGE = 3f
@@ -228,9 +243,9 @@ private fun BatteryBar(pct: Double?, ambient: Boolean, modifier: Modifier) {
 }
 
 @Composable
-private fun Power(t: Telemetry, ambient: Boolean, g: Grid) {
-    val p = t.powerW
-    val flow = Flow.of(t)
+private fun Power(t: Telemetry, live: Boolean, ambient: Boolean, g: Grid) {
+    val p = if (live) t.powerW else null
+    val flow = if (live) Flow.of(t) else Flow.NONE
     Text(
         Fmt.watts(p),
         Modifier.centreAt(198f),

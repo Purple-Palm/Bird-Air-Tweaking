@@ -34,7 +34,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Foreground service (connectedDevice) that owns the scooter link, so it keeps running with the screen off:
  * a partial wake lock while the link is wanted (connected or reconnecting), START_STICKY, a snapshot every
  * 250 ms for the screen and the watch, the ongoing notification about once a second, the log saved every
- * 5 min and on disconnect, GitHub auto-send every 5 min while connected and right after a drop.
+ * 5 min and on disconnect, GitHub auto-send every 5 min while connected and after a drop (at most once a minute).
  */
 class ScooterService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -50,9 +50,13 @@ class ScooterService : Service() {
 
     private val bt = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            when (i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+            when (val st = i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
                 BluetoothAdapter.STATE_ON -> if (link.wanted) { ScooterRepo.sys("Bluetooth включён"); link.kick() }
-                BluetoothAdapter.STATE_OFF -> if (link.wanted) ScooterRepo.sys("Bluetooth выключен", true)
+                // the drop callback may never come: close the link now, STATE_ON reconnects
+                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> if (link.wanted) {
+                    if (st == BluetoothAdapter.STATE_OFF) ScooterRepo.sys("Bluetooth выключен", true)
+                    link.adapterOff()
+                }
             }
         }
     }
@@ -97,6 +101,7 @@ class ScooterService : Service() {
             return
         }
         ScooterRepo.prefs.wanted = true
+        Notifications.cancelAlert(this)
         val st = ScooterRepo.status.value
         if (link.wanted && link.address == address && st.running) return
         if (!st.running || ScooterRepo.session == null || link.address != address) ScooterRepo.newSession(name, address)
@@ -282,7 +287,7 @@ class ScooterService : Service() {
             val app = applicationContext
             ScooterRepo.scope.launch {
                 LogStore.save(app, s)
-                if (LogStore.autoDue(s, force = true)) LogStore.upload(app, s, auto = true)
+                if (LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS)) LogStore.upload(app, s, auto = true)
             }
         }
 
@@ -291,6 +296,7 @@ class ScooterService : Service() {
                 ScooterRepo.sys(reason, true)
                 stopAll()
                 ScooterRepo.setLink(Link.IDLE, reason, true)
+                Notifications.alert(this@ScooterService, reason)   // the screen is likely off
             }
         }
     }
