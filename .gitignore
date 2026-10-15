@@ -9,3 +9,6 @@ __pycache__/
 btsnoop_hci.log*
 *.btsnoop
 bugreport-*.zip
+
+# git worktrees made by Claude Code agents
+.claude/worktrees/
