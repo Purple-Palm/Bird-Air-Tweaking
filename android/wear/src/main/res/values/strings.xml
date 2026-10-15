@@ -1,1 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?><resources><string name="app_name">Bird Air</string></resources>
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bird Air</string>
+    <string name="channel_ride">Поездка</string>
+    <string name="ride_hide">Скрыть</string>
+</resources>
