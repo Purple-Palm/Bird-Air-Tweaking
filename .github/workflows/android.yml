@@ -1,0 +1,123 @@
+name: Android
+
+# Собирает приложения для телефона и часов (android/), гоняет их тесты и после
+# каждого пуша выкладывает оба APK в пре-релиз android-latest (один, перезаписывается).
+
+on:
+  push:
+    # branches only: tag pushes ignore paths and would replace android-latest
+    branches: ['**']
+    paths:
+      - 'android/**'
+      - 'decoders/current.json'
+      # the Kotlin tests compare against these
+      - 'tools/uart_frames.py'
+      - 'tools/birdlog.py'
+      - 'logs/20261014-174148-log.json'
+      - 'logs/20261014-185422-log.json.gz'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    # a newer push cancels an older build, never a release half done (deleted, not yet created)
+    concurrency:
+      group: android-build-${{ github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: No GitHub tokens in the repository
+        working-directory: .
+        run: python3 tools/check_secrets.py
+
+      - name: Tests and debug APKs
+        run: ./gradlew --no-daemon :core:test :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug
+
+      - name: Rename APKs
+        run: |
+          mkdir -p out
+          cp phone/build/outputs/apk/debug/phone-debug.apk out/bird-air-phone.apk
+          cp wear/build/outputs/apk/debug/wear-debug.apk out/bird-air-watch.apk
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bird-air-apk
+          path: android/out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-reports
+          path: android/*/build/reports/
+          retention-days: 7
+
+  release:
+    name: Pre-release android-latest
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # one release for all branches: publish one at a time
+    concurrency:
+      group: android-latest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bird-air-apk
+          path: out
+
+      - name: Replace the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: android-latest
+        run: |
+          short=${GITHUB_SHA::7}
+          url="$GITHUB_SERVER_URL/$GH_REPO"
+          gh release delete "$TAG" --cleanup-tag --yes || true
+          # a tag left behind without a release
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+          cat > notes.md <<EOF
+          Свежая сборка приложений Bird Air для телефона и часов.
+
+          - Коммит: [$short]($url/commit/$GITHUB_SHA), ветка $GITHUB_REF_NAME.
+          - **bird-air-phone.apk** — телефон (Android 10+): держит связь с самокатом в фоне и шлёт данные на часы.
+          - **bird-air-watch.apk** — часы Wear OS (Galaxy Watch): полоса тяги и рекуперации, скорость, заряд.
+
+          **Телефон.** Открой эту страницу в Chrome, скачай bird-air-phone.apk, открой файл и разреши Chrome
+          «Установку неизвестных приложений». Обновление — так же, поверх старой версии: подпись та же, настройки остаются.
+
+          **Часы.** На часах включи «Параметры разработчика» → «Отладка ADB» и «Отладка по Wi-Fi», затем с ПК
+          adb pair и adb connect IP:ПОРТ, потом adb install -r bird-air-watch.apk (или с телефона через «Bugjaeger»
+          / «Wear Installer 2»). Подробно: [android/README.md]($url/blob/$GITHUB_SHA/android/README.md).
+
+          В самокат приложение пишет только +SVGT=? (запрос версии, пульс живых данных), а по нажатию при
+          включённом «Разрешить команды» — +MODE=1/2/3 и +HLGT=0/1. Никогда: KEY?, OTA/DFU, произвольные байты.
+
+          Отладочные сборки (debug), подписаны ключом android/debug.keystore из репозитория.
+          EOF
+          gh release create "$TAG" out/bird-air-phone.apk out/bird-air-watch.apk \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Bird Air для телефона и часов ($short)" \
+            --notes-file notes.md

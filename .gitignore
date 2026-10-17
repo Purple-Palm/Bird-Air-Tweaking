@@ -1,0 +1,14 @@
+node_modules/
+test-results/
+playwright-report/
+_site/
+__pycache__/
+*.pyc
+.DS_Store
+# raw Android HCI snoop logs hold the addresses of every paired device; commit only parse_btsnoop.py output
+btsnoop_hci.log*
+*.btsnoop
+bugreport-*.zip
+
+# git worktrees made by Claude Code agents
+.claude/worktrees/
