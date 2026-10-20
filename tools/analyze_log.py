@@ -1055,6 +1055,8 @@ def analyze(paths, out_path, write_candidate=True, window_s=3.0, min_score=0.6, 
         mk = collections.Counter(e.get('n') for e in es if e['k'] == 'mk')
         p(f"== {', '.join(rel(f) for f in lg['_files'])}")
         p(f"   начало {lg.get('startedAt')}, записей {len(es)}, {dur:.1f} с" + (', демо' if lg.get('demo') else '') + (', обрезан' if lg.get('trimmed') else ''))
+        if lg.get('note'):
+            p(f"   описание: {lg['note']}")
         p('   метки: ' + (', '.join(f'{k}×{v}' for k, v in mk.most_common()) if mk else 'нет'))
         cmds = collections.Counter('+%s=%s' % c for c in (tx_command(bl.entry_bytes(e)) for e in es if e['k'] == 'tx') if c)
         if cmds:

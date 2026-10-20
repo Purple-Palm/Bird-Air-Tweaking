@@ -21,6 +21,18 @@ class WireTest {
         assertEquals(live, Wire.decode(Wire.encode(live)))
     }
 
+    @Test fun newFieldsRoundTrip() {
+        val t = full.copy(
+            currentFastA = 12.25, powerFastW = 401.5, powerAtMs = 123_456_700, seq = 99,
+            warnings = listOf(BatteryWarning("battery_low", WarningLevel.CRITICAL, "Сейчас отключится", 31.9), BatteryWarning("battery_hot", WarningLevel.WARNING, "Батарея греется", 51.0)),
+            range = RangeEstimate(1.5, 1.5 / 1.609344, 28.0, 18.7, "recent"), appOdometerKm = 1459.4,
+        )
+        assertEquals(t, Wire.decode(Wire.encode(t)))
+        // an older watch app ignores what it does not know, a newer one reads an older phone's message
+        assertEquals(full, Wire.decode(Wire.encode(full)))
+        assertTrue(Wire.encode(t).size < 900)
+    }
+
     @Test fun compact() {
         assertEquals("{}", String(Wire.encode(Telemetry()), Charsets.UTF_8))
         val n = Wire.encode(full).size

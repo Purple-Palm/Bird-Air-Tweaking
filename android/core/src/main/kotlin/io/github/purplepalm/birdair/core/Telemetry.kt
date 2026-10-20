@@ -22,6 +22,13 @@ enum class Link { IDLE, SCANNING, CONNECTING, CONNECTED, RECONNECTING }
  * from / into the battery since the tracker started. [peakW]: the power bar's scale, a rolling max
  * max(prev·0.999, |P|·1.1, 300 W) updated on every new power value. [units]: "kmh" or "mph" for display;
  * speeds and distances are always km/h and km. [extras]: custom decoder fields by name.
+ *
+ * From the controller frames themselves (3A 18 20 10 / 3A 17 00 0D on FFE1, whatever the decoder):
+ * [currentFastA] / [powerFastW] the battery current and power from the voltage sag ([FastPower]), fresh on every
+ * BMS frame where [currentA] refreshes ~1/s and lags ~0.6 s; [powerAtMs] the frame time (the tracker's clock) of
+ * the latest power value; [warnings] low battery / overheat ([BatteryAdvisor]), CRITICAL first; [range] to the
+ * observed empty; [appOdometerKm] the app's own odometer ([AppOdometer]). [seq] grows on every notification that
+ * brought a new value, so the phone can publish on change instead of on a timer.
  */
 @Serializable
 data class Telemetry(
@@ -47,6 +54,13 @@ data class Telemetry(
     val whIn: Double = 0.0,
     val peakW: Double = 300.0,
     val extras: Map<String, Double> = emptyMap(),
+    val currentFastA: Double? = null,
+    val powerFastW: Double? = null,
+    val powerAtMs: Long? = null,
+    val seq: Long = 0,
+    val warnings: List<BatteryWarning> = emptyList(),
+    val range: RangeEstimate? = null,
+    val appOdometerKm: Double? = null,
 )
 
 /**
@@ -59,6 +73,8 @@ data class Telemetry(
 class TelemetryTracker(decoder: Decoder) {
     @Volatile var link: Link = Link.IDLE
     @Volatile var units: String = "kmh"
+    /** tMs + this = the phone's wall clock (epoch ms), for the app odometer's checks; null: unknown. */
+    @Volatile var epochOffsetMs: Long? = null
 
     private var dec: Decoder = decoder
     val decoder: Decoder
@@ -75,6 +91,17 @@ class TelemetryTracker(decoder: Decoder) {
     private var whOut = 0.0
     private var whIn = 0.0
     private var peakW = PEAK_MIN
+    private val fast = FastPower()
+    private val advisor = BatteryAdvisor()
+    private var odometer = AppOdometer()
+    private var fastSample: FastPower.Sample? = null
+    private var powerAt: Long? = null
+    private var seqN = 0L
+
+    /** The app odometer's state, for the app to keep (null until the first frame) and to give back after a restart. */
+    var odometerState: AppOdometer.State?
+        @Synchronized get() = odometer.state
+        @Synchronized set(v) { odometer = AppOdometer(v) }
 
     /** Counters summed over the characteristics' assemblers. */
     val frameStats: FrameStats
@@ -90,10 +117,13 @@ class TelemetryTracker(decoder: Decoder) {
         // frames are assembled whatever the decoder (the page does the same); fields read them only when framed
         val frames = asms.getOrPut(key) { FrameAssembler() }.feed(bytes)
         if (frames.isNotEmpty()) frameT = tMs
+        var scooter = false
+        if (u == Uuids.CHAR) for (f in frames) scooter = scooterFrame(f, tMs) || scooter
         if (dec.framed) { for (f in frames) touched = apply(f, u, tMs) || touched }
         else touched = apply(bytes, u, tMs) || touched
         if (touched) dataT = tMs
         if (touched) afterTelemetry(tMs)
+        if (touched || scooter) seqN++
     }
 
     /** A value read from a characteristic (an rd entry): raw-packet fields only, read values are not frames. */
@@ -104,6 +134,7 @@ class TelemetryTracker(decoder: Decoder) {
         if (dec.spec.json) touched = decodeJson(Uuids.full(serviceUuid) + "|" + u, bytes, tMs)
         if (!dec.framed) touched = apply(bytes, u, tMs) || touched
         if (touched) afterTelemetry(tMs)
+        if (touched) seqN++
     }
 
     /** A new connection (services discovered again): half-received frames are dropped, like the page's
@@ -112,6 +143,7 @@ class TelemetryTracker(decoder: Decoder) {
     fun restartStreams() {
         for (a in asms.values) a.reset()
         jsonBufs.clear()
+        fast.reset()
     }
 
     @Synchronized
@@ -140,15 +172,26 @@ class TelemetryTracker(decoder: Decoder) {
             whIn = whIn,
             peakW = peakW,
             extras = LinkedHashMap(extras),
+            currentFastA = fastSample?.currentA,
+            powerFastW = fastSample?.powerW,
+            powerAtMs = powerAt,
+            seq = seqN,
+            warnings = advisor.warnings(),
+            range = advisor.range(),
+            appOdometerKm = odometer.totalKm,
         )
     }
 
-    /** Everything back to the start: values, energy, power scale, assemblers and their counters. */
+    /** Everything back to the start: values, energy, power scale, assemblers and their counters, the fast power
+     *  estimate and the battery advisor. Not the app odometer ([odometerState]) and not [Telemetry.seq], which only grows. */
     @Synchronized
     fun reset() {
         asms.clear(); jsonBufs.clear(); vals.clear(); extras.clear()
         frameT = null; dataT = null; powerTouched = false; lastPT = null
         whOut = 0.0; whIn = 0.0; peakW = PEAK_MIN
+        fast.reset(full = true); fastSample = null; powerAt = null
+        advisor.reset()
+        seqN++
     }
 
     /** Energy counters only (a new trip). */
@@ -191,6 +234,20 @@ class TelemetryTracker(decoder: Decoder) {
         if (key == "voltage" || key == "current" || key == "power") powerTouched = true
     }
 
+    /** FastPower, BatteryAdvisor and AppOdometer read the controller frames directly (verified offsets, see ScooterFrames). */
+    private fun scooterFrame(f: ByteArray, t: Long): Boolean {
+        val b = ScooterFrames.bms(f)
+        if (b != null) {
+            fastSample = fast.update(t, b.voltage, b.currentA, b.motor)
+            powerAt = t
+            advisor.onBms(t, b.voltage, b.currentA, b.temp1C.toDouble(), b.temp2C.toDouble(), b.remainingMah.toDouble(), b.fullMah.toDouble())
+            return true
+        }
+        val m = ScooterFrames.motion(f) ?: return false
+        advisor.onDistance(t, odometer.update(m.tripKm, m.odometerKm, epochOffsetMs?.let { it + t }))
+        return true
+    }
+
     private fun powerNow(): Double? {
         vals["power"]?.let { return it }
         val v = vals["voltage"] ?: return null
@@ -204,6 +261,7 @@ class TelemetryTracker(decoder: Decoder) {
         powerTouched = false
         val p = powerNow() ?: return
         if (!p.isFinite()) return
+        if (fastSample == null) powerAt = t
         lastPT?.let {
             val dt = ((t - it) / 1000.0).coerceIn(0.0, MAX_DT_S)
             if (p >= 0) whOut += p * dt / 3600 else whIn += -p * dt / 3600

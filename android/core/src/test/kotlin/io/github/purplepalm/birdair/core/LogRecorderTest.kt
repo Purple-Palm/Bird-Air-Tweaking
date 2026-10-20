@@ -150,6 +150,7 @@ class LogRecorderTest {
     @Test fun anonymizationMatchesBirdlog() {
         Py.assume()
         val r = withName("BirdAir 12345678")
+        r.note = "Еду на BirdAir 12345678, ID 12345678"
         val dir = Files.createTempDirectory("birdair-log").toFile()
         try {
             val f = File(dir, "raw.json").apply { writeText(r.toJson(anonymize = false, gatt = gatt)) }
@@ -158,11 +159,13 @@ class LogRecorderTest {
                 sys.path.insert(0, sys.argv[1])
                 import birdlog as bl
                 lg = bl.anonymize(bl.load_file(sys.argv[2]))
-                print(json.dumps({'device': lg['device'], 'entries': [bl.clean_entry(e) for e in lg['entries']]}, ensure_ascii=False))
+                print(json.dumps({'device': lg['device'], 'note': lg.get('note'), 'entries': [bl.clean_entry(e) for e in lg['entries']]}, ensure_ascii=False))
             """.trimIndent()
             val py = Json.parseToJsonElement(Py.run(script, "", f.absolutePath)).jsonObject
             val mine = Json.parseToJsonElement(r.toJson(gatt = gatt)).jsonObject
             assertEquals(py["device"], mine["device"])
+            assertEquals(py["note"], mine["note"])
+            assertEquals("Еду на scooter, ID scooter", mine["note"]!!.jsonPrimitive.content)
             assertEquals(py["entries"], mine["entries"])
         } finally { dir.deleteRecursively() }
     }
@@ -198,6 +201,60 @@ class LogRecorderTest {
                 assertEquals(0, x["errs"]!!.jsonArray.size, x.toString())
             }
         } finally { dir.deleteRecursively() }
+    }
+
+    @Test fun noteInTheFileAndItsName() {
+        val r = LogRecorder(start)
+        r.sys("x", 0)
+        assertEquals("20261015-015422-log", r.fileBase(zone = ZoneOffset.UTC))
+        r.note = "  Вдвоём до отсечки, FLY\n"
+        assertEquals("20261015-015422-vdvoem-do-otsechki-fly", r.fileBase(zone = ZoneOffset.UTC))
+        assertEquals("20261015-015422-log", r.fileBase("log", ZoneOffset.UTC))        // an explicit label wins
+        val o = Json.parseToJsonElement(r.toJson()).jsonObject
+        assertEquals(listOf("format", "version", "startedAt", "device", "demo", "trimmed", "note", "gatt", "decoder", "entries"), o.keys.toList())
+        assertEquals("Вдвоём до отсечки, FLY", o["note"]!!.jsonPrimitive.content)
+        r.note = "   "
+        assertNull(Json.parseToJsonElement(r.toJson()).jsonObject["note"])
+        assertEquals("20261015-015422-log", r.fileBase(zone = ZoneOffset.UTC))
+        // anonymized: the scooter's name does not get out through the note either
+        r.deviceName = "BirdAir 12345678"
+        r.note = "BirdAir 12345678 (серийник 12345678) \"вдвоём\""
+        assertEquals("scooter (серийник scooter) \"вдвоём\"", Json.parseToJsonElement(r.toJson()).jsonObject["note"]!!.jsonPrimitive.content)
+        assertEquals(r.note!!.trim(), Json.parseToJsonElement(r.toJson(anonymize = false)).jsonObject["note"]!!.jsonPrimitive.content)
+        assertEquals("20261015-015422-scooter-seriynik-scooter-vdvoem", r.fileBase(zone = ZoneOffset.UTC))
+    }
+
+    @Test fun rotationContinuesUnderANewName() {
+        val r = LogRecorder(start, maxEntries = 100)
+        r.note = "Длинная поездка"
+        r.deviceName = "BirdAir-X"
+        // the caller's clock: ms since the recording started
+        repeat(100) { r.rx("ffe0", "ffe1", byteArrayOf(it.toByte()), 1000L + it * 50) }
+        assertTrue(r.needsRotation)
+        val rot = r.rotate(5_400_123L, ZoneOffset.UTC)
+        assertTrue(rot.finished === r)
+        val n = rot.next
+        assertTrue(r.rotate(5_400_200L, ZoneOffset.UTC).next === n)                // rotating twice: the same next part
+        assertFalse(r.needsRotation)
+        assertEquals(start + 5_400_123L, n.startedAtMs)
+        assertEquals(5_400_123L, n.tOffsetMs)
+        assertEquals("Длинная поездка", n.note)
+        assertEquals("BirdAir-X", n.deviceName)
+        assertEquals("20261015-032423-dlinnaya-poezdka", n.fileBase(zone = ZoneOffset.UTC))
+        n.rx("ffe0", "ffe1", byteArrayOf(1), 5_401_000L)
+        r.mk("Газ", 5_402_000L)                                                     // a late writer of the old part
+        assertEquals(100, r.size)
+        assertFalse(r.trimmed)
+        val es = entries(n.toJson())
+        assertEquals("продолжение лога 20261015-015422-dlinnaya-poezdka", es[0]["n"]!!.jsonPrimitive.content)
+        assertEquals(listOf(0L, 877L, 1877L), es.map { it["t"]!!.jsonPrimitive.long })
+        assertEquals("2026-10-15T03:24:23.094Z", Json.parseToJsonElement(n.toJson()).jsonObject["startedAt"]!!.jsonPrimitive.content)
+        // the first part keeps its own times
+        assertEquals(1000L, entries(r.toJson()).first()["t"]!!.jsonPrimitive.long)
+        // without rotation it trims, as before
+        val t = LogRecorder(start, maxEntries = 100)
+        repeat(250) { t.rx("ffe0", "ffe1", byteArrayOf(1), it.toLong()) }
+        assertTrue(t.trimmed)
     }
 
     @Test fun emptyLog() {

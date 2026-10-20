@@ -62,6 +62,61 @@ class TelemetryTest {
         assertTrue(st.frames > 40000 && st.recovered > 0, st.toString())
     }
 
+    /** FastPower, BatteryAdvisor and AppOdometer fed by the tracker from the frames themselves. */
+    @Test fun fastPowerWarningsRangeOdometer() {
+        // the same frames through a standalone FastPower: t → the outputs at that t
+        val want = HashMap<Long, MutableList<FastPower.Sample>>()
+        val fp = FastPower()
+        for (e in RideLogs.ride(Repo.RIDE).events) when (e) {
+            is ScooterEvent.Reset -> fp.reset()
+            is ScooterEvent.Bms -> want.getOrPut(e.t) { ArrayList() }.add(fp.update(e.t, e.f.voltage, e.f.currentA, e.f.motor))
+            else -> {}
+        }
+        val tr = TelemetryTracker(Repo.decoder())
+        tr.epochOffsetMs = java.time.Instant.parse("2026-10-15T01:54:22.971Z").toEpochMilli()
+        var seq = -1L
+        var checked = 0
+        var lastAt: Long? = null
+        val (_, end) = replay(Repo.RIDE, tr) { s ->
+            assertTrue(s.seq >= seq)
+            seq = s.seq
+            val at = s.powerAtMs
+            if (at != null && at != lastAt) {
+                lastAt = at
+                val w = want.getValue(at).last()
+                assertEquals(w.currentA, s.currentFastA)
+                assertEquals(w.powerW, s.powerFastW)
+                if (s.powerFastW != 0.0) assertEquals(s.voltage!! * s.currentFastA!!, s.powerFastW!!, 1e-9)
+                checked++
+            }
+        }
+        assertTrue(checked > 7000, "$checked")
+        val s = tr.snapshot(end)
+        assertTrue(s.seq > 40000, "${s.seq}")
+        assertEquals(listOf(BatteryWarning("battery_low", WarningLevel.CRITICAL, "Сейчас отключится", s.warnings[0].value)), s.warnings)
+        assertEquals("recent", s.range!!.basis)
+        assertTrue(s.range!!.km < 0.2, "${s.range}")
+        assertTrue(s.range!!.whPerKm in 9.0..13.0, "${s.range}")
+        assertEquals(1433.3, s.appOdometerKm!!, 1e-9)
+        val st = tr.odometerState!!
+        assertEquals(Triple(1433.3, 1424.8, 8.5), Triple(st.totalKm, st.baseKm, st.tripKm))
+        assertTrue(st.wallMs!! > tr.epochOffsetMs!! + 2_000_000)
+        // the odometer survives tracker.reset() and comes back through odometerState
+        val state = tr.odometerState
+        tr.reset()
+        val r = tr.snapshot(end)
+        assertNull(r.currentFastA)
+        assertTrue(r.warnings.isEmpty())
+        assertNull(r.range)
+        assertEquals(1433.3, r.appOdometerKm!!, 1e-9)
+        assertTrue(r.seq > s.seq)
+        val tr2 = TelemetryTracker(Repo.decoder())
+        tr2.odometerState = state
+        assertEquals(1433.3, tr2.snapshot(0).appOdometerKm!!, 1e-9)
+        tr2.onNotification(Uuids.SERVICE, Uuids.CHAR, MODE_FRAME, 1)   // a frame with trip 0.0 at 1424.8: a new power-on, +0
+        assertEquals(1433.3, tr2.snapshot(1).appOdometerKm!!, 1e-9)
+    }
+
     /** logs/20261014-174148-log.json: standing still after +MODE=3. */
     @Test fun standstillLog() {
         val modes = ArrayList<Int>()

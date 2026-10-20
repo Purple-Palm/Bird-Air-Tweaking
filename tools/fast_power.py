@@ -2,103 +2,82 @@
 """Быстрый ток и мощность батареи Bird Air по просадке напряжения (эталон для приложения).
 
     python3 tools/fast_power.py logs/*.json.gz              # таблица проверки по логам
-    python3 tools/fast_power.py logs/X.json.gz --plots DIR  # плюс окна в PNG (нужен matplotlib)
-    python3 tools/fast_power.py logs/X.json.gz --set k_ocv=0.7 --smooth
+    python3 tools/fast_power.py logs/X.json.gz --set k_ocv=0.7
 
-Зачем. Ток BMS (кадр 3A 18 20 10, байты 11–12) обновляется раз в ~1 с (то же сырое значение
-приходит ~3 кадра подряд) и описывает среднее за ~0,7 с до кадра, где он сменился, — на
-экране он отстаёт на 0,6–0,9 с. Напряжение (байты 9–10) свежее в каждом кадре (~3,2/с), а
-батарея — источник с внутренним сопротивлением R ≈ 0,25 Ом: V = OCV − R·I. Значит
-I = (OCV − V)/R можно считать в каждом кадре, а ток BMS использовать только как «якорь»
-уровня: OCV ≈ V̄ + R·I_bms, где V̄ — среднее напряжение за то же окно, к которому относится
-ток BMS. Всё причинно: каждый выход зависит только от прошлых кадров.
+Зачем. Ток BMS (кадр 3A 18 20 10, байты 11–12) обновляется раз в ~1 с (одно и то же значение
+приходит ~3 кадра подряд) и описывает среднее за ~0,7 с до кадра, где сменился, — на экране он
+отстаёт на 0,6 с. Напряжение (байты 9–10) свежее в каждом кадре (~3,2/с), а батарея —
+источник с внутренним сопротивлением R ≈ 0,25 Ом: V = OCV − R·I. Значит I = (OCV − V)/R можно
+считать в каждом кадре, а ток BMS брать только как «якорь» уровня: OCV ≈ V̄ + R·I_bms, где V̄ —
+среднее напряжение за те же 0,7 с, к которым относится ток BMS (поправка на его запаздывание).
+Всё причинно: выход на кадре зависит только от этого и прошлых кадров.
 
-Вход — только кадры 3A 18 20 10 по порядку времени: t (мс, любые одни часы), V (В,
-u16le × 0,001), I_bms (А, s16le × −0,001: плюс — тяга, разряд; минус — рекуперация и
-зарядка), motor (бит 0x20 байта 5; оценка его не использует — см. «Ограничения»).
-Выход на каждый кадр: I_fast (А, плюс — тяга) и P_fast = V·I_fast (Вт).
+Вход — кадры 3A 18 20 10 по порядку времени: t (мс, любые одни часы), V (В), I_bms (А, плюс —
+тяга, разряд; минус — рекуперация и зарядка), motor (бит 0x20 байта 5; не используется, см.
+«Ограничения»). Выход на каждый кадр: I_fast (А, плюс — тяга) и P_fast = V·I_fast (Вт).
 
-Алгоритм (Kotlin-порт повторяет его по шагам; все параметры — PARAMS ниже):
+Алгоритм (Kotlin-порт FastPower.kt повторяет его по шагам, параметры — PARAMS):
 
-  Состояние между сбросами: R (Ом), суммы Sxx, Sxy, Syy (сохраняются и при сбросе, это
-  свойство батареи; reset(full=True) возвращает R = r0 и обнуляет суммы).
-  Сбрасывается: ocv (В, None — нет), slope (В/с), t_ocv (мс), hist — кадры (t, V) за
+  Свойства батареи (переживают reset(); reset(full=True) — R = r0, суммы = 0): R (Ом), Sxx, Sxy, Syy.
+  Поток (reset() обнуляет): ocv (None — нет), slope (В/с), t_ocv (мс), hist — кадры (t, V) за
   последние window_ms, last_t, last_i, anchor_t, prev = (t, V̄, I) прошлого якоря или None,
   vlo/vhi — мин./макс. V с начала окна прошлого якоря.
 
   update(t, v, i):
-   1. Разрыв: если last_t есть и (t − last_t > gap_ms или t < last_t) — сброс (как reset()).
-      Переподключение (новый поток кадров) — тоже reset() снаружи.
-   2. last_t = t; hist += (t, v); из начала hist убрать кадры с t' < t − window_ms
-      (текущий кадр остаётся всегда).
-   3. Если ocv = None (первый кадр после сброса): ocv = v + R·i, slope = 0, t_ocv = t,
-      last_i = i, anchor_t = t, prev = None, vlo = vhi = v. Якоря на этом кадре нет.
-      Иначе vlo = min(vlo, v), vhi = max(vhi, v), и якорь, если
-        i ≠ last_i (BMS прислала новое значение; в Kotlin сравнивать сырые мА), или
-        t − anchor_t ≥ hold_ms и vhi − vlo ≤ hold_dv (значение не менялось, а напряжение с
-        прошлого якоря стоит — значит, ток тот же; нужно на стоянке и на зарядке, где V
-        ползёт само. Если V сдвинулось, старое значение BMS описывает прошлое — не якорь).
-      Якорь:
-        n = |hist|;  V̄ = Σv/n;  tc = Σt/n                      (простое среднее кадров)
-        R: если prev ≠ None и t − prev.t ≤ pair_max_ms:
-             dI = i − prev.I;  dV = V̄ − prev.V̄
-             если |dI| ≥ di_min:
-               Sxx = λ·Sxx + dI²;  Sxy = λ·Sxy − dV·dI;  Syy = λ·Syy + dV²
-               если Sxy > 0:  R = clamp(√((Syy + P·r0²)/(Sxx + P)), r_min, r_max)
-             (λ = r_lambda, P = r_prior в А²; это «приведённая главная ось» — среднее
-             геометрическое прямой и обратной регрессий: у прямой МНК R занижен, потому что
-             окно BMS и окно V̄ совпадают неточно — шум и в dI, и в dV.)
-        OCV (уровень + наклон, фильтр Холта):
-             dtc = (tc − t_ocv)/1000;  pred = ocv + slope·dtc
-             e = (V̄ + R·i) − pred
-             k = k_steady, если prev ≠ None и |i − prev.I| < di_min (ток BMS не сменился), иначе k_ocv
-             ocv = pred + k·e
-             если dtc > 0,2 с:  slope = clamp(slope + k_slope·e/dtc, −slope_max, slope_max)
+   1. Разрыв: last_t есть и (t − last_t > gap_ms или t < last_t) — reset(). Новое подключение —
+      reset() снаружи.
+   2. last_t = t; hist += (t, v); из начала hist убрать кадры с t' < t − window_ms.
+   3. ocv = None (первый кадр потока): ocv = v + R·i, slope = 0, t_ocv = t, last_i = i, anchor_t = t,
+      prev = None, vlo = vhi = v; якоря нет.
+      Иначе vlo = min(vlo, v), vhi = max(vhi, v) и якорь, если
+        i ≠ last_i (BMS прислала новое значение), или
+        t − anchor_t ≥ hold_ms и vhi − vlo ≤ hold_dv (значение то же, а напряжение стоит — значит,
+        и ток тот же: стоянка, зарядка; если V сдвинулось, старое значение BMS описывает прошлое).
+      Якорь (суммы — по порядку кадров, обычным сложением):
+        n = |hist|;  V̄ = Σv/n;  tc = Σt/n
+        R: если prev и t − prev.t ≤ pair_max_ms и |dI| ≥ di_min, где dI = i − prev.I, dV = V̄ − prev.V̄:
+             Sxx = λ·Sxx + dI²;  Sxy = λ·Sxy − dV·dI;  Syy = λ·Syy + dV²
+             если Sxy > 0:  R = clamp(√((Syy + P·r0²)/(Sxx + P)), r_min, r_max)
+           (λ = r_lambda, P = r_prior, А²: среднее геометрическое прямой и обратной регрессий с
+           априорным r0 — у прямой МНК R занижен: шум и в dI, и в dV.)
+        OCV (уровень и наклон, фильтр Холта):
+             dtc = (tc − t_ocv)/1000;  pred = ocv + slope·dtc;  e = (V̄ + R·i) − pred
+             k = k_steady, если prev и |i − prev.I| < di_min, иначе k_ocv;  ocv = pred + k·e
+             если dtc > 0,2:  slope = clamp(slope + k_slope·e/dtc, −slope_max, slope_max)
              t_ocv = tc
-        prev = (t, V̄, i);  vlo = min V в hist;  vhi = max V в hist;  last_i = i;  anchor_t = t
+        prev = (t, V̄, i);  vlo, vhi = мин., макс. V в hist;  last_i = i;  anchor_t = t
    4. ocv_now = ocv + slope·min(t − t_ocv, horizon_ms)/1000
-      I_fast = (ocv_now − v)/R;  P_fast = v·I_fast
-      если |P_fast| < deadband_w: I_fast = P_fast = 0   (по умолчанию deadband_w = 0)
+      I_fast = clamp((ocv_now − v)/R, −i_max, i_max);  P_fast = v·I_fast
+      |P_fast| < deadband_w → I_fast = P_fast = 0
 
-  Порядок в якоре важен: сначала R (новый R уже в e), потом OCV. Все времена — мс, наклон —
-  В/с. Сглаживание для экрана (переключатель) — отдельный Smoother ниже, оценку оно не трогает.
-  synthetic_frames() — детерминированная последовательность для сверки порта (tests/test_fast_power.py
-  держит выходы на ней с точностью 1e-9).
-
-Почему так (проверено на логах 14–16.10.2026, см. validate() и CLI):
-  * Окно 700 мс, кончающееся кадром, где сменился ток BMS, лучше всех сдвигов и ширин
-    объясняет связь ΔV̄ ↔ ΔI_bms (корреляция 0,95 на всех четырёх поездках); BMS обновляется
-    с периодом ≈ 998 мс по своим часам.
-  * RC-цепочка поляризации на шаге 1 с почти ничего не даёт (остаток 0,224 → 0,221 В):
-    медленную поляризацию (V ползёт вверх минутами после стоянки) поглощает якорь раз в
-    секунду, а наклон slope и полный вес «спокойных» якорей (k_steady = 1) убирают отставание
-    якоря на долгой нагрузке (на упоре 16 А смещение +0,39 → +0,03…0,19 А) и после остановки.
-  * R по поездке: 0,29–0,32 Ом в начале (холодная батарея), 0,23–0,25 Ом в конце — так же
-    дают чистые отпускания газа (0,24–0,30 Ом). Поэтому R отслеживается, а не задан.
-  * Параметры подобраны на первой поездке (20261014-185422), проверены на остальных: целевая
-    функция плоская (среднеквадратичная ошибка у обновлений BMS 0,95–0,97 А на всей сетке
-    window 600–800, k_ocv 0,4–0,7, k_slope 0–0,2; R-параметры λ 0,95–0,995, вес 10–200 А²,
-    di_min 0,5–2 А, hold 1,1–2 с меняют её меньше чем на 0,02 А), на других логах те же
-    параметры дают 1,02 / 1,66 / 0,70 А против 2,9 / 4,6 / 1,9 А у «последнего тока BMS».
-  * Синтетика с окном BMS, сдвинутым на 0–300 мс от кадра (synthetic_frames(aligned=False)),
-    без правила hold_dv роняла R до r_min (якорь со старым током после броска V); с ним R
-    сходится к истинным 0,27 Ом.
+Проверено на всех логах (validate(), CLI): корреляция с током BMS 0,96–0,99 при сдвиге +0,6 с
+(BMS позже) и 0,90–0,97 без сдвига, медиана опережения на порогах 5 А и −2 А 0,3–0,9 с,
+энергия из батареи та же с точностью 1,2 %. Почему такие параметры:
+  * Окно 700 мс, кончающееся кадром со свежим током BMS, лучше других сдвигов и ширин объясняет
+    связь ΔV̄ ↔ ΔI_bms (корреляция 0,95 на всех поездках).
+  * R по поездке 0,29–0,32 Ом в начале (холодная батарея), 0,22–0,25 Ом в конце — поэтому R
+    отслеживается. Внизу заряда (меньше 25 %) R растёт, ошибка у обновлений BMS там та же
+    (0,7–0,8 А), смещения нет — хвост с низким напряжением отдельного правила не требует.
+  * Наклон slope и полный вес «спокойных» якорей (k_steady = 1) убирают отставание на долгой
+    нагрузке: на упоре 16 А смещение +0,03…+0,19 А. Броски оценки после резкой смены тока
+    (якорь поймал окно наполовину до, наполовину после) — до 21 А при упоре 16 А, поэтому
+    |I_fast| ≤ i_max = 17 А.
+  * На зарядке (−1,1…−1,7 А) и стоянке тяги нет: на стоянке −5…+9 Вт при 1,4…5,7 Вт по BMS
+    (сразу после остановки V ещё поднимается — поляризация). Мёртвая зона 5 Вт убирает дрожь
+    около нуля; энергия из батареи от неё меньше на 0,3–1,2 % (потребление на стоянке 2–4 Вт).
+  * Параметры подобраны на первой поездке (20261014-185422), целевая функция плоская (ошибка у
+    обновлений BMS 0,95–0,97 А на сетке window 600–800, k_ocv 0,4–0,7, k_slope 0–0,2; R-параметры
+    меняют её меньше чем на 0,02 А); на других логах те же параметры.
 
 Ограничения:
-  * Уровень держит только ток BMS. Если он застынет, а кадры пойдут: на ходу якорей нет (V
-    гуляет), OCV держится, наклон — не дальше horizon_ms, оценка медленно уплывает вместе с
-    настоящим OCV; на стоянке якоря с застывшим значением подтянут к нему за ~2 с.
-  * Сразу после резкого броска (газ ↔ сброс за один кадр) якорь иногда ловит окно BMS
-    наполовину до, наполовину после броска; ошибка до ~2–4 А на один-два кадра, следующий
-    якорь её убирает. Отсюда среднеквадратичная ошибка ~1 А у обновлений BMS.
-  * Бит «мотор тянет» опережает напряжение на кадр, но ток после него спадает 0,3–0,6 с
-    (рампа контроллера) — ограничивать по нему оценку нельзя, она станет врать на рампе.
+  * Уровень держит только ток BMS. Застынет он при живых кадрах — на ходу якорей нет, OCV держится,
+    наклон — не дальше horizon_ms; на стоянке якоря подтянут оценку к застывшему значению за ~2 с.
+  * Сразу после резкого броска газа оценка может ошибаться на 2–4 А один-два кадра (см. выше).
+  * Бит «мотор тянет» опережает напряжение на кадр, но ток после него спадает 0,3–0,6 с (рампа
+    контроллера) — резать оценку по нему нельзя.
   * Первый кадр после сброса берёт ток BMS как есть (может быть на секунду старым).
-  * Валовая рекуперация по оценке на 6–18 % больше, чем по току BMS (из батареи и нетто —
-    до 0,5 %): BMS усредняет короткие всплески вместе с тягой, часть разницы — шум оценки.
-  * Сразу после остановки V ещё секунды поднимается (поляризация): до −5 Вт «рекуперации»
-    на стоянке, пока якоря не догонят. Ложной тяги на стоянке и на зарядке нет: на стоянке
-    оценка 0…+9 Вт при 1,4…5,7 Вт по BMS; для полосы на экране хватит мёртвой зоны ~10 Вт.
+  * Валовая рекуперация по оценке на 5–15 % больше, чем по току BMS (нетто — до 0,5 %): BMS
+    усредняет короткие всплески вместе с тягой.
 
 Только стандартная библиотека. Ничего не пишет ни в самокат, ни в логи.
 """
@@ -109,8 +88,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bird_frames as bf  # noqa: E402
 import birdlog as bl  # noqa: E402
-import uart_frames as uf  # noqa: E402
 
 PARAMS = {
     'r0': 0.25,            # Ом, начальное R и априорное значение
@@ -122,25 +101,16 @@ PARAMS = {
     'pair_max_ms': 2500,   # мс, пара якорей дальше этого не учит R
     'window_ms': 700,      # мс, окно V̄ перед кадром со свежим током BMS
     'hold_ms': 1200,       # мс, ток BMS не менялся столько — якорь с тем же значением…
-    'hold_dv': 0.1,        # В, …и только если размах V с начала окна прошлого якоря не больше этого
+    'hold_dv': 0.1,        # В, …если размах V с начала окна прошлого якоря не больше этого
     'k_ocv': 0.5,          # доля ошибки якоря в уровень OCV, когда ток BMS сменился на ≥ di_min…
     'k_steady': 1.0,       # …и когда не сменился (окна BMS и V̄ совпадают надёжнее)
     'k_slope': 0.2,        # доля ошибки якоря (В) / dtc (с) в наклон OCV
     'slope_max': 0.05,     # В/с, предел наклона OCV
     'horizon_ms': 2000,    # мс, дальше этого от последнего якоря наклон не продолжается
     'gap_ms': 2500,        # мс, разрыв между кадрами больше этого — сброс
-    'deadband_w': 0.0,     # Вт, |P| меньше этого — показывать 0 (0 — выкл.)
+    'i_max': 17.0,         # А, |I_fast| не больше (контроллер держит ~16 А)
+    'deadband_w': 5.0,     # Вт, |P| меньше этого — 0
 }
-
-SMOOTH = {                 # Smoother (One Euro filter), только для экрана
-    'min_cutoff': 0.3,     # Гц, срез при медленных изменениях (сильное сглаживание дрожи)
-    'beta': 0.2,           # Гц на А/с: чем быстрее меняется ток, тем выше срез (меньше задержка)
-    'd_cutoff': 1.0,       # Гц, срез для оценки скорости изменения
-    'gap_ms': 2500,        # мс, разрыв — начать заново
-}
-
-BMS_HEAD = bytes([0x18, 0x20, 0x10])
-SPEED_HEAD = bytes([0x17, 0x00, 0x0D])
 
 
 def _clamp(x, lo, hi):
@@ -166,12 +136,13 @@ class FastPower:
             self.sxx = self.sxy = self.syy = 0.0
         self.ocv = None
         self.slope = 0.0
-        self.t_ocv = None
+        self.t_ocv = 0.0
         self.hist = collections.deque()
         self.last_t = None
-        self.last_i = None
-        self.anchor_t = None
+        self.last_i = 0.0
+        self.anchor_t = 0
         self.prev = None
+        self.vlo = self.vhi = 0.0
         self.anchors = 0
 
     def _learn_r(self, t, vbar, i):
@@ -196,8 +167,16 @@ class FastPower:
         p = self.p
         h = self.hist
         n = len(h)
-        vbar = sum(x[1] for x in h) / n
-        tc = sum(x[0] for x in h) / n
+        vs = 0.0
+        ts = 0
+        lo = hi = h[0][1]
+        for x in h:                      # plain sums in order (sum() of floats is compensated since 3.12)
+            ts += x[0]
+            vs += x[1]
+            lo = min(lo, x[1])
+            hi = max(hi, x[1])
+        vbar = vs / n
+        tc = ts / n
         self._learn_r(t, vbar, i)
         dtc = (tc - self.t_ocv) / 1000.0
         pred = self.ocv + self.slope * dtc
@@ -208,8 +187,7 @@ class FastPower:
             self.slope = _clamp(self.slope + p['k_slope'] * e / dtc, -p['slope_max'], p['slope_max'])
         self.t_ocv = tc
         self.prev = (t, vbar, i)
-        self.vlo = min(x[1] for x in h)
-        self.vhi = max(x[1] for x in h)
+        self.vlo, self.vhi = lo, hi
         self.last_i = i
         self.anchor_t = t
         self.anchors += 1
@@ -226,7 +204,7 @@ class FastPower:
         if self.ocv is None:
             self.ocv = v + self.r * i
             self.slope = 0.0
-            self.t_ocv = t
+            self.t_ocv = float(t)
             self.last_i = i
             self.anchor_t = t
             self.prev = None
@@ -237,54 +215,11 @@ class FastPower:
             if i != self.last_i or (t - self.anchor_t >= p['hold_ms'] and self.vhi - self.vlo <= p['hold_dv']):
                 self._anchor(t, i)
         ocv_now = self.ocv + self.slope * min(t - self.t_ocv, p['horizon_ms']) / 1000.0
-        i_fast = (ocv_now - v) / self.r
+        i_fast = _clamp((ocv_now - v) / self.r, -p['i_max'], p['i_max'])
         p_fast = v * i_fast
         if abs(p_fast) < p['deadband_w']:
             i_fast = p_fast = 0.0
         return i_fast, p_fast
-
-
-class Smoother:
-    """Сглаживание для экрана (переключатель «плавно»): One Euro filter. update(t_ms, x) -> x_smooth.
-
-    Медленная дрожь (±0,5 А от кадра к кадру на ровном ходу) режется срезом min_cutoff, а на
-    резком броске срез растёт как min_cutoff + beta·|dx/dt|, так что задержка на броске мала.
-
-        te = (t − t_prev)/1000;  α(fc) = 1/(1 + 1/(2π·fc·te))
-        dx = (x − x̂)/te;  d̂x += α(d_cutoff)·(dx − d̂x)
-        fc = min_cutoff + beta·|d̂x|;  x̂ += α(fc)·(x − x̂)
-    Первый кадр и кадр после разрыва > gap_ms (или t назад) возвращаются как есть; te = 0 — x̂ без изменений."""
-
-    def __init__(self, **params):
-        unknown = set(params) - set(SMOOTH)
-        if unknown:
-            raise ValueError(f'неизвестные параметры: {sorted(unknown)}')
-        self.p = dict(SMOOTH, **params)
-        self.reset()
-
-    def reset(self):
-        self.x = None
-        self.dx = 0.0
-        self.t = None
-
-    @staticmethod
-    def _alpha(te, fc):
-        return 1.0 / (1.0 + 1.0 / (2.0 * math.pi * fc * te))
-
-    def update(self, t, x):
-        p = self.p
-        if self.x is None or t < self.t or t - self.t > p['gap_ms']:
-            self.x, self.dx, self.t = x, 0.0, t
-            return x
-        te = (t - self.t) / 1000.0
-        self.t = t
-        if te <= 0:
-            return self.x
-        dx = (x - self.x) / te
-        self.dx += self._alpha(te, p['d_cutoff']) * (dx - self.dx)
-        fc = p['min_cutoff'] + p['beta'] * abs(self.dx)
-        self.x += self._alpha(te, fc) * (x - self.x)
-        return self.x
 
 
 # ---------------------------------------------------------------- synthetic sequence (tests, Kotlin port)
@@ -311,7 +246,10 @@ def synthetic_current(t):
 def _syn_mean(a, b):
     """Mean of synthetic_current over [a, b] (steps hold before 0 too)."""
     edges = [a] + [t0 for t0, _ in SYN_STEPS if a < t0 < b] + [b]
-    return sum(synthetic_current(x) * (y - x) for x, y in zip(edges, edges[1:])) / (b - a)
+    s = 0.0
+    for x, y in zip(edges, edges[1:]):
+        s += synthetic_current(x) * (y - x)
+    return s / (b - a)
 
 
 def synthetic_frames(aligned=True):
@@ -319,10 +257,12 @@ def synthetic_frames(aligned=True):
 
     Frame k at t = 300·k + (37·k mod 61) ms while t < SYN_END_MS. True current — SYN_STEPS;
     OCV = 40 − 0.00002·t V (−0.02 V/s); V = OCV − SYN_R·I_true(t), rounded half up to 1 mV.
-    BMS refreshes at every whole second tr = 1000·floor(t/1000): i_bms = mean of I_true over
-    [tr − 700, tr], rounded half up to 1 mA. motor = 1 when I_true > 1 A."""
+    aligned: the BMS refreshes on the first frame of each whole second, i_bms = mean of I_true over
+    the 700 ms before that frame; otherwise at every whole second tr = 1000·floor(t/1000), mean over
+    [tr − 700, tr]. Rounded half up to 1 mA. motor = 1 when I_true > 1 A."""
     out = []
     k = 0
+    i_bms = 0.0
     while True:
         t = 300 * k + (37 * k) % 61
         if t >= SYN_END_MS:
@@ -341,48 +281,31 @@ def synthetic_frames(aligned=True):
 
 # ---------------------------------------------------------------- reading logs
 
-def read_log(log):
-    """Кадры одного лога: {'bms': [(t, v, i_bms, motor)], 'speed': [(t, км/ч)], 'resets': [t]}.
+def read_log(log, events=None):
+    """Кадры одного лога: {'bms': [(t, v, i_bms, motor)], 'speed': [(t, км/ч)], 'resets': [k]}.
 
-    resets — строки «Найдено сервисов» (новое подключение, поток кадров начинается заново)."""
-    asm = uf.Assembler(keep_texts=False)
-    ffe1 = bl.norm_uuid('ffe1')
+    resets — номера кадров bms, перед которыми было новое подключение («Найдено сервисов»).
+    events — уже разобранные bird_frames.events(log), если есть."""
     bms, speed, resets = [], [], []
-    for e in log.get('entries', []):
-        if e.get('k') == 'sys' and str(e.get('n') or '').startswith(uf.SYS_FOUND):
-            asm.restart()
-            resets.append(e['t'])
-            continue
-        if e.get('k') != 'rx' or bl.norm_uuid(e.get('u')) != ffe1:
-            continue
-        for f in asm.feed(bl.entry_bytes(e), e['t']):
-            fr = f.frame
-            if fr[1:4] == BMS_HEAD:
-                bms.append((f.t, bl.read_value(fr, 9, 'u16le') * 0.001,
-                            bl.read_value(fr, 11, 's16le') * -0.001, (fr[5] >> 5) & 1))
-            elif fr[1:4] == SPEED_HEAD:
-                speed.append((f.t, bl.read_value(fr, 6, 'u16be') * 0.1))
+    for kind, t, x in (events if events is not None else bf.events(log)):
+        if kind == 'reset':
+            resets.append(len(bms))
+        elif kind == 'bms':
+            bms.append((t, x.v, x.i, x.motor))
+        else:
+            speed.append((t, x.speed_kmh))
     return {'bms': bms, 'speed': speed, 'resets': resets}
 
 
-def run(data, params=None, smooth=None):
-    """FastPower по кадрам лога. Возвращает [(t, v, i_bms, motor, i_fast, p_fast)];
-    smooth — параметры Smoother (dict) или None; тогда i_fast/p_fast — сглаженные."""
+def run(data, params=None):
+    """FastPower по кадрам лога. Возвращает ([(t, v, i_bms, motor, i_fast, p_fast)], оценщик)."""
     est = FastPower(**(params or {}))
-    sm = Smoother(**smooth) if smooth is not None else None
-    resets = list(data.get('resets') or [])
-    k = 0
+    resets = set(data.get('resets') or [])
     out = []
-    for t, v, i, m in data['bms']:
-        while k < len(resets) and resets[k] <= t:
+    for k, (t, v, i, m) in enumerate(data['bms']):
+        if k in resets:
             est.reset()
-            if sm:
-                sm.reset()
-            k += 1
         i_f, p_f = est.update(t, v, i, m)
-        if sm:
-            i_f = sm.update(t, i_f)
-            p_f = v * i_f
         out.append((t, v, i, m, i_f, p_f))
     return out, est
 
@@ -406,16 +329,6 @@ def _median(xs):
     if not n:
         return float('nan')
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
-
-
-def _pct(xs, q):
-    s = sorted(xs)
-    if not s:
-        return float('nan')
-    k = (len(s) - 1) * q / 100
-    a = int(math.floor(k))
-    b = min(a + 1, len(s) - 1)
-    return s[a] + (s[b] - s[a]) * (k - a)
 
 
 def zoh_grid(rows, col, dt=100, gap_ms=2500):
@@ -512,7 +425,8 @@ def update_errors(rows, window_ms=700, gap_ms=2500, col=4):
 
 
 def energy(rows, col_p, gap_ms=2500):
-    """(Вт·ч из батареи, Вт·ч в батарею) прямоугольниками по кадрам; разрывы > gap_ms пропущены."""
+    """(Вт·ч из батареи, Вт·ч в батарею) прямоугольниками по кадрам; разрывы > gap_ms пропущены.
+    col_p — колонка мощности или 'bms' (V·I_bms)."""
     e_out = e_in = 0.0
     for a, b in zip(rows, rows[1:]):
         dt = b[0] - a[0]
@@ -542,9 +456,9 @@ def standstill(rows, speed, quiet_ms=3000):
     return out
 
 
-def validate(data, params=None, smooth=None, grid_ms=100, max_lag_ms=2000):
-    """Все цифры проверки по одному логу (dict)."""
-    rows, est = run(data, params, smooth)
+def validate(data, params=None, grid_ms=100, max_lag_ms=2000):
+    """Все цифры проверки по одному логу (dict от read_log)."""
+    rows, est = run(data, params)
     res = {'frames': len(rows), 'r_end': est.r}
     if len(rows) < 10:
         return res
@@ -555,12 +469,16 @@ def validate(data, params=None, smooth=None, grid_ms=100, max_lag_ms=2000):
     finite = {k: v for k, v in cl.items() if v == v}
     best = max(finite, key=finite.get) if finite else 0
     res.update(corr0=cl.get(0, float('nan')), corr_best=cl.get(best, float('nan')), lag_best_ms=best * grid_ms)
-    d = [gf[k] - gb[k + best] for k in range(max(0, -best), min(len(gf), len(gf) - best))
-         if gf[k] is not None and gb[k + best] is not None]
-    res['rms_shift'] = math.sqrt(sum(x * x for x in d) / len(d)) if d else float('nan')
-    res['bias_shift'] = sum(d) / len(d) if d else float('nan')
+    for key, lag in (('shift', best), ('noshift', 0)):
+        d = [gf[k] - gb[k + lag] for k in range(max(0, -lag), min(len(gf), len(gf) - lag))
+             if gf[k] is not None and gb[k + lag] is not None]
+        res['rms_' + key] = math.sqrt(sum(x * x for x in d) / len(d)) if d else float('nan')
+    # the same for «the last BMS current» as the screen shows it today, at lag 0
+    d = [gb[k] - gb[k + best] for k in range(max(0, -best), min(len(gb), len(gb) - best))
+         if gb[k] is not None and gb[k + best] is not None]
+    res['rms_bms_noshift'] = math.sqrt(sum(x * x for x in d) / len(d)) if d else float('nan')
     ue = update_errors(rows)
-    ub = update_errors(rows, col=2)          # то же для «последнего тока BMS» на экране
+    ub = update_errors(rows, col=2)
     res['upd_n'] = len(ue)
     res['upd_rms'] = math.sqrt(sum(e[1] ** 2 for e in ue) / len(ue)) if ue else float('nan')
     res['upd_bias'] = sum(e[1] for e in ue) / len(ue) if ue else float('nan')
@@ -568,11 +486,14 @@ def validate(data, params=None, smooth=None, grid_ms=100, max_lag_ms=2000):
     lim = [e[1] for e in ue if e[2] > 14.5 and e[3] > 14.5]
     res['limit_n'] = len(lim)
     res['limit_bias'] = sum(lim) / len(lim) if lim else float('nan')
+    leads_all = []
     for key, thr, up in (('up5', 5.0, True), ('dn2', -2.0, False)):
         leads, n = lead_times(rows, thr, up)
+        leads_all += leads
         res[key + '_n'] = n
         res[key + '_hit'] = len(leads)
         res[key + '_lead_ms'] = _median(leads)
+    res['lead_ms'] = _median(leads_all)
     eb, ef = energy(rows, 'bms'), energy(rows, 5)
     res.update(wh_out_bms=eb[0], wh_out_fast=ef[0], wh_in_bms=eb[1], wh_in_fast=ef[1])
     st = standstill(rows, data.get('speed') or [])
@@ -582,11 +503,9 @@ def validate(data, params=None, smooth=None, grid_ms=100, max_lag_ms=2000):
         res.update(still_p_min=min(ps), still_p_max=max(ps), still_fake_traction=sum(1 for x in ps if x > 10.0) / len(ps))
     ib = [r[2] for r in rows]
     res['charging'] = _median(ib) < -0.5 and max(ib) < 0
-    if res['charging']:
-        res['charge_i_fast_max'] = max(r[4] for r in rows)
-        res['charge_i_fast_min'] = min(r[4] for r in rows)
-    jit = [abs(b[4] - a[4]) for a, b in zip(rows, rows[1:]) if a[3] and b[3] and abs(b[2] - a[2]) < 0.5]
-    res['jitter_a'] = _median(jit) if jit else float('nan')
+    res['i_fast_max'] = max(r[4] for r in rows)
+    res['i_fast_min'] = min(r[4] for r in rows)
+    res['traction_frames'] = sum(1 for r in rows if r[4] > 0)
     return res
 
 
@@ -600,82 +519,30 @@ def _pct_diff(a, b):
 
 def print_table(results, stream=None):
     p = lambda *a: print(*a, file=stream or sys.stdout)  # noqa: E731
-    p('лог                          кадры  corr0 corrMax@сдвиг  опережение 5А / −2А     ош.обновл. (BMS)  смещ.  упор16А  '
-      'Вт·ч из бат. BMS/оценка   в бат. BMS/оценка   стоянка P, Вт  дрожь   R конец')
+    p('лог                          кадры  corr0  corrMax@сдвиг   СКО сдвиг/0 (BMS)     опережение: медиана 5А/−2А        '
+      'ош.обновл. (BMS)  упор16А  Вт·ч из бат. BMS/оценка   в бат. BMS/оценка   стоянка P, Вт  R конец')
     for name, r in results:
         if r.get('frames', 0) < 10:
             p(f'{name[:28]:28s} {r.get("frames", 0):6d}  мало кадров')
             continue
-        lead = (f'{_f(r["up5_lead_ms"], ".0f"):>4s} мс ({r["up5_hit"]}/{r["up5_n"]}) '
-                f'{_f(r["dn2_lead_ms"], ".0f"):>4s} мс ({r["dn2_hit"]}/{r["dn2_n"]})')
-        still = (f'{_f(r.get("still_p_min"), "+.0f")}…{_f(r.get("still_p_max"), "+.0f")}'
-                 if r.get('still_n') else '—')
-        p(f'{name[:28]:28s} {r["frames"]:6d}  {_f(r["corr0"], ".3f")} {_f(r["corr_best"], ".3f")}@{r["lag_best_ms"]:+5d}мс  '
-          f'{lead:24s} {_f(r["upd_rms"], ".2f")} А ({_f(r["upd_rms_bms"], ".2f")})  {_f(r["upd_bias"], "+.3f")}  '
-          f'{_f(r["limit_bias"], "+.2f")}  '
+        lead = (f'{_f(r["lead_ms"], ".0f"):>4s} мс: {_f(r["up5_lead_ms"], ".0f"):>4s} ({r["up5_hit"]}/{r["up5_n"]}) '
+                f'{_f(r["dn2_lead_ms"], ".0f"):>4s} ({r["dn2_hit"]}/{r["dn2_n"]})')
+        still = (f'{_f(r.get("still_p_min"), "+.0f")}…{_f(r.get("still_p_max"), "+.0f")}' if r.get('still_n') else '—')
+        p(f'{name[:28]:28s} {r["frames"]:6d}  {_f(r["corr0"], ".3f")}  {_f(r["corr_best"], ".3f")}@{r["lag_best_ms"]:+5d}мс  '
+          f'{_f(r["rms_shift"], ".2f")}/{_f(r["rms_noshift"], ".2f")} А ({_f(r["rms_bms_noshift"], ".2f")})  {lead:32s} '
+          f'{_f(r["upd_rms"], ".2f")} А ({_f(r["upd_rms_bms"], ".2f")})  {_f(r["limit_bias"], "+.2f"):>6s}  '
           f'{r["wh_out_bms"]:6.1f}/{r["wh_out_fast"]:6.1f} ({_f(_pct_diff(r["wh_out_bms"], r["wh_out_fast"]), "+.1f")} %)  '
           f'{r["wh_in_bms"]:5.2f}/{r["wh_in_fast"]:5.2f} ({_f(_pct_diff(r["wh_in_bms"], r["wh_in_fast"]), "+.0f")} %)  '
-          f'{still:>11s}  {_f(r.get("jitter_a"), ".2f"):>4s} А  {r["r_end"]:.3f}')
+          f'{still:>11s}  {r["r_end"]:.3f}')
         if r.get('charging'):
-            p(f'{"":28s} зарядка: I_fast {r["charge_i_fast_min"]:+.2f}…{r["charge_i_fast_max"]:+.2f} А (тяги нет)')
+            p(f'{"":28s} зарядка: I_fast {r["i_fast_min"]:+.2f}…{r["i_fast_max"]:+.2f} А, кадров с тягой {r["traction_frames"]}')
     p('\ncorr0 / corrMax — корреляция I_fast с током BMS на сетке 100 мс без сдвига / при лучшем сдвиге (плюс — BMS позже).')
+    p('СКО сдвиг/0 — среднеквадратичная разница I_fast и тока BMS, сдвинутого на лучший сдвиг / без сдвига; в скобках —')
+    p('то же для «последнего тока BMS» на экране (насколько он отстаёт от себя же, сдвинутого).')
     p('Опережение — медиана, на сколько I_fast раньше тока BMS пересекает 5 А вверх и −2 А вниз (найдено/всего).')
     p('Ош. обновл. — СКО среднего I_fast за 0,7 с до кадра, где BMS прислала новый ток, от этого тока; в скобках — то же')
-    p('для «последнего тока BMS» на экране. Смещ. — среднее этой ошибки; упор 16 А — среднее, когда ток BMS > 14,5 А.')
-    p('Стоянка — мин…макс P_fast там, где скорость 0 не меньше 3 с в обе стороны. Дрожь — медиана |ΔI_fast| между')
-    p('соседними кадрами под тягой при неизменном токе BMS. R конец — оценка R в конце лога, Ом.')
-
-
-def plot_windows(name, data, rows, out_dir, windows):
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-    except ImportError:
-        print('matplotlib нет — графики пропущены')
-        return []
-    os.makedirs(out_dir, exist_ok=True)
-    made = []
-    sm_rows, _ = run(data, smooth={})
-    for t0, t1 in windows:
-        sel = [k for k, r in enumerate(rows) if t0 * 1000 <= r[0] <= t1 * 1000]
-        if not sel:
-            continue
-        ts = [rows[k][0] / 1000 for k in sel]
-        fig, ax = plt.subplots(2, 1, figsize=(14, 7), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
-        ax[0].step(ts, [rows[k][2] for k in sel], where='post', lw=1.4, label='ток BMS, А')
-        ax[0].plot(ts, [rows[k][4] for k in sel], '.-', ms=3, lw=1, label='I_fast, А')
-        ax[0].plot(ts, [sm_rows[k][4] for k in sel], lw=1, alpha=.8, label='I_fast + Smoother')
-        ax[0].plot(ts, [rows[k][3] * 1.5 - 3 for k in sel], '.', ms=2, color='gray', label='бит «мотор тянет»')
-        ax[0].axhline(0, color='k', lw=.5)
-        ax[0].grid(alpha=.3)
-        ax[0].legend(loc='upper right', fontsize=8)
-        ax[0].set_title(f'{name}  {t0:g}–{t1:g} с')
-        sp = [(t / 1000, s) for t, s in data['speed'] if t0 * 1000 <= t <= t1 * 1000]
-        if sp:
-            ax[1].plot([x[0] for x in sp], [x[1] for x in sp], lw=.8, color='tab:green')
-        ax[1].set_ylabel('км/ч')
-        a2 = ax[1].twinx()
-        a2.plot(ts, [rows[k][1] for k in sel], lw=.7, color='tab:red')
-        a2.set_ylabel('В')
-        plt.tight_layout()
-        fn = os.path.join(out_dir, f'{bl.slug(name, "log")}-{int(t0)}-{int(t1)}.png')
-        plt.savefig(fn, dpi=80)
-        plt.close(fig)
-        made.append(fn)
-    return made
-
-
-def _auto_windows(rows, n=3, span=40.0):
-    """Окна вокруг самых резких смен тока BMS (разнесённых не меньше чем на span)."""
-    jumps = sorted(((abs(b[2] - a[2]), b[0] / 1000) for a, b in zip(rows, rows[1:])), reverse=True)
-    picked = []
-    for _, t in jumps:
-        if all(abs(t - x) > span for x in picked):
-            picked.append(t)
-        if len(picked) >= n:
-            break
-    return [(max(0.0, t - span / 2), t + span / 2) for t in sorted(picked)]
+    p('для «последнего тока BMS». Упор 16 А — среднее этой ошибки, когда ток BMS > 14,5 А. Стоянка — мин…макс P_fast там,')
+    p('где скорость 0 не меньше 3 с в обе стороны. R конец — оценка R в конце лога, Ом.')
 
 
 def _parse_set(items):
@@ -692,9 +559,6 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description='Быстрый ток/мощность по просадке напряжения: проверка на логах')
     ap.add_argument('paths', nargs='+', help='логи (.json, .json.gz, части) или папки')
     ap.add_argument('--set', action='append', metavar='ключ=значение', help='параметр FastPower (можно несколько)')
-    ap.add_argument('--smooth', action='store_true', help='проверять I_fast после Smoother (как на экране с «плавно»)')
-    ap.add_argument('--plots', metavar='DIR', help='нарисовать окна в PNG (нужен matplotlib)')
-    ap.add_argument('--window', action='append', metavar='T0:T1', help='окно для --plots, секунды лога (иначе 3 авто)')
     a = ap.parse_args(argv)
     params = _parse_set(a.set)
     notes = []
@@ -707,14 +571,7 @@ def main(argv=None):
     results = []
     for lg in logs:
         name = os.path.basename((lg.get('_files') or ['лог'])[0])
-        data = read_log(lg)
-        r = validate(data, params, {} if a.smooth else None)
-        results.append((name, r))
-        if a.plots:
-            rows, _ = run(data, params)
-            wins = [tuple(float(x) for x in w.split(':')) for w in a.window] if a.window else _auto_windows(rows)
-            for fn in plot_windows(name, data, rows, a.plots, wins):
-                print('график: ' + fn)
+        results.append((name, validate(read_log(lg), params)))
     print_table(results)
     return 0
 

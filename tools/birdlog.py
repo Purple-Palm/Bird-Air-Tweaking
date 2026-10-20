@@ -204,17 +204,28 @@ def check_decoder(d):
     return errs
 
 
-def new_log(device=None, started_at=None, gatt=None):
+def new_log(device=None, started_at=None, gatt=None, note=None):
     if started_at is None:
         started_at = datetime.datetime.now(datetime.timezone.utc)
     if isinstance(started_at, datetime.datetime):
         started_at = started_at.astimezone(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-    return {
+    log = {
         'format': FORMAT, 'version': 1, 'startedAt': started_at,
         'device': device or {'name': 'scooter', 'id': 'scooter'},
-        'demo': False, 'trimmed': False, 'gatt': gatt or [],
-        'decoder': {'json': False, 'fields': []}, 'entries': [],
+        'demo': False, 'trimmed': False,
     }
+    if clean_note(note):
+        log['note'] = clean_note(note)
+    log.update({'gatt': gatt or [], 'decoder': {'json': False, 'fields': []}, 'entries': []})
+    return log
+
+
+def clean_note(note):
+    """The owner's description of a log (top-level "note"): a trimmed string, None when empty or not text."""
+    if not isinstance(note, str):
+        return None
+    s = note.strip()
+    return s or None
 
 
 # Characteristics whose values identify one particular scooter.
@@ -265,7 +276,7 @@ def anonymize(log, extra=()):
     """Same as the page's «Обезличить»: device name and id -> 'scooter'.
 
     Also replaces those strings (and any of `extra`, e.g. MAC addresses) inside text
-    entries, blanks Device Name / Serial Number / System ID values and masks the device
+    entries and the "note", blanks Device Name / Serial Number / System ID values and masks the device
     name and its serial digits inside packets (same length, '*' bytes), also across
     packet boundaries.
     """
@@ -276,11 +287,17 @@ def anonymize(log, extra=()):
     scooter = hex_of(b'scooter')
     # A short secret (a 2–3 letter name) only counts as a whole word, so «MTU» or «LE …» survive.
     words = {s: re.compile(r'(?<![0-9A-Za-zА-Яа-яЁё])' + re.escape(s) + r'(?![0-9A-Za-zА-Яа-яЁё])') for s in secrets if len(s) < 4}
+    def hide(text):
+        for s in secrets:
+            text = words[s].sub('scooter', text) if s in words else text.replace(s, 'scooter')
+        return text
+
+    if clean_note(log.get('note')):
+        log['note'] = hide(log['note'])
     entries = log.get('entries', [])
     for e in entries:
         if e.get('n'):
-            for s in secrets:
-                e['n'] = words[s].sub('scooter', e['n']) if s in words else e['n'].replace(s, 'scooter')
+            e['n'] = hide(e['n'])
         if e.get('h') is None:
             continue
         u = e.get('u')
@@ -342,6 +359,13 @@ def load_file(path):
     entries.sort(key=lambda e: e['t'])
     o['entries'] = entries
     o['_files'] = [path]
+    # the owner's description (since 2026-10-20): kept when it is text, dropped otherwise
+    if 'note' in o:
+        note = clean_note(o['note'])
+        if note is None:
+            del o['note']
+        else:
+            o['note'] = note
     return o
 
 

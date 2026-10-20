@@ -31,11 +31,14 @@ data class GattService(val uuid: String, val chars: List<GattChar> = emptyList()
 /**
  * A recording in the birdair-lab-log v1 format (logs/README.md), the same file the page's sessionObject()
  * makes, so tools/analyze_log.py and tools/uart_frames.py read it as is.
- * Every tMs is milliseconds since the recording started (the log's t); [startedAtMs] is wall-clock epoch ms.
- * Above [maxEntries] the oldest entries are dropped in steps, and the log says "trimmed": true.
- * Thread-safe.
+ * Every tMs is milliseconds on the caller's clock; the log's t is tMs − [tOffsetMs] (0 for the first part: ms since
+ * the recording started). [startedAtMs] is wall-clock epoch ms at t = 0.
+ * Long recordings: when [needsRotation], [rotate] finishes this log and gives the next part, which goes on with
+ * the same caller clock under a new file name. Without that, above [maxEntries] the oldest entries are dropped in
+ * steps, and the log says "trimmed": true. [note]: the owner's description, written as "note" and slugged into
+ * [fileBase]. Thread-safe.
  */
-class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
+class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000, val tOffsetMs: Long = 0) {
     private class Entry(
         val t: Long, val k: String, val s: String?, val u: String?, val b: ByteArray?,
         val n: String?, val v: Double?, val a: Long?, val err: Boolean,
@@ -50,6 +53,11 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
     @Volatile var deviceName: String? = null
     @Volatile var deviceId: String? = null
     @Volatile var demo: Boolean = false
+    /** The owner's description of the log: top-level "note" (trimmed; blank → not written) and the file name's label. */
+    @Volatile var note: String? = null
+    /** Set by [rotate]: entries added here afterwards go to that part. */
+    @Volatile var next: LogRecorder? = null
+        private set
 
     val size: Int
         @Synchronized get() = entries.size
@@ -86,7 +94,9 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
     private fun intern(u: String): String = uuids.getOrPut(u) { Uuids.full(u) }
 
     @Synchronized
-    private fun add(e: Entry) {
+    private fun add(e0: Entry) {
+        next?.let { n -> n.add(e0); return }      // rotated: a late caller still holding this part writes into the next one (same clock)
+        val e = if (tOffsetMs == 0L) e0 else Entry(e0.t - tOffsetMs, e0.k, e0.s, e0.u, e0.b, e0.n, e0.v, e0.a, e0.err)
         entries.add(e)
         pushed++
         if (entries.size > maxEntries + trimStep) {
@@ -99,6 +109,30 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
     fun clear() {
         entries.clear()
         trimmedFlag = false
+    }
+
+    /** Time to [rotate]: [maxEntries] reached (trimming starts maxEntries / 25, at most 10 000, entries later). */
+    val needsRotation: Boolean
+        @Synchronized get() = next == null && entries.size >= maxEntries
+
+    /** This part, finished, and the next one. */
+    class Rotation(val finished: LogRecorder, val next: LogRecorder)
+
+    /**
+     * Finishes this log at [tMs] (the caller's clock) and starts the next part: startedAt = this one's wall clock at
+     * [tMs], the same caller clock ([tOffsetMs] = [tMs]), the same device, demo flag and note, and as its first entry
+     * the sys line «продолжение лога <this part's file base>». Entries added here afterwards go to the next part.
+     * File names have 1 s resolution: parts less than a second apart would share one. Rotating twice returns the
+     * same next part.
+     */
+    @Synchronized
+    fun rotate(tMs: Long, zone: ZoneId = ZoneId.systemDefault()): Rotation {
+        next?.let { return Rotation(this, it) }
+        val n = LogRecorder(startedAtMs + (tMs - tOffsetMs), maxEntries, tMs)
+        n.deviceName = deviceName; n.deviceId = deviceId; n.demo = demo; n.note = note
+        n.sys(CONTINUED + fileBase(null, zone), tMs)
+        next = n
+        return Rotation(this, n)
     }
 
     /** The log as JSON. [anonymize]: device → scooter, the name masked in packets (see [writeJson]). */
@@ -128,11 +162,15 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
         w.flush()
     }
 
-    /** YYYYMMDD-HHMMSS-<label> from [startedAtMs] in local time, like the page's GitHub file name. */
-    fun fileBase(label: String, zone: ZoneId = ZoneId.systemDefault()): String =
-        stamp(startedAtMs, zone) + "-" + slug(label, if (demo) "demo" else "log")
+    /** YYYYMMDD-HHMMSS-<label> from [startedAtMs] in local time, like the page's GitHub file name (its ghBase);
+     *  [label] null: the [note] (the page's «Подпись в имени файла») with the device's name and id taken out (the
+     *  file name is public too), else "log" / "demo". */
+    fun fileBase(label: String? = null, zone: ZoneId = ZoneId.systemDefault()): String {
+        val text = label ?: note?.let { hide(it, secretNames(listOf(deviceName, deviceId)).filter { s -> s.length >= 2 }.sortedByDescending { s -> s.length }) }
+        return stamp(startedAtMs, zone) + "-" + slug(text, if (demo) "demo" else "log")
+    }
 
-    fun fileName(label: String, gz: Boolean, zone: ZoneId = ZoneId.systemDefault()): String =
+    fun fileName(label: String?, gz: Boolean, zone: ZoneId = ZoneId.systemDefault()): String =
         fileBase(label, zone) + if (gz) ".json.gz" else ".json"
 
     // -- writing
@@ -143,12 +181,19 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
         synchronized(this) { es = ArrayList(entries); wasTrimmed = trimmedFlag }
         var name = deviceName
         var id = deviceId
-        val list = if (anonymize) anonymized(es, name, id).also { name = SCOOTER; id = SCOOTER } else es
+        var text = note?.trim()?.takeIf { it.isNotEmpty() }
+        val list = if (anonymize) {
+            val (l, secrets) = anonymized(es, name, id)
+            text = text?.let { hide(it, secrets) }
+            name = SCOOTER; id = SCOOTER
+            l
+        } else es
         w.append("{\"format\":\"").append(FORMAT).append("\",\"version\":1,\"startedAt\":")
         quote(w, ISO.format(Instant.ofEpochMilli(startedAtMs)))
         w.append(",\"device\":{\"name\":"); quoteOrNull(w, name)
         w.append(",\"id\":"); quoteOrNull(w, id)
         w.append("},\"demo\":").append(demo.toString()).append(",\"trimmed\":").append(wasTrimmed.toString())
+        if (text != null) { w.append(",\"note\":"); quote(w, text) }
         w.append(",\"gatt\":").append(JSON.encodeToString(GATT, gatt ?: emptyList()))
         w.append(",\"decoder\":").append(Decoders.toJsonObject(decoder ?: DecoderSpec()).toString())
         w.append(",\"entries\":[")
@@ -168,7 +213,8 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
 
     // -- anonymization (assets/app.js anonymizeLog, tools/birdlog.py anonymize)
 
-    private fun anonymized(es: List<Entry>, name: String?, id: String?): List<Entry> {
+    /** The entries anonymized, and the strings hidden in text (for the note too). */
+    private fun anonymized(es: List<Entry>, name: String?, id: String?): Pair<List<Entry>, List<String>> {
         val out = ArrayList(es)
         // byte streams: one per (kind, service, characteristic), Device Name / Serial / System ID left out
         val streams = LinkedHashMap<String, MutableList<Int>>()
@@ -186,8 +232,7 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
         // text entries
         for ((i, e) in es.withIndex()) {
             if (e.n == null) continue
-            var n: String = e.n
-            for (s in secrets) n = if (s.length < 4) word(s).replace(n, SCOOTER) else n.replace(s, SCOOTER)
+            val n = hide(e.n, secrets)
             if (n != e.n) out[i] = Entry(e.t, e.k, e.s, e.u, e.b, n, e.v, e.a, e.err)
         }
         // characteristics that hold the name or the MAC
@@ -221,13 +266,21 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000) {
                 off += n
             }
         }
-        return out
+        return out to secrets
+    }
+
+    private fun hide(text: String, secrets: List<String>): String {
+        var n = text
+        for (s in secrets) n = if (s.length < 4) word(s).replace(n, SCOOTER) else n.replace(s, SCOOTER)
+        return n
     }
 
     companion object {
         const val FORMAT = "birdair-lab-log"
         /** sys line after each service discovery: a new link, the tools drop half-assembled frames there. */
         const val SYS_FOUND = "Найдено сервисов: "
+        /** First entry of a part made by [rotate], followed by the previous part's file base. */
+        const val CONTINUED = "продолжение лога "
         private const val SCOOTER = "scooter"
         private val SCOOTER_BYTES = SCOOTER.toByteArray(Charsets.US_ASCII)
         private const val STAR = '*'.code.toByte()

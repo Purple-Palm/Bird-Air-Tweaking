@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Предупреждения о батарее и честный запас хода (эталон для приложения).
+
+    python3 tools/battery_advisor.py logs/*.json.gz     # прогон логов: предупреждения и ошибки запаса хода
+
+Вход — кадры по порядку: on_bms(t, V, I, temp1, temp2, остаток мА·ч, полная мА·ч) на каждый
+3A 18 20 10 (I — ток BMS, А, плюс — тяга) и on_distance(t, км) — свой одометр приложения
+(app_odometer.py), растёт. Выход — warnings() (список BatteryWarning) и range() (Range или None).
+
+1. «Заряд на исходе» / «Сейчас отключится» (id battery_low, уровни warning / critical).
+   Под нагрузкой (I ≥ load_a) напряжение садится тем сильнее, чем пустее батарея, — так её и видно
+   внизу, где процент BMS оптимистичен (15.10 отсечка на 11 %). Порог — по кадрам под нагрузкой
+   подряд, не меньше sustain_ms:
+     warning:  V10 = V + r_ref·(I − i_ref) < low_v — напряжение, приведённое к 10 А (не зависит от
+               того, сколько тянешь: на 54 % при 15,9 А вдвоём V10 не ниже 33,0 В, внизу 32,0–32,4);
+     critical: само напряжение под нагрузкой V < crit_v.
+   critical → warning, если под нагрузкой V ≥ crit_clear_v держится clear_ms подряд (сбросил газ —
+   отсечка отступила). Оба снимаются только зарядкой: V ≥ charged_v при I ≤ rest_a charged_ms подряд.
+2. «Батарея греется» / «Батарея перегрета» (battery_hot): max(temp1, temp2) ≥ hot_c / ≥ overheat_c,
+   снимаются на hyst_c ниже.
+3. Запас хода. Пусто — не 0 % BMS, а наблюдённый конец: reserve_pct % полной ёмкости по BMS
+   (по логам самокат доехал до 1,9 % (19.10, там отсечка), 0,4 % (16.10) и 2,2 % (14.10); отсечку
+   15.10 на 11,9 % при 61 °C объясняет скорее перегрев, чем заряд — её ловит battery_hot).
+     энергия, Вт·ч = (остаток − резерв, мА·ч) · wh_per_mah (на мА·ч счётчика BMS по логам
+     приходится 29,6–32,5 мВт·ч: счётчик идёт на 8 % быстрее ∫I, поэтому не V·мА·ч);
+     расход, Вт·ч/км — за последние window_km (не меньше min_window_km), иначе за весь заезд
+     (не меньше min_session_km), иначе default_wh_km; рекуперация вычитается;
+     км = энергия / расход, мили = км / 1,609344.
+   Энергия — V·I_bms по кадрам (левые прямоугольники), разрывы > gap_ms пропущены.
+
+Проверено на логах (CLI): «Заряд на исходе» / «Сейчас отключится» за 5,4 / 1,2 мин до отсечки 15.10
+(31,9 В при 10 А, BMS 11 %, 61 °C) и за 7,8 / 6,8 мин до отсечки 19.10 (31,45 В при 8,6 А, BMS 1 %);
+в разрядах до конца без отсечки — за 8,7 / 8,3 мин (16.10, вдвоём) и 15,1 / 14,9 мин (14.10, один:
+батарея холоднее, R больше, просадка раньше). Ни разу при BMS ≥ 40 % и ни разу вдвоём на 100 → 54 %
+при упоре 16 А. «Батарея перегрета» — за 18,6 и 5,5 мин до отсечек. Запас хода на четырёх разрядах
+до конца (отметки 5, 4, 3, 2, 1,5, 1, 0,5 км до конца): ошибка в среднем 0,39 км, смещение −0,02 км;
+до отсечки 19.10 — не больше 0,57 км на всех отметках, до отсечки 15.10 — оптимистичен до +1,2 км
+(она на 11,9 %).
+
+Kotlin: android/core BatteryAdvisor.kt — то же по шагам. Только чтение логов.
+"""
+import argparse
+import collections
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import app_odometer as ao  # noqa: E402
+import bird_frames as bf  # noqa: E402
+import birdlog as bl  # noqa: E402
+
+PARAMS = {
+    'load_a': 5.0,             # А, кадр «под нагрузкой»
+    'sustain_ms': 2000,        # мс, порог под нагрузкой подряд — не меньше этого
+    'r_ref': 0.25,             # Ом, V10 = V + r_ref·(I − i_ref)
+    'i_ref': 10.0,             # А
+    'low_v': 32.4,             # В, V10 ниже — «Заряд на исходе»
+    'crit_v': 32.0,            # В, V под нагрузкой ниже — «Сейчас отключится»
+    'crit_clear_v': 32.5,      # В, V под нагрузкой не ниже этого clear_ms подряд — обратно «на исходе»
+    'clear_ms': 20000,         # мс
+    'charged_v': 37.5,         # В, V на отдыхе/зарядке не ниже этого charged_ms подряд — снять всё
+    'rest_a': 1.0,             # А, «на отдыхе»: I не больше этого
+    'charged_ms': 10000,       # мс
+    'hot_c': 50.0,             # °C, «Батарея греется»
+    'overheat_c': 55.0,        # °C, «Батарея перегрета»
+    'hyst_c': 2.0,             # °C, снимается на столько ниже
+    'reserve_pct': 3.0,        # % полной ёмкости BMS — это уже «пусто»
+    'window_km': 2.0,          # км, окно расхода
+    'min_window_km': 1.0,      # км, окно короче — расход за заезд
+    'min_session_km': 0.3,     # км, заезд короче — расход по умолчанию
+    'default_wh_km': 15.0,     # Вт·ч/км (один 11,4, вдвоём 18–19,5)
+    'wh_per_mah': 0.031,       # Вт·ч на мА·ч счётчика BMS
+    'gap_ms': 2500,            # мс, разрыв между кадрами BMS — не интегрировать и сбросить «подряд»
+}
+
+MILE_KM = 1.609344
+WARNING, CRITICAL = 'warning', 'critical'
+
+BatteryWarning = collections.namedtuple('BatteryWarning', 'id level text value')
+Range = collections.namedtuple('Range', 'km mi wh_left wh_per_km basis')
+
+TEXTS = {
+    ('battery_low', WARNING): 'Заряд на исходе',
+    ('battery_low', CRITICAL): 'Сейчас отключится',
+    ('battery_hot', WARNING): 'Батарея греется',
+    ('battery_hot', CRITICAL): 'Батарея перегрета',
+}
+
+
+class BatteryAdvisor:
+    def __init__(self, **params):
+        unknown = set(params) - set(PARAMS)
+        if unknown:
+            raise ValueError(f'неизвестные параметры: {sorted(unknown)}')
+        self.p = dict(PARAMS, **params)
+        self.reset()
+
+    def reset(self):
+        """Всё с начала (новая запись)."""
+        self.low = 0                 # 0 — нет, 1 — warning, 2 — critical
+        self.hot = 0
+        self.low_since = self.crit_since = self.clear_since = self.charged_since = None
+        self.loaded_v = None         # V последнего кадра под нагрузкой
+        self.tmax = None
+        self.last_t = None
+        self.last_p = None
+        self.e_wh = 0.0              # энергия из батареи с начала, Вт·ч (рекуперация вычтена)
+        self.rem = self.full = None
+        self.km = None
+        self.cps = collections.deque()   # (км, Вт·ч) на каждом приросте км, окно window_km
+        self.first = None
+
+    # -- input
+
+    def on_bms(self, t, v, i, temp1=None, temp2=None, rem_mah=None, full_mah=None):
+        p = self.p
+        gap = self.last_t is not None and (t - self.last_t > p['gap_ms'] or t < self.last_t)
+        if self.last_t is not None and not gap and t > self.last_t:
+            self.e_wh += self.last_p * (t - self.last_t) / 3.6e6
+        if gap:
+            self.low_since = self.crit_since = self.clear_since = self.charged_since = None
+        self.last_t = t
+        self.last_p = v * i
+        if rem_mah is not None and full_mah:
+            self.rem, self.full = rem_mah, full_mah
+        self._voltage(t, v, i)
+        self._temperature(temp1, temp2)
+
+    def on_distance(self, t, km):  # noqa: ARG002 — t: same signature as on_bms
+        if km is None:
+            return
+        if self.km is None or km > self.km:
+            self.km = km
+            cp = (km, self.e_wh)
+            if self.first is None:
+                self.first = cp
+            self.cps.append(cp)
+            w = self.p['window_km']
+            while len(self.cps) > 1 and self.cps[1][0] <= km - w:
+                self.cps.popleft()
+
+    def _voltage(self, t, v, i):
+        p = self.p
+        loaded = i >= p['load_a']
+        if loaded:
+            self.loaded_v = v
+        if loaded and v + p['r_ref'] * (i - p['i_ref']) < p['low_v']:
+            if self.low_since is None:
+                self.low_since = t
+            if t - self.low_since >= p['sustain_ms'] and self.low < 1:
+                self.low = 1
+        else:
+            self.low_since = None
+        if loaded and v < p['crit_v']:
+            if self.crit_since is None:
+                self.crit_since = t
+            if t - self.crit_since >= p['sustain_ms']:
+                self.low = 2
+        else:
+            self.crit_since = None
+        if self.low == 2 and loaded and v >= p['crit_clear_v']:
+            if self.clear_since is None:
+                self.clear_since = t
+            if t - self.clear_since >= p['clear_ms']:
+                self.low = 1
+                self.clear_since = None
+        else:
+            self.clear_since = None
+        if self.low and i <= p['rest_a'] and v >= p['charged_v']:
+            if self.charged_since is None:
+                self.charged_since = t
+            if t - self.charged_since >= p['charged_ms']:
+                self.low = 0
+                self.charged_since = None
+        else:
+            self.charged_since = None
+
+    def _temperature(self, t1, t2):
+        ts = [x for x in (t1, t2) if x is not None and -30 <= x <= 120]
+        if not ts:
+            return
+        p = self.p
+        x = max(ts)
+        self.tmax = x
+        if x >= p['overheat_c'] or (self.hot == 2 and x > p['overheat_c'] - p['hyst_c']):
+            self.hot = 2
+        elif x >= p['hot_c'] or (self.hot >= 1 and x > p['hot_c'] - p['hyst_c']):
+            self.hot = 1
+        else:
+            self.hot = 0
+
+    # -- output
+
+    def warnings(self):
+        """Действующие предупреждения, сначала critical."""
+        out = []
+        for wid, lvl, val in (('battery_low', self.low, self.loaded_v), ('battery_hot', self.hot, self.tmax)):
+            if lvl:
+                level = CRITICAL if lvl == 2 else WARNING
+                out.append(BatteryWarning(wid, level, TEXTS[(wid, level)], val))
+        out.sort(key=lambda w: 0 if w.level == CRITICAL else 1)
+        return out
+
+    def range(self):
+        """Запас хода до наблюдённой отсечки, или None, пока BMS не прислала остаток."""
+        p = self.p
+        if self.rem is None or not self.full:
+            return None
+        basis = 'default'
+        wh_km = p['default_wh_km']
+        if self.km is not None and self.cps:
+            w, f = self.cps[0], self.first
+            if self.km - w[0] >= p['min_window_km']:
+                basis, wh_km = 'recent', (self.e_wh - w[1]) / (self.km - w[0])
+            elif self.km - f[0] >= p['min_session_km']:
+                basis, wh_km = 'session', (self.e_wh - f[1]) / (self.km - f[0])
+        if wh_km < 1.0:                  # downhill: no meaningful consumption, use the default
+            wh_km = p['default_wh_km']
+        usable = self.rem - p['reserve_pct'] * self.full / 100.0
+        wh_left = usable * p['wh_per_mah'] if usable > 0 else 0.0
+        km = wh_left / wh_km
+        return Range(km, km / MILE_KM, wh_left, wh_km, basis)
+
+
+# ---------------------------------------------------------------- replay and validation
+
+def replay(log, params=None, every=None, events=None):
+    """Лог через AppOdometer и BatteryAdvisor. Возвращает список шагов
+    (t, км, warnings, range, bms) на каждом кадре BMS (every — функция t → bool, чтобы реже).
+    events — уже разобранные bird_frames.events(log), если есть."""
+    adv = BatteryAdvisor(**(params or {}))
+    od = ao.AppOdometer()
+    t0 = bf.started_ms(log)
+    out = []
+    for kind, t, x in (events if events is not None else bf.events(log)):
+        if kind == 'motion':
+            adv.on_distance(t, od.update(x.trip_km, x.odo_km, None if t0 is None else t0 + t))
+        elif kind == 'bms':
+            adv.on_bms(t, x.v, x.i, x.temp1, x.temp2, x.rem_mah, x.full_mah)
+            if every is None or every(t):
+                out.append((t, adv.km, adv.warnings(), adv.range(), x))
+    return out
+
+
+def first_times(steps):
+    """{(id, level): первое t, когда предупреждение этого уровня или выше появилось}."""
+    out = {}
+    for t, _, ws, _, _ in steps:
+        for w in ws:
+            out.setdefault((w.id, w.level), t)
+            if w.level == CRITICAL:
+                out.setdefault((w.id, WARNING), t)
+    return out
+
+
+def end_of_traction(steps, load_a=5.0):
+    """t последнего кадра с током BMS ≥ load_a (конец езды) и км в этот момент."""
+    last = None
+    for t, km, _, _, x in steps:
+        if x.i >= load_a:
+            last = (t, km)
+    return last
+
+
+def range_errors(steps, km_end, marks=(5.0, 4.0, 3.0, 2.0, 1.5, 1.0, 0.5)):
+    """[(осталось на деле, предсказано)] в первый момент, когда на деле осталось ≤ отметки."""
+    out = []
+    for m in marks:
+        for t, km, _, rg, _ in steps:
+            if km is not None and rg is not None and km_end - km <= m:
+                out.append((km_end - km, rg.km))
+                break
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description='Предупреждения о батарее и запас хода: прогон логов')
+    ap.add_argument('paths', nargs='+', help='логи (.json, .json.gz) или папки')
+    a = ap.parse_args(argv)
+    notes = []
+    logs = bl.load_logs(a.paths, notes)
+    for n in notes:
+        print('! ' + n)
+    allerr = []
+    for lg in logs:
+        name = os.path.basename((lg.get('_files') or ['лог'])[0])
+        steps = replay(lg)
+        if not steps:
+            continue
+        last = steps[-1]
+        end = end_of_traction(steps)
+        print(f'== {name}: заряд {steps[0][4].pct}→{last[4].pct} %, км {_f(steps[0][1])}→{_f(last[1])}')
+        if end is None:
+            print('   езды нет')
+        ft = first_times(steps)
+        for (wid, lvl), t in sorted(ft.items(), key=lambda kv: kv[1]):
+            line = f'   {TEXTS[(wid, lvl)]:18s} с {t / 1000:7.1f} с'
+            if end is not None and t <= end[0]:
+                kms = [s[1] for s in steps if s[0] == t]
+                line += f' — за {(end[0] - t) / 60000:4.1f} мин'
+                if kms and kms[0] is not None and end[1] is not None:
+                    line += f' / {end[1] - kms[0]:.2f} км до конца езды'
+            print(line)
+        if end is not None and last[4].pct <= 12:
+            errs = range_errors(steps, last[1])
+            allerr += [p - a for a, p in errs]
+            print('   запас хода, осталось на деле → предсказано, км: ' + ', '.join(f'{x:.1f}→{y:.2f}' for x, y in errs))
+    if allerr:
+        mae = sum(abs(x) for x in allerr) / len(allerr)
+        print(f'\nзапас хода по разряженным до конца: ошибка в среднем {mae:.2f} км, смещение {sum(allerr) / len(allerr):+.2f} км')
+    return 0
+
+
+def _f(x):
+    return '—' if x is None else f'{x:.1f}'
+
+
+if __name__ == '__main__':
+    sys.exit(main())
