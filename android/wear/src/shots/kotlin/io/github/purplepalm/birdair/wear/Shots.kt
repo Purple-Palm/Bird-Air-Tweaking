@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import io.github.purplepalm.birdair.core.Telemetry
 import org.junit.Rule
 import org.junit.Test
@@ -37,8 +38,12 @@ class Shots {
     }
 
     @Composable
-    private fun gauge(t: Telemetry, h: Health = Health.LIVE, ambient: AmbientState? = null) =
-        WatchApp(Screen(t, h), ambient, true) {}
+    private fun gauge(t: Telemetry, h: Health = Health.LIVE, ambient: AmbientState? = null, flags: PhoneFlags = PhoneFlags()) =
+        WatchApp(Screen(t, h, flags), ambient)
+
+    @Composable
+    private fun details(t: Telemetry, h: Health = Health.LIVE, prefs: WatchPrefs = WatchPrefs(), flags: PhoneFlags = PhoneFlags()) =
+        WatchTheme { DetailsScreen(Screen(t, h, flags), prefs) {} }
 
     @Test fun riding() = shot("riding") { gauge(Samples.riding) }
     @Test fun regen() = shot("regen") { gauge(Samples.regen) }
@@ -54,5 +59,23 @@ class Shots {
     @Test fun empty() = shot("empty") { gauge(Telemetry(), Health.NO_PHONE) }
     @Test fun ambient() = shot("ambient") { gauge(Samples.riding, ambient = AmbientState(burnIn = true, tick = 2)) }
     @Test fun ambientRegen() = shot("ambient-regen") { gauge(Samples.regen, ambient = AmbientState(burnIn = true, tick = 5)) }
-    @Test fun details() = shot("details") { WatchTheme { DetailsScreen(Screen(Samples.silent, Health.SILENT), true) {} } }
+    @Test fun details() = shot("details") { details(Samples.silent, Health.SILENT) }
+
+    // the phone's battery warnings: a pill at the top in place of the time, the track tinted, the battery amber / red
+    @Test fun warning() = shot("warning") { gauge(Samples.warning) }
+    @Test fun critical() = shot("critical") { gauge(Samples.critical) }
+    @Test fun ambientWarning() = shot("ambient-warning") { gauge(Samples.critical, ambient = AmbientState(burnIn = true, tick = 1)) }
+    // a warning on old data is not shown: the top says what is wrong with the data
+    @Test fun warningReconnecting() = shot("warning-reconnecting") { gauge(Samples.critical, Health.RECONNECTING) }
+    // the range: measured (riding, warning) and the rough default at the start of a ride; in miles
+    @Test fun rangeRough() = shot("range-rough") { gauge(Samples.roughRange) }
+    @Test fun rangeMph() = shot("range-mph") { gauge(Samples.warning.copy(units = "mph")) }
+    // the phone's «fast» off: the arc and the watts are the BMS's
+    @Test fun bmsPower() = shot("bms-power") { gauge(Samples.riding, flags = PhoneFlags(fast = false)) }
+    @Test fun detailsWarnings() = shot("details-warnings") { details(Samples.critical, flags = PhoneFlags(fast = true, smooth = false)) }
+    // the bottom of the details page: «Экран не гаснет», «Плавно» (forced off here) and the version
+    @Test fun detailsSettings() = shot("details-settings") {
+        val s = Screen(Samples.riding, Health.LIVE, PhoneFlags(smooth = true))
+        WatchTheme { DetailsScreen(s, WatchPrefs(smooth = SmoothPref.OFF), rememberScalingLazyListState(smoothChipIndex(s))) {} }
+    }
 }

@@ -29,8 +29,11 @@ import androidx.wear.compose.material.PageIndicatorState
 import io.github.purplepalm.birdair.core.Telemetry
 import kotlinx.coroutines.delay
 
-/** What the screen shows: the phone's telemetry and what the watch makes of its freshness. */
-data class Screen(val t: Telemetry = Telemetry(), val health: Health = Health.NO_PHONE)
+/** What the screen shows: the phone's telemetry, what the watch makes of its freshness, and the phone's flags. */
+data class Screen(val t: Telemetry = Telemetry(), val health: Health = Health.NO_PHONE, val flags: PhoneFlags = PhoneFlags()) {
+    /** The arc and the watts use the fast estimate. */
+    val fast: Boolean get() = PowerView.fast(flags)
+}
 
 /** Ambient mode is on: [tick] counts onUpdateAmbient() calls (about once a minute), for the pixel shift. */
 data class AmbientState(val burnIn: Boolean = true, val lowBit: Boolean = false, val tick: Int = 0)
@@ -61,7 +64,7 @@ const val DETAILS_TIMEOUT_MS = 20_000L
 /** Two pages: the gauge, and (swipe left) the details. Ambient always shows the gauge. */
 @OptIn(ExperimentalWearFoundationApi::class) // HierarchicalFocusCoordinator: rotary input goes to the visible page
 @Composable
-fun WatchApp(screen: Screen, ambient: AmbientState?, keepOn: Boolean, onKeepOn: (Boolean) -> Unit) {
+fun WatchApp(screen: Screen, ambient: AmbientState?, prefs: WatchPrefs = WatchPrefs(), onPrefs: (WatchPrefs) -> Unit = {}) {
     WatchTheme {
         val pager = rememberPagerState { 2 }
         var touchedAt by remember { mutableLongStateOf(0L) }
@@ -87,7 +90,8 @@ fun WatchApp(screen: Screen, ambient: AmbientState?, keepOn: Boolean, onKeepOn: 
         ) {
             HorizontalPager(state = pager, userScrollEnabled = ambient == null, modifier = Modifier.fillMaxSize()) { page ->
                 HierarchicalFocusCoordinator(requiresFocus = { pager.currentPage == page }) {
-                    if (page == 0) GaugeScreen(screen, ambient) else DetailsScreen(screen, keepOn, onKeepOn)
+                    if (page == 0) GaugeScreen(screen, ambient, smooth = prefs.smooth.resolve(screen.flags.smooth))
+                    else DetailsScreen(screen, prefs, onPrefs = onPrefs)
                 }
             }
             if (ambient == null) {

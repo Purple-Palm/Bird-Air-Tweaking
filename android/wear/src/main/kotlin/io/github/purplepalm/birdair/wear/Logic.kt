@@ -131,8 +131,9 @@ enum class Flow(val label: String, val tone: Long) {
     INTO("в батарею", Palette.FLOW);
 
     companion object {
-        fun of(t: Telemetry): Flow {
-            val i = t.currentA; val spd = t.speedKmh; val p = t.powerW
+        /** [fast]: judge by the fast current and power ([PowerView]), as the gauge shows them. */
+        fun of(t: Telemetry, fast: Boolean = false): Flow {
+            val i = PowerView.amps(t, fast); val spd = t.speedKmh; val p = PowerView.watts(t, fast)
             if (i == null && p == null && spd == null) return NONE
             val into = if (i != null) i < -0.15 else (p != null && p < -5)
             if (into) return when { spd != null && spd > 1 -> REGEN; spd != null -> CHARGE; else -> INTO }
@@ -296,11 +297,20 @@ object RideStatus {
     /** Status updates at most this often: each one reposts the notification. */
     const val EVERY_MS = 30_000L
 
+    /** A battery warning first: «Сейчас отключится · 11 % · 5,8 км». */
     fun text(t: Telemetry, h: Health): String {
         if (!h.live) return h.label ?: "Bird Air"
-        val parts = ArrayList<String>(2)
+        val parts = ArrayList<String>(3)
+        Warnings.top(t.warnings)?.let { parts += Warnings.text(it) }
         Battery.level(t)?.let { parts += Fmt.pct(it) }
         t.tripKm?.let { parts += Fmt.withUnit(Fmt.dist(it, t.units), 1, Fmt.distUnit(t.units)) }
         return if (parts.isEmpty()) "едем" else parts.joinToString(" · ")
     }
+
+    /** The top warning as it changes the status: a new or stronger one is shown at once, not after [EVERY_MS]. */
+    fun warningKey(t: Telemetry, h: Health): String? =
+        if (!h.live) null else Warnings.top(t.warnings)?.let { it.id + ":" + it.level }
+
+    fun due(text: String, shown: String?, key: String?, shownKey: String?, sinceMs: Long): Boolean =
+        text != shown && (key != shownKey || sinceMs >= EVERY_MS)
 }

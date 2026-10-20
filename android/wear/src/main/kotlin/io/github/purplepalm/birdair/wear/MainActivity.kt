@@ -35,7 +35,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val ambient = MutableStateFlow<AmbientState?>(null)
     private val screen = MutableStateFlow(Screen())
-    private val keepOn = MutableStateFlow(true)
+    private val prefsState = MutableStateFlow(WatchPrefs())
     private lateinit var prefs: SharedPreferences
     @Volatile private var openedAtMs = 0L
     private var serviceTriedAtMs: Long? = null
@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         lifecycle.addObserver(AmbientLifecycleObserver(this, ambientCallback))
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        keepOn.value = prefs.getBoolean(KEEP_ON, true)
+        prefsState.value = WatchPrefs(prefs.getBoolean(KEEP_ON, true), SmoothPref.of(prefs.getString(SMOOTH, null)))
         openedAtMs = SystemClock.elapsedRealtime()
         WatchFeed.acquire(this)
         askForNotifications()
@@ -67,8 +67,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val s by screen.collectAsState()
             val a by ambient.collectAsState()
-            val k by keepOn.collectAsState()
-            WatchApp(s, a, k, onKeepOn = ::setKeepOn)
+            val p by prefsState.collectAsState()
+            WatchApp(s, a, p, onPrefs = ::setPrefs)
         }
     }
 
@@ -92,10 +92,13 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** Feed + clock → [screen]; in ambient at most once per [AMBIENT_REFRESH_MS]. */
+    /**
+     * Feed + clock → [screen]: each message from the phone at once (the feed changes, the screen follows on the next
+     * frame); the [TICK_MS] clock only ages the data into «нет данных». In ambient at most once per [AMBIENT_REFRESH_MS].
+     */
     private suspend fun present() {
         var shownAt = Long.MIN_VALUE / 2
-        combine(WatchFeed.feed, ticker(TICK_MS)) { f, now -> Screen(f.t, Health.of(f.t, f.rxAtMs, now)) }
+        combine(WatchFeed.feed, ticker(TICK_MS)) { f, now -> Screen(f.t, Health.of(f.t, f.rxAtMs, now), f.flags) }
             .distinctUntilChanged()
             .collectLatest { s ->
                 if (ambient.value != null) {
@@ -111,7 +114,7 @@ class MainActivity : ComponentActivity() {
 
     /** FLAG_KEEP_SCREEN_ON while «Экран не гаснет» is on and the data was live within [Idle.AFTER_MS]. */
     private suspend fun holdScreen() {
-        combine(WatchFeed.feed, keepOn, ticker(5_000)) { f, k, now -> Idle.keepScreenOn(k, f.liveAtMs, openedAtMs, now) }
+        combine(WatchFeed.feed, prefsState, ticker(5_000)) { f, p, now -> Idle.keepScreenOn(p.keepOn, f.liveAtMs, openedAtMs, now) }
             .distinctUntilChanged()
             .collect { on ->
                 if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -133,9 +136,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun setKeepOn(on: Boolean) {
-        keepOn.value = on
-        prefs.edit().putBoolean(KEEP_ON, on).apply()
+    private fun setPrefs(p: WatchPrefs) {
+        prefsState.value = p
+        prefs.edit().putBoolean(KEEP_ON, p.keepOn).putString(SMOOTH, p.smooth.key).apply()
     }
 
     /** Once: without it the Ongoing Activity's notification (and its watch-face icon) stays hidden. */
@@ -157,6 +160,8 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val PREFS = "bal.wear"
         const val KEEP_ON = "keepScreenOn"
+        /** «Плавно»: [SmoothPref.key] — phone / on / off. */
+        const val SMOOTH = "smooth"
         const val ASKED_NOTIFICATIONS = "askedNotifications"
         const val TICK_MS = 500L
         const val AMBIENT_REFRESH_MS = 1000L

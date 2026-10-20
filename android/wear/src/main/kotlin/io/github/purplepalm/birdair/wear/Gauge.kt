@@ -1,10 +1,7 @@
 package io.github.purplepalm.birdair.wear
 
-import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,7 +15,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -26,6 +29,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -37,6 +41,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -45,15 +50,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeTextDefaults
+import io.github.purplepalm.birdair.core.BatteryWarning
 import io.github.purplepalm.birdair.core.Telemetry
+import io.github.purplepalm.birdair.core.WarningLevel
+import kotlinx.coroutines.flow.first
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /*
  * The gauge, laid out on a 240-unit round design grid scaled to the screen (≈ 240 dp on the 480 px
- * Galaxy Watch Ultra): the power arc along the edge, the speed in the middle, battery and mode under
- * it, the power value in the gap at the bottom where the arc ends (±135° from 12 o'clock).
+ * Galaxy Watch Ultra): the power arc along the edge, the time (or what is wrong with the data, or the phone's
+ * battery warning) at the top, the speed in the middle, battery and mode under it with the range below, the power
+ * value in the gap at the bottom where the arc ends (±135° from 12 o'clock).
  */
 
 /** Design units → dp / sp. Text sizes follow the screen, not the font scale: the gauge is a fixed drawing. */
@@ -72,8 +81,54 @@ private fun Modifier.centreAt(y: Float): Modifier = layout { m, c ->
 
 private val TNUM = TextStyle(fontFeatureSettings = "tnum")
 
+/**
+ * [target] (the arc's fraction) as it is drawn: with [smooth], eased towards each new value on every frame by a
+ * critically damped [Spring] (no overshoot, 95 % in [Spring.SETTLE_MS]); without, it jumps. Read the State
+ * inside a draw lambda: then only the canvas redraws per frame, nothing recomposes.
+ */
 @Composable
-fun GaugeScreen(s: Screen, ambient: AmbientState?) {
+fun rememberSpring(target: Float, smooth: Boolean): State<Float> {
+    val spring = remember { Spring(x = target.toDouble()) }
+    val shown = remember { mutableFloatStateOf(target) }
+    val latest = rememberUpdatedState(target)
+    LaunchedEffect(smooth) {
+        if (!smooth) {
+            snapshotFlow { latest.value }.collect { spring.snap(it.toDouble()); shown.floatValue = it }
+            return@LaunchedEffect
+        }
+        while (true) {
+            if (spring.settled && spring.target == latest.value.toDouble()) {
+                snapshotFlow { latest.value }.first { it.toDouble() != spring.target }
+            }
+            var lastNs = -1L
+            do {
+                withFrameNanos { ns ->
+                    val dt = if (lastNs < 0) Spring.FIRST_FRAME_S else ((ns - lastNs) / 1e9).coerceAtMost(Spring.MAX_FRAME_S)
+                    lastNs = ns
+                    spring.target = latest.value.toDouble()
+                    spring.step(dt)
+                    shown.floatValue = spring.x.toFloat()
+                }
+            } while (!(spring.settled && spring.target == latest.value.toDouble()))
+        }
+    }
+    return shown
+}
+
+/** Vertical centres of the gauge's lines on the 240-unit grid. */
+private object Rows {
+    const val STATUS = 46f
+    const val SPEED = 98f
+    const val UNIT = 143f
+    const val BATTERY = 166f
+    const val RANGE = 185f
+    const val POWER = 202f
+    const val FLOW = 220f
+}
+
+/** [smooth]: the arc eases (see [rememberSpring]); ambient always jumps (one update a second at most). */
+@Composable
+fun GaugeScreen(s: Screen, ambient: AmbientState?, smooth: Boolean = true) {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val side = minOf(maxWidth, maxHeight)
         val g = Grid(side / 240f, LocalDensity.current)
@@ -81,35 +136,40 @@ fun GaugeScreen(s: Screen, ambient: AmbientState?) {
         val shift = if (ambient?.burnIn == true) BurnIn.offset(ambient.tick) else 0f to 0f
         val t = s.t
         val live = s.health.live
+        val watts = if (live) PowerView.watts(t, s.fast) else null
         // old power is not shown as power: the arc rests at zero unless the data is live (as on the phone)
-        val frac by animateFloatAsState(
-            if (live) Arc.fraction(t.powerW, t.peakW) else 0f,
-            if (amb) snap() else tween(150, easing = LinearOutSlowInEasing),
-            label = "power",
-        )
+        val frac = rememberSpring(if (live) Arc.fraction(watts, t.peakW) else 0f, smooth && !amb)
+        // a warning on old data is not news: the line at the top says what is wrong with the data instead
+        val warning = if (live) Warnings.top(t.warnings) else null
         Box(Modifier.size(side).offset(shift.first.dp, shift.second.dp)) {
             Box(Modifier.fillMaxSize().alpha(s.health.alpha)) {
-                PowerArc(frac, amb, Modifier.fillMaxSize())
+                PowerArc({ frac.value }, amb, Modifier.fillMaxSize(), tint = warning?.let { Warnings.argb(it.level) })
                 Speed(t, amb, g)
                 Text(
                     Fmt.speedUnit(t.units),
-                    Modifier.centreAt(146f),
+                    Modifier.centreAt(Rows.UNIT),
                     color = argb(if (amb) Palette.AMB_DIM else Palette.INK2),
                     fontSize = g.sp(14f),
                 )
-                BatteryAndMode(t, amb, g, Modifier.centreAt(172f))
-                Power(t, live, amb, g)
+                BatteryAndMode(t, amb, g, Modifier.centreAt(Rows.BATTERY))
+                RangeLine(t, amb, g, Modifier.centreAt(Rows.RANGE))
+                Power(t, watts, s.fast, live, amb, g)
             }
-            StatusLine(s.health, amb, g, Modifier.centreAt(45f))
+            if (warning != null) WarningBanner(warning, amb, g, Modifier.centreAt(Rows.STATUS))
+            else StatusLine(s.health, amb, g, Modifier.centreAt(Rows.STATUS))
         }
     }
 }
 
-/** The arc: faint ±135° track, ticks at 0, ±50 % and the ends, then the value from 12 o'clock (see [Arc.bar]). */
+/**
+ * The arc: faint ±135° track (tinted amber / red by [tint] while a battery warning is on), ticks at 0, ±50 % and
+ * the ends, then the value from 12 o'clock (see [Arc.bar]). [fraction] is read while drawing.
+ */
 @Composable
-fun PowerArc(fraction: Float, ambient: Boolean, modifier: Modifier = Modifier) {
-    val colour = argb(Arc.colorFor(fraction.toDouble()))
+fun PowerArc(fraction: () -> Float, ambient: Boolean, modifier: Modifier = Modifier, tint: Long? = null) {
     Canvas(modifier) {
+        val f = fraction()
+        val colour = argb(Arc.colorFor(f.toDouble()))
         val u = size.minDimension / 240f
         val band = BAND * u
         val r = size.minDimension / 2 - EDGE * u - band / 2
@@ -117,10 +177,13 @@ fun PowerArc(fraction: Float, ambient: Boolean, modifier: Modifier = Modifier) {
         val sz = Size(2 * r, 2 * r)
         val (ts, tw) = Arc.track
         if (ambient) drawArc(argb(Palette.AMB_LINE), ts, tw, false, tl, sz, style = Stroke(1.2f * u, cap = StrokeCap.Round))
-        else drawArc(argb(Palette.HAIR), ts, tw, false, tl, sz, style = Stroke(band, cap = StrokeCap.Round))
+        else {
+            val track = if (tint != null) argb(tint).copy(alpha = TINT_ALPHA) else argb(Palette.HAIR)
+            drawArc(track, ts, tw, false, tl, sz, style = Stroke(band, cap = StrokeCap.Round))
+        }
         ticks(r - band / 2, u, ambient)
         val w = if (ambient) 3.5f * u else band
-        Arc.bar(fraction, Math.toDegrees((w / 2 / r).toDouble()).toFloat())?.let { b ->
+        Arc.bar(f, Math.toDegrees((w / 2 / r).toDouble()).toFloat())?.let { b ->
             // a soft halo under the bar, then the bar; one filled outline each, so the halo has no darker overlap
             if (!ambient) drawPath(barPath(r, w + 9f * u, b), colour.copy(alpha = 0.18f))
             drawPath(barPath(r, w, b), colour)
@@ -144,6 +207,8 @@ private fun DrawScope.barPath(r: Float, width: Float, b: Arc.Bar): Path = Path()
 
 private const val EDGE = 3f
 private const val BAND = 13f
+/** The warning colour on the track: visible at a glance, still well under the bar itself. */
+private const val TINT_ALPHA = 0.32f
 private val TICKS = floatArrayOf(0f, 67.5f, -67.5f, 135f, -135f)
 
 private fun DrawScope.ticks(inner: Float, u: Float, ambient: Boolean) {
@@ -172,7 +237,7 @@ private fun Speed(t: Telemetry, ambient: Boolean, g: Grid) {
     }
     Text(
         text,
-        Modifier.centreAt(100f),
+        Modifier.centreAt(Rows.SPEED),
         color = argb(if (ambient) Palette.AMB_INK else Palette.INK),
         style = TNUM.copy(
             fontSize = g.sp(88f),
@@ -188,12 +253,14 @@ private fun Speed(t: Telemetry, ambient: Boolean, g: Grid) {
 private fun BatteryAndMode(t: Telemetry, ambient: Boolean, g: Grid, modifier: Modifier) {
     val level = Battery.level(t)
     val mode = Modes.name(t.mode)
+    // «Заряд на исходе» makes the battery amber at least, whatever % the BMS still claims
+    val tone = Warnings.batteryTone(level?.pct, t.warnings)
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        BatteryBar(level?.pct, ambient, Modifier.size(g.dp(27f), g.dp(12f)))
+        BatteryBar(level?.pct, tone, ambient, Modifier.size(g.dp(27f), g.dp(12f)))
         Spacer(Modifier.width(g.dp(5f)))
         Text(
             Fmt.pct(level),
-            color = argb(if (ambient) Palette.AMB_INK else Battery.tone(level?.pct).ink),
+            color = argb(if (ambient) Palette.AMB_INK else tone.ink),
             style = TNUM.copy(fontSize = g.sp(17f), fontWeight = FontWeight.Medium),
             maxLines = 1,
         )
@@ -219,8 +286,8 @@ private fun BatteryAndMode(t: Telemetry, ambient: Boolean, g: Grid, modifier: Mo
 
 /** Outline with a nub; the fill in the tone colour (green / amber / red), a thin line only in ambient. */
 @Composable
-private fun BatteryBar(pct: Double?, ambient: Boolean, modifier: Modifier) {
-    val tone = argb(Battery.tone(pct).argb)
+private fun BatteryBar(pct: Double?, batteryTone: BatteryTone, ambient: Boolean, modifier: Modifier) {
+    val tone = argb(batteryTone.argb)
     Canvas(modifier) {
         val u = size.height / 12f
         val nub = 2f * u
@@ -242,20 +309,33 @@ private fun BatteryBar(pct: Double?, ambient: Boolean, modifier: Modifier) {
     }
 }
 
+/** «запас ≈4,2 км» under the battery, when the phone sends a range; dimmer while it is only the default guess. */
 @Composable
-private fun Power(t: Telemetry, live: Boolean, ambient: Boolean, g: Grid) {
-    val p = if (live) t.powerW else null
-    val flow = if (live) Flow.of(t) else Flow.NONE
+private fun RangeLine(t: Telemetry, ambient: Boolean, g: Grid, modifier: Modifier) {
+    val text = RangeText.line(t.range, t.units) ?: return
+    Text(
+        text,
+        modifier,
+        color = argb(if (ambient) Palette.AMB_DIM else if (RangeText.rough(t.range)) Palette.MUTED else Palette.INK2),
+        style = TNUM.copy(fontSize = g.sp(11.5f), fontWeight = FontWeight.Medium),
+        maxLines = 1,
+    )
+}
+
+/** [p]: the watts the arc shows (fast or BMS, see [PowerView]); null when the data is not live. */
+@Composable
+private fun Power(t: Telemetry, p: Double?, fast: Boolean, live: Boolean, ambient: Boolean, g: Grid) {
+    val flow = if (live) Flow.of(t, fast) else Flow.NONE
     Text(
         Fmt.watts(p),
-        Modifier.centreAt(198f),
+        Modifier.centreAt(Rows.POWER),
         color = argb(if (ambient) Palette.AMB_INK else if (p == null || p == 0.0) Palette.INK2 else Arc.colorFor(p)),
         style = TNUM.copy(fontSize = g.sp(21f), fontWeight = if (ambient) FontWeight.Normal else FontWeight.Bold),
         maxLines = 1,
     )
     Text(
         flow.label,
-        Modifier.centreAt(217f),
+        Modifier.centreAt(Rows.FLOW),
         color = argb(if (ambient) Palette.AMB_DIM else flow.tone),
         fontSize = g.sp(11.5f),
         letterSpacing = 0.4.sp,
@@ -286,6 +366,36 @@ private fun StatusLine(h: Health, ambient: Boolean, g: Grid, modifier: Modifier)
             color = argb(if (ambient) Palette.AMB_DIM else Palette.MUTED),
             style = TNUM.copy(fontSize = g.sp(14f), fontWeight = FontWeight.Medium),
             maxLines = 1,
+        )
+    }
+}
+
+/**
+ * The phone's top battery warning in place of the time: a pill inside the arc, amber for WARNING, red for CRITICAL
+ * (the arc's track takes the same colour). Not dimmed with the values. The value (volts, °C) is on the details page.
+ */
+@Composable
+private fun WarningBanner(w: BatteryWarning, ambient: Boolean, g: Grid, modifier: Modifier) {
+    val crit = w.level == WarningLevel.CRITICAL
+    val shape = RoundedCornerShape(50)
+    val line = argb(if (ambient) Palette.AMB_DIM else Warnings.argb(w.level))
+    val fill = if (ambient) Color.Black else argb(Warnings.argb(w.level)).copy(alpha = if (crit) 0.34f else 0.2f)
+    Box(
+        modifier
+            // the round ends stay inside the arc band at this height up to ~140 units wide
+            .widthIn(max = g.dp(136f))
+            .background(fill, shape)
+            .border(g.dp(1.4f), line, shape)
+            .padding(horizontal = g.dp(7f), vertical = g.dp(2.5f)),
+    ) {
+        Text(
+            Warnings.text(w),
+            color = argb(if (ambient) Palette.AMB_INK else if (crit) Palette.INK else Warnings.ink(w.level)),
+            fontSize = g.sp(11.5f),
+            fontWeight = if (ambient) FontWeight.Normal else FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
