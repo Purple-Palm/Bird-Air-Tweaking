@@ -28,8 +28,9 @@ enum class Link { IDLE, SCANNING, CONNECTING, CONNECTED, RECONNECTING }
  * BMS frame where [currentA] refreshes ~1/s and lags ~0.6 s; [powerAtMs] the frame time (the tracker's clock) of
  * the latest power value; [warnings] low battery / overheat ([BatteryAdvisor]), CRITICAL first; [range] to the
  * observed empty; [appOdometerKm] the app's own odometer ([AppOdometer]); [lamps] the cluster's tell-tales
- * ([TellTales]); [batteryPctFine] the charge to 0.1 %. [seq] grows on every notification that brought a new
- * value, so the phone can publish on change instead of on a timer.
+ * ([TellTales]); [batteryPctFine] the charge to 0.1 %; [powerState] traction / coasting / regen for the power line
+ * ([PowerStateTracker]: the fast current with a deadband, so coasting at −0.2 A is not «рекуп.»). [seq] grows on
+ * every notification that brought a new value, so the phone can publish on change instead of on a timer.
  */
 @Serializable
 data class Telemetry(
@@ -66,6 +67,8 @@ data class Telemetry(
     val lamps: List<Lamp> = emptyList(),
     /** 100 · remaining / full mAh of the last BMS frame, floored to 0.1 % (the BMS's own [batteryPct] floors to 1 %). */
     val batteryPctFine: Double? = null,
+    /** Null until the first BMS frame of a stream; an older watch ignores it. */
+    val powerState: PowerState? = null,
 )
 
 /**
@@ -99,6 +102,8 @@ class TelemetryTracker(decoder: Decoder) {
     private val fast = FastPower()
     private val advisor = BatteryAdvisor()
     private val tells = TellTales()
+    private val flow = PowerStateTracker()
+    private var frameSpeed = 0.0
     private var odometer = AppOdometer()
     private var fastSample: FastPower.Sample? = null
     private var powerAt: Long? = null
@@ -126,6 +131,7 @@ class TelemetryTracker(decoder: Decoder) {
         if (frames.isNotEmpty()) frameT = tMs
         var scooter = false
         if (u == Uuids.CHAR) for (f in frames) scooter = scooterFrame(f, tMs) || scooter
+        if (u == Uuids.CHAR && frames.isEmpty() && bytes.isNotEmpty()) tells.onDash(tMs)
         if (dec.framed) { for (f in frames) touched = apply(f, u, tMs) || touched }
         else touched = apply(bytes, u, tMs) || touched
         if (touched) dataT = tMs
@@ -151,6 +157,7 @@ class TelemetryTracker(decoder: Decoder) {
         for (a in asms.values) a.reset()
         jsonBufs.clear()
         fast.reset()
+        flow.reset()
         tells.restartStreams()
     }
 
@@ -192,6 +199,7 @@ class TelemetryTracker(decoder: Decoder) {
             appOdometerKm = odometer.totalKm,
             lamps = tells.lamps(nowMs, range, warns, link, streaming),
             batteryPctFine = tells.batteryPctFine,
+            powerState = flow.state,
         )
     }
 
@@ -203,6 +211,7 @@ class TelemetryTracker(decoder: Decoder) {
         frameT = null; dataT = null; powerTouched = false; lastPT = null
         whOut = 0.0; whIn = 0.0; peakW = PEAK_MIN
         fast.reset(full = true); fastSample = null; powerAt = null
+        flow.reset(); frameSpeed = 0.0
         advisor.reset()
         tells.reset()
         seqN++
@@ -254,11 +263,13 @@ class TelemetryTracker(decoder: Decoder) {
         if (b != null) {
             fastSample = fast.update(t, b.voltage, b.currentA, b.motor)
             powerAt = t
+            flow.update(t, fastSample?.currentA ?: b.currentA, frameSpeed)
             advisor.onBms(t, b.voltage, b.currentA, b.temp1C.toDouble(), b.temp2C.toDouble(), b.remainingMah.toDouble(), b.fullMah.toDouble())
             tells.onBms(t, b, fastSample, fast.r, fast.anchors)
             return true
         }
         val m = ScooterFrames.motion(f) ?: return false
+        frameSpeed = m.speedKmh
         tells.onMotion(t, m)
         odometer.update(m.tripKm, m.odometerKm, epochOffsetMs?.let { it + t })
         // the distance ridden on this frame, not the total: «Задать» / «Взять с руля» ([odometerState]) is not a ride
@@ -351,6 +362,15 @@ class TelemetryTracker(decoder: Decoder) {
             "Полная ёмкость по BMS, мА·ч" to FULL,
             "Температура 2 (батарея?), °C" to TEMP2,
             "Мотор тянет (бит)" to MOTOR,
+        )
+
+        /**
+         * The raw status bytes of decoder v6 (custom u8 fields, as they are): the tracker reads them from the frames itself
+         * (ScooterFrames: BmsFrame b4 / b5 / b6 / b18, MotionFrame code) into the lamps, so the watch leaves them out of
+         * its details. DecoderTest checks the names against decoders/current.json.
+         */
+        val STATUS: Set<String> = setOf(
+            "Статус BMS: байт 4", "Статус BMS: байт 5", "Статус BMS: байт 6", "Счётчик циклов? (байт 18)", "Код контроллера (байт 8)",
         )
 
         /**

@@ -19,13 +19,14 @@ class RealLogsTest(unittest.TestCase):
         logs = sorted((rl.log(n) for n in rl.ALL), key=lambda lg: lg['startedAt'])
         od, rows = ao.replay(logs, events=lambda lg: rl.events(os.path.basename(lg['_files'][0])))
         # the rides: 8.5 + 6.3 + 2.9 + 0 (charging) + 4.8 + 6.0 (ridden in the trimmed part of 20261016-205717,
-        # its first frame already says trip 6.0) + 6.1
-        self.assertEqual([r[1] for r in rows], [8.5, 6.3, 2.9, 0.0, 4.8, 6.0, 6.1])
-        self.assertAlmostEqual(od.total_km, 1424.8 + 34.6, places=6)
-        # the scooter's own odometer lost 8.3 km on the way (restarted at 1434.2 twice)
-        self.assertAlmostEqual(rows[-1][3], 1451.1, places=6)
+        # its first frame already says trip 6.0) + 6.1 + 9.9 (20.10: 9.6 to the BMS cutoff, 0.3 after the reboot)
+        self.assertEqual([r[1] for r in rows], [8.5, 6.3, 2.9, 0.0, 4.8, 6.0, 6.1, 9.9])
+        self.assertAlmostEqual(od.total_km, 1424.8 + 44.5, places=6)
+        # the scooter's own odometer lost 8.3 km by 19.10 (restarted at 1434.2 twice) and the 9.6 km of 20.10
+        # (1464.6 at the cutoff, 1455.0 after the reboot)
+        self.assertAlmostEqual(rows[-1][3], 1455.3, places=6)
         st = od.state
-        self.assertEqual((st['base_km'], st['trip_km']), (1445.0, 6.1))
+        self.assertEqual((st['base_km'], st['trip_km']), (1455.0, 0.3))
         # the app restarted between the logs: the state goes out and comes back in
         ev = lambda lg: rl.events(os.path.basename(lg['_files'][0]))  # noqa: E731
         a, _ = ao.replay(logs[:3], events=ev)

@@ -1,6 +1,7 @@
 package io.github.purplepalm.birdair.phone
 
 import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.core.PowerState
 import io.github.purplepalm.birdair.core.Telemetry
 import java.math.BigDecimal
 import java.time.Instant
@@ -70,14 +71,20 @@ object Units {
     fun distLabel(units: String) = if (units == MPH) "mi" else "км"
 }
 
-/** Where the energy goes now: the page's flowState(). Current/power: + from the battery, − into it. */
+/** Where the energy goes now: the page's flowState(); riding, the tracker's [PowerState] (with its deadband: coasting at
+ *  −0.2 A is «Накат», not «Рекуперация»). Current/power: + from the battery, − into it. */
 enum class Flow(val label: String) {
-    NONE("Нет данных"), IDLE("Стоит"), DRIVE("Тяга"), REGEN("Рекуперация"), CHARGE("Зарядка"), INTO("В батарею");
+    NONE("Нет данных"), IDLE("Стоит"), DRIVE("Тяга"), COAST("Накат"), REGEN("Рекуперация"), CHARGE("Зарядка"), INTO("В батарею");
 
     val intoBattery: Boolean get() = this == REGEN || this == CHARGE || this == INTO
 
     companion object {
-        fun of(currentA: Double?, powerW: Double?, speedKmh: Double?): Flow {
+        fun of(currentA: Double?, powerW: Double?, speedKmh: Double?, state: PowerState? = null): Flow {
+            if (state != null && speedKmh != null && speedKmh > 1) return when (state) {
+                PowerState.TRACTION -> DRIVE
+                PowerState.COAST -> COAST
+                PowerState.REGEN -> REGEN
+            }
             if (currentA == null && powerW == null && speedKmh == null) return NONE
             val into = if (currentA != null) currentA < -0.15 else (powerW != null && powerW < -5)
             if (into) return when {
@@ -90,7 +97,7 @@ enum class Flow(val label: String) {
         }
 
         /** [fast]: by the fast current and power (when known), as the bar shows them. */
-        fun of(t: Telemetry, fast: Boolean = false): Flow = of(Power.amps(t, fast), Power.watts(t, fast), t.speedKmh)
+        fun of(t: Telemetry, fast: Boolean = false): Flow = of(Power.amps(t, fast), Power.watts(t, fast), t.speedKmh, t.powerState)
     }
 }
 
@@ -121,6 +128,7 @@ object StatusText {
             val p = Power.watts(t, fast)
             when (Flow.of(t, fast)) {
                 Flow.DRIVE -> parts.add("тяга " + Fmt.watts(p?.let { abs(it) } ?: 0.0))
+                Flow.COAST -> parts.add("накат")
                 Flow.REGEN -> parts.add("рекуперация " + Fmt.watts(p?.let { abs(it) } ?: 0.0))
                 Flow.CHARGE, Flow.INTO -> parts.add("в батарею " + Fmt.watts(p?.let { abs(it) } ?: 0.0))
                 Flow.IDLE -> parts.add("стоит")

@@ -25,7 +25,14 @@ class RealLogsTest(unittest.TestCase):
         for name, t_cut in rl.CUTOFF_T.items():
             ft = ba.first_times(steps(name))
             self.assertGreaterEqual(t_cut - ft[(LOW, W)], 5 * 60000, name)    # «Заряд на исходе» ≥ 5 min before
-            self.assertGreaterEqual(t_cut - ft[(HOT, C)], 5 * 60000, name)    # both were hot (61 / 58 °C)
+        for name in (rl.CUTOFF_HOT, rl.CUTOFF):                              # both were hot (61 / 58 °C)
+            self.assertGreaterEqual(rl.CUTOFF_T[name] - ba.first_times(steps(name))[(HOT, C)], 5 * 60000, name)
+        # 20.10: the BMS's under-voltage cutoff (31.24 V at 7.7 A, BMS 5 %) solo on a cooler pack (≤ 50 °C): «Сейчас
+        # отключится» leads it by 2.6 min / 0.7 km, «перегрета» is not needed and does not light
+        ft = ba.first_times(steps(rl.TO_ZERO))
+        crit = rl.CUTOFF_T[rl.TO_ZERO] - ft[(LOW, C)]
+        self.assertTrue(2 * 60000 <= crit <= 3 * 60000, crit)
+        self.assertNotIn((HOT, C), ft)
         # 19.10: the low-voltage cutoff (31.45 V at 8.6 A): «Сейчас отключится» ≥ 1 min before
         ft = ba.first_times(steps(rl.CUTOFF))
         self.assertGreaterEqual(rl.CUTOFF_T[rl.CUTOFF] - ft[(LOW, C)], 60000)
@@ -33,6 +40,27 @@ class RealLogsTest(unittest.TestCase):
         # 15.10: the thermal cutoff (57 / 61 °C at 31.9 V): «перегрета» leads it by minutes
         ft = ba.first_times(steps(rl.CUTOFF_HOT))
         self.assertGreaterEqual(rl.CUTOFF_T[rl.CUTOFF_HOT] - ft[(HOT, C)], 15 * 60000)
+
+    def test_end_of_traction_stops_at_a_new_power_on(self):
+        # 20.10: after the BMS cut the pack off the dash was switched on again (the trip back to 0.0) and the ride
+        # home went on in TAKEOFF at 9–10 A: the end of the ride the warnings were about is the cutoff
+        lg, ev = rl.log(rl.TO_ZERO), rl.events(rl.TO_ZERO)
+        st = steps(rl.TO_ZERO)
+        ons = ba.power_on_times(ev)
+        self.assertEqual(len(ons), 1)
+        self.assertTrue(2162000 <= ons[0] <= 2163000, ons)              # boot C, the first frame after 350 s
+        t, km = ba.end_of_traction(st, events=ev)
+        self.assertEqual(t, rl.CUTOFF_T[rl.TO_ZERO])
+        self.assertEqual(ba.end_of_traction(st), (t, km))                 # without the trip: the 350 s frame gap
+        self.assertGreater(ba.end_of_traction(st, gap_ms=None)[0], 2250000)   # the TAKEOFF ride home, as it was
+        ft = ba.first_times(st)
+        km_crit = next(s[1] for s in st if s[0] == ft[(LOW, C)])
+        self.assertAlmostEqual((t - ft[(LOW, C)]) / 60000, 2.6, delta=0.05)
+        self.assertAlmostEqual(km - km_crit, 0.71, delta=0.05)
+        # the other rides had one power-on: the same end as before
+        for name in (rl.SOLO, rl.TWO_UP_EMPTY, rl.CUTOFF):
+            st = steps(name)
+            self.assertEqual(ba.end_of_traction(st, events=rl.events(name)), ba.end_of_traction(st, gap_ms=None), name)
 
     def test_full_discharges_warn_too(self):
         for name in (rl.SOLO, rl.TWO_UP_EMPTY):

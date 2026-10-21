@@ -1,6 +1,7 @@
 package io.github.purplepalm.birdair.wear
 
 import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.core.PowerState
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.Wire
 import org.junit.Assert.assertEquals
@@ -198,6 +199,14 @@ class FlowTest {
         assertEquals(Flow.DRIVE, Flow.of(Telemetry(currentA = 0.7)))
         assertEquals(Palette.DRAW, Flow.DRIVE.tone)
         assertEquals(Palette.FLOW, Flow.REGEN.tone)
+        // riding, the phone's state with its deadband: −0.2 A on letting go is coasting, not regen
+        val coasting = Telemetry(currentA = -0.2, currentFastA = -0.3, powerW = -8.0, powerFastW = -11.0, speedKmh = 22.0)
+        assertEquals(Flow.REGEN, Flow.of(coasting, fast = true))                     // an older phone: by the sign
+        assertEquals(Flow.COAST, Flow.of(coasting.copy(powerState = PowerState.COAST), fast = true))
+        assertEquals(Flow.REGEN, Flow.of(coasting.copy(powerState = PowerState.REGEN)))
+        assertEquals(Flow.DRIVE, Flow.of(coasting.copy(powerState = PowerState.TRACTION)))
+        assertEquals(Flow.CHARGE, Flow.of(Telemetry(currentA = -1.9, speedKmh = 0.0, powerState = PowerState.COAST)))   // standing: as before
+        assertEquals(Palette.MUTED, Flow.COAST.tone)
     }
 }
 

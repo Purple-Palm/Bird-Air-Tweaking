@@ -20,12 +20,14 @@ CUTOFF = '20261019-174739-log-app.json.gz'    # two-up FLY 98 → 1 %, traction 
 CHARGE = '20261016-205717-log-app.json.gz'    # charging 45 → 100 % (trimmed at 250k entries)
 CAR_CHARGE = '20261016-182924-log.json.gz'    # charging in a car, −1.7 A
 EVENING = '20261019-210801-log-app.json.gz'   # charging 64 → 87 %, then two-up FLY 87 → 29 %, regen to 44 V
-ALL = (SOLO, CUTOFF_HOT, TWO_UP_HALF, CAR_CHARGE, TWO_UP_EMPTY, CHARGE, CUTOFF)
+TO_ZERO = '20261020-214221-do-otsechki-do-nulya-app.json.gz'  # solo FLY 100 → 5 %, the BMS cut the pack off; reboots
+ALL = (SOLO, CUTOFF_HOT, TWO_UP_HALF, CAR_CHARGE, TWO_UP_EMPTY, CHARGE, CUTOFF, TO_ZERO)
 
-# t (ms of the log) of the two real cutoffs: the last frame before the scooter went dark (15.10: the battery's
-# over-temperature protection at 57 / 61 °C, 31.9 V under load) and the frame where the motor bit dropped under
-# 8.6 A at 31.45 V and traction never came back (19.10: the low-voltage cutoff).
-CUTOFF_T = {CUTOFF_HOT: 1883909, CUTOFF: 5487027}
+# t (ms of the log) of the real cutoffs: the last frame before the scooter went dark (15.10: the battery's
+# over-temperature protection at 57 / 61 °C, 31.9 V under load), the frame where the motor bit dropped under
+# 8.6 A at 31.45 V and traction never came back (19.10: the controller's low-voltage cutoff) and the last BMS frame
+# (20.10: the BMS's under-voltage, b5 0x02 from 1810.0 s, 31.24 V at 7.7 A, BMS 5 %).
+CUTOFF_T = {CUTOFF_HOT: 1883909, CUTOFF: 5487027, TO_ZERO: 1812402}
 
 
 @functools.lru_cache(maxsize=None)

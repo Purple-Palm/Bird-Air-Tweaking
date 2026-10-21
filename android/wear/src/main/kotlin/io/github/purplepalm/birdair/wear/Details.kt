@@ -74,8 +74,10 @@ fun detailRows(t: Telemetry, fast: Boolean = false): List<List<Cell>> {
     )
     rows += listOf(Cell("Темп. 1", Fmt.withUnit(t.temp1C, 0, "°C")), Cell("Темп. 2", Fmt.withUnit(t.temp2C, 0, "°C")))
     rows += listOf(Cell("Батарея по BMS", Fmt.num(t.remainingMah, 0) + " / " + Fmt.withUnit(t.fullMah, 0, "мА·ч")))
-    // custom decoder fields that have no typed slot (an error code, say); not the phone's flags riding in extras
-    for ((name, v) in t.extras) if (name !in TelemetryTracker.CUSTOM && name !in PhoneFlags.KEYS) rows += listOf(Cell(name, Fmt.num(v, if (v % 1.0 == 0.0) 0 else 2)))
+    // custom decoder fields that have no typed slot (an error code, say); not the phone's flags riding in extras, nor
+    // the raw status bytes (they are in the lamps)
+    for ((name, v) in t.extras) if (name !in TelemetryTracker.CUSTOM && name !in TelemetryTracker.STATUS && name !in PhoneFlags.KEYS)
+        rows += listOf(Cell(name, Fmt.num(v, if (v % 1.0 == 0.0) 0 else 2)))
     return rows
 }
 

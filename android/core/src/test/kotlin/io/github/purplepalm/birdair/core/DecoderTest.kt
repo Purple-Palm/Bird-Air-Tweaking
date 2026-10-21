@@ -65,15 +65,16 @@ class DecoderTest {
         assertNull(Decoders.parseMask("0x1FFFFFFFF"))
     }
 
-    @Test fun decoderV5OnRealFrames() {
+    @Test fun decoderV6OnRealFrames() {
         val d = Repo.decoder()
         assertTrue(d.framed)
-        assertEquals(5, d.spec.version)
-        assertEquals(13, d.fields.size)
+        assertEquals(6, d.spec.version)
+        assertEquals(18, d.fields.size)
         val mode = d.decode(MODE_FRAME, Uuids.CHAR).associate { it.first.name to it.second }
         assertEquals(3.0, mode["Режим"])                          // 0x0B & 3 = FLY
         assertEquals(0.0, mode["Скорость"])
         assertEquals(1424.8, mode["Пробег"]!!, 1e-9)               // 00 37 A8 = 14248
+        assertEquals(0.0, mode["Код контроллера (байт 8)"])
         val volt = d.decode(VOLT_FRAME, Uuids.CHAR).associate { it.first.name to it.second }
         assertEquals(39.854, volt["Напряжение"]!!, 1e-9)           // AE 9B LE
         assertEquals(0.046, volt["Ток"]!!, 1e-9)                   // D2 FF = −46 mA, × −0.001
@@ -82,10 +83,13 @@ class DecoderTest {
         assertEquals(4363.0, volt["Полная ёмкость по BMS, мА·ч"])
         assertEquals(24.0, volt["Температура 1 (батарея?)"])
         assertEquals(0.0, volt["Мотор тянет (бит)"])
+        // v6: the status bytes raw (b4 03, b5 00, b6 00, b18 0x69 = 105 on 14.10)
+        assertEquals(listOf(3.0, 0.0, 0.0, 105.0), listOf("Статус BMS: байт 4", "Статус BMS: байт 5", "Статус BMS: байт 6", "Счётчик циклов? (байт 18)").map { volt[it] })
+        assertEquals(TelemetryTracker.STATUS, d.fields.filter { it.name in TelemetryTracker.STATUS }.map { it.name }.toSet())
         // the uuid filter: another characteristic gets nothing; short forms are normalized
         assertTrue(d.decode(VOLT_FRAME, "0000ffe2-0000-1000-8000-00805f9b34fb").isEmpty())
-        assertEquals(8, d.decode(VOLT_FRAME, "FFE1").size)
-        assertEquals(8, d.decode(VOLT_FRAME, "0000FFE1-0000-1000-8000-00805F9B34FB").size)
+        assertEquals(12, d.decode(VOLT_FRAME, "FFE1").size)
+        assertEquals(12, d.decode(VOLT_FRAME, "0000FFE1-0000-1000-8000-00805F9B34FB").size)
     }
 
     @Test fun parseIsLenientLikeThePage() {

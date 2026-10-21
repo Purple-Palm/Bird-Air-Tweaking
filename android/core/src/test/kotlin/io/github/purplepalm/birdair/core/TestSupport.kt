@@ -112,10 +112,14 @@ object RideLogs {
     const val TWO_UP_EMPTY = "logs/20261016-190042-log-app.json.gz"
     const val CHARGE = "logs/20261016-205717-log-app.json.gz"
     const val CUTOFF = "logs/20261019-174739-log-app.json.gz"
+    /** Solo FLY 100 % → the BMS cut the pack off at 5 % (under-voltage, b5 0x02), then the dash rebooted twice
+     *  with the BMS silent and once more for a TAKEOFF ride home. */
+    const val TO_ZERO = "logs/20261020-214221-do-otsechki-do-nulya-app.json.gz"
     /** In startedAt order. */
-    val ALL = listOf(SOLO, CUTOFF_HOT, TWO_UP_HALF, CAR_CHARGE, TWO_UP_EMPTY, CHARGE, CUTOFF)
-    /** The two real cutoffs (ms of the log): the scooter went dark; traction cut and never came back. */
-    val CUTOFF_T = mapOf(CUTOFF_HOT to 1_883_909L, CUTOFF to 5_487_027L)
+    val ALL = listOf(SOLO, CUTOFF_HOT, TWO_UP_HALF, CAR_CHARGE, TWO_UP_EMPTY, CHARGE, CUTOFF, TO_ZERO)
+    /** The real cutoffs (ms of the log): the scooter went dark (15.10, thermal); traction cut and never came back
+     *  (19.10, the controller); the last BMS frame (20.10, the BMS's under-voltage). */
+    val CUTOFF_T = mapOf(CUTOFF_HOT to 1_883_909L, CUTOFF to 5_487_027L, TO_ZERO to 1_812_402L)
 
     class Ride(val startedAtMs: Long, val events: List<ScooterEvent>)
 
@@ -141,7 +145,8 @@ object RideLogs {
     }
 
     /** {log: {"fast": [[t, v, i, iFast, pFast]…], "adv": [[t, low, hot, km|null, rangeKm|null, whPerKm|null, basis|null]…],
-     *  "odo": the app odometer's total}} from tools/fast_power.py, tools/battery_advisor.py and tools/app_odometer.py. */
+     *  "odo": the app odometer's total, "bits": {"b4 b5 b6 b18": frames}, "codes": {"code": frames}}} from
+     *  tools/fast_power.py, tools/battery_advisor.py, tools/app_odometer.py and tools/bird_frames.py. */
     val python: Map<String, JsonObject> by lazy {
         val script = """
             import json, sys
@@ -157,7 +162,15 @@ object RideLogs {
                     adv.append([t, lv.get('battery_low', 0), lv.get('battery_hot', 0), km,
                                 None if rg is None else rg.km, None if rg is None else rg.wh_per_km, None if rg is None else rg.basis])
                 odo = ao.replay([lg], events=lambda _lg: ev)[0].total_km
-                print(json.dumps({'log': path, 'fast': [[r[0], r[1], r[2], r[4], r[5]] for r in rows], 'adv': adv, 'odo': odo}))
+                bits, codes = {}, {}
+                for kind, _t, x in ev:
+                    if kind == 'bms':
+                        k = '%d %d %d %d' % (x.b4, x.b5, x.b6, x.b18)
+                        bits[k] = bits.get(k, 0) + 1
+                    elif kind == 'motion':
+                        codes[str(x.code)] = codes.get(str(x.code), 0) + 1
+                print(json.dumps({'log': path, 'fast': [[r[0], r[1], r[2], r[4], r[5]] for r in rows], 'adv': adv, 'odo': odo,
+                                  'bits': bits, 'codes': codes}))
         """.trimIndent()
         val out = Py.run(script, "", *ALL.map { Repo.file(it).absolutePath }.toTypedArray())
         out.lines().filter { it.isNotBlank() }.associate { line ->

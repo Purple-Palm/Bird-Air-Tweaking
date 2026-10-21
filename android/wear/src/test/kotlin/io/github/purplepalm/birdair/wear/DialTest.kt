@@ -159,6 +159,7 @@ class DialTextTest {
         assertEquals("", Dial.detailsText(Telemetry()))
         assertEquals("180${NB}Вт${NB}тяга", Dial.powerText(180.0, Flow.DRIVE))
         assertEquals("150${NB}Вт${NB}рекуп.", Dial.powerText(-150.0, Flow.REGEN))
+        assertEquals("8${NB}Вт${NB}накат", Dial.powerText(-8.0, Flow.COAST))
         assertEquals("5${NB}Вт", Dial.powerText(4.9, Flow.IDLE))
         assertEquals("—${NB}Вт", Dial.powerText(null, Flow.NONE))
         assertEquals(Palette.DRAW, Dial.powerArgb(180.0))

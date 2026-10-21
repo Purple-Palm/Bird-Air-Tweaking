@@ -26,11 +26,12 @@ class AppOdometerTest {
             }
             added.add(Math.round((od.totalKm!! - before!!) * 10) / 10.0)
         }
-        // 8.5 + 6.3 + 2.9 + 0 (car charging) + 4.8 + 6.0 (the trimmed part of the charging log) + 6.1
-        assertEquals(listOf(8.5, 6.3, 2.9, 0.0, 4.8, 6.0, 6.1), added)
-        assertEquals(1424.8 + 34.6, od.totalKm!!, 1e-9)
-        assertEquals(1451.1, lastScooter, 1e-9)                  // the scooter lost 8.3 km on the way
-        assertEquals(AppOdometer.State(1459.4, 1445.0, 6.1, od.state!!.wallMs), od.state)
+        // 8.5 + 6.3 + 2.9 + 0 (car charging) + 4.8 + 6.0 (the trimmed part of the charging log) + 6.1 + 9.9 (20.10: 9.6 to
+        // the BMS cutoff, 0.3 after the reboot)
+        assertEquals(listOf(8.5, 6.3, 2.9, 0.0, 4.8, 6.0, 6.1, 9.9), added)
+        assertEquals(1424.8 + 44.5, od.totalKm!!, 1e-9)
+        assertEquals(1455.3, lastScooter, 1e-9)                  // the scooter lost 8.3 km by 19.10 and 20.10's 9.6
+        assertEquals(AppOdometer.State(1469.3, 1455.0, 0.3, od.state!!.wallMs), od.state)
         if (Py.available) assertEquals(RideLogs.python.getValue(RideLogs.CUTOFF)["odo"]!!.jsonPrimitive.double, 1451.1, 1e-9)
     }
 

@@ -19,9 +19,10 @@ object LampText {
         if (l.text.any { it.isDigit() }) return null
         return when (l.id) {
             TellTales.TEMP, TellTales.COLD -> Fmt.n(v) + " °C"
-            TellTales.BATTERY -> Fmt.n(v, 1) + " В"
+            TellTales.BATTERY, TellTales.OVERVOLT -> Fmt.n(v, 1) + " В"
             TellTales.TRACTION -> if (l.text.contains("просадка")) Fmt.n(v, 1) + " В" else Fmt.n(v, 1) + " А"
             TellTales.ECO -> Fmt.n(v) + " Вт"
+            TellTales.CHARGING -> Fmt.n(v) + " °C"                     // «ждёт остывания»: the hotter sensor
             TellTales.OVERSPEED -> Fmt.n(Units.speed(v, units), 1) + " " + Units.speedLabel(units)
             else -> null
         }
@@ -78,11 +79,18 @@ object LampText {
     fun hint(l: Lamp): String = when (l.id) {
         TellTales.TEMP -> if (l.level == LampLevel.RED) "Дай батарее остыть: сбавь скорость или остановись. 15.10 защита батареи отключила самокат на 57 °C."
             else "Батарея горячая. Если поднимется до 55 °C — остановись остыть."
-        TellTales.BATTERY -> if (l.level == LampLevel.RED) "Под нагрузкой у отсечки: контроллер вот-вот отключит мотор. Сбавь газ, ищи где встать."
-            else "Батарея садится к отсечке: внизу заряда контроллер урезает ток, отключиться может раньше 0 %."
+        TellTales.BATTERY -> when {
+            l.text.startsWith("Нет связи") -> "Контроллер не видит BMS (код 0x26): батарея отключена, мотор не потянет. На руле, видимо, ошибка 12."
+            l.text.startsWith("BMS") -> "BMS отключает батарею по низкому напряжению: через секунды мотор пропадёт. Остановись; дальше — зарядка."
+            l.level == LampLevel.RED -> "Под нагрузкой у отсечки: контроллер вот-вот отключит мотор. Сбавь газ, ищи где встать."
+            else -> "Батарея садится к отсечке: внизу заряда контроллер урезает ток, отключиться может раньше 0 %."
+        }
         TellTales.TRACTION -> "Ток у предела контроллера (~16 А) или батарея проседает: мощности больше не будет."
         TellTales.CONSUMPTION -> "Расход больше 20 Вт·ч/км за последние 2 км: запас хода тает быстрее."
-        TellTales.OVERVOLT -> "Рекуперация подняла батарею выше 43 В: тормози мягче или ручным тормозом."
+        TellTales.OVERVOLT -> if (l.level == LampLevel.RED) "Батарея полная: защита BMS отключила рекуперацию, мотор не тормозит. Тормози ручным тормозом."
+            else "Батарея полная, рекуперация поднимает её выше 42,2 В: тормози мягче или ручным тормозом."
+        TellTales.CHARGING -> if (l.level == LampLevel.AMBER) "Зарядка подключена, но батарея горячая: BMS не пускает ток, пока не остынет до ≈37 / 39 °C. Если не пошла — дай остыть 10–20 мин и переткни."
+            else help(l.id)
         else -> help(l.id)
     }
 }

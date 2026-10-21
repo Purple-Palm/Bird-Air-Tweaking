@@ -54,7 +54,7 @@ class LogRecorderTest {
         assertFalse(o["trimmed"]!!.jsonPrimitive.boolean)
         assertEquals(Uuids.CHAR, o["gatt"]!!.jsonArray[0].jsonObject["chars"]!!.jsonArray[0].jsonObject["uuid"]!!.jsonPrimitive.content)
         assertEquals("colon-sum16", o["decoder"]!!.jsonObject["framing"]!!.jsonPrimitive.content)
-        assertEquals(13, o["decoder"]!!.jsonObject["fields"]!!.jsonArray.size)
+        assertEquals(18, o["decoder"]!!.jsonObject["fields"]!!.jsonArray.size)           // decoder v6
         val es = o["entries"]!!.jsonArray.map { it.jsonObject }
         assertEquals(listOf("t", "k", "n"), es[0].keys.toList())
         assertEquals("Найдено сервисов: 3, характеристик: 5", es[1]["n"]!!.jsonPrimitive.content)

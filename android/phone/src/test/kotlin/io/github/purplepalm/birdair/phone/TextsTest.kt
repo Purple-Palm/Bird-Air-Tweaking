@@ -4,6 +4,7 @@ import io.github.purplepalm.birdair.core.Decoder
 import io.github.purplepalm.birdair.core.Decoders
 import io.github.purplepalm.birdair.core.Frames
 import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.core.PowerState
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
 import io.github.purplepalm.birdair.core.Uuids
@@ -46,6 +47,14 @@ class TextsTest {
         assertEquals("Тяга", Flow.DRIVE.label)
         assertEquals("Рекуперация", Flow.REGEN.label)
         assertEquals("Стоит", Flow.IDLE.label)
+        // riding, the tracker's state: −0.2 A on letting go is coasting; standing it does not matter
+        assertEquals(Flow.COAST, Flow.of(-0.2, -8.0, 20.0, PowerState.COAST))
+        assertEquals(Flow.REGEN, Flow.of(-3.0, -110.0, 20.0, PowerState.REGEN))
+        assertEquals(Flow.DRIVE, Flow.of(0.2, 8.0, 20.0, PowerState.TRACTION))
+        assertEquals(Flow.CHARGE, Flow.of(-1.7, -66.0, 0.0, PowerState.COAST))
+        assertEquals("Накат", Flow.COAST.label)
+        val t = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = 20.0, currentA = -0.2, powerW = -8.0, powerState = PowerState.COAST)
+        assertEquals("20,0 км/ч · накат", StatusText.notification(t))
     }
 
     @Test fun modes() {

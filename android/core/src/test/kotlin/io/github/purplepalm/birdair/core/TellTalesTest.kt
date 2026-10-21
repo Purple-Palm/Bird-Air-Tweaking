@@ -72,8 +72,13 @@ class TellTalesTest {
         const val CUTOFF = "20261019-174739-log-app.json.gz"
         const val EVENING = "20261019-210801-log-app.json.gz"
         const val CHARGE = "20261016-205717-log-app.json.gz"
+        /** Solo FLY 100 % → the BMS cut the pack off (1812.4 s), the dash rebooted twice with the BMS silent. */
+        const val TO_ZERO = "20261020-214221-do-otsechki-do-nulya-app.json.gz"
         val TWO_UP = listOf(CUTOFF_HOT, TWO_UP_HALF, TWO_UP_EMPTY, CUTOFF, EVENING)
-        val RIDES = listOf(SOLO) + TWO_UP
+        val SOLOS = listOf(SOLO, TO_ZERO)
+        val RIDES = SOLOS + TWO_UP
+        /** Logs on the charger with the BMS's hot-charge latch: charging waits for the pack to cool. */
+        val CHARGE_WAITS = listOf("20261016-194323-log-app.json.gz", CUTOFF, "20261019-193212-log-app.json.gz", "20261019-193325-log-app.json.gz")
     }
 
     private fun first(snaps: List<Snap>, pred: (Snap) -> Boolean) = snaps.firstOrNull(pred)?.t
@@ -107,7 +112,7 @@ class TellTalesTest {
     @Test fun chargingOnlyOnTheCharger() {
         for (name in NAMES) {
             val sn = replay(name)
-            for ((k, s) in sn.withIndex()) if (TellTales.CHARGING in s.lamps) {
+            for ((k, s) in sn.withIndex()) if (s.level(TellTales.CHARGING) == LampLevel.GREEN) {
                 assertTrue((s.speed ?: 0.0) < 0.5, "$name ${s.t}")
                 assertTrue(sn.subList(maxOf(0, k - 6), k + 1).any { (it.i ?: 0.0) <= -0.1 }, "$name ${s.t}")
             }
@@ -119,19 +124,52 @@ class TellTalesTest {
         assertTrue(share(ch) { TellTales.CHARGING in it.lamps } > 0.99)
         assertEquals("Зарядка 1,7 А", ch[100].lamps.getValue(TellTales.CHARGING).text)
         // the rides before 19.10 had no charger in them; on 19.10 the log ran on the charger first
-        for (name in listOf(SOLO, CUTOFF_HOT, TWO_UP_HALF, TWO_UP_EMPTY)) assertTrue(replay(name).none { TellTales.CHARGING in it.lamps }, name)
+        for (name in listOf(SOLO, CUTOFF_HOT, TWO_UP_HALF, TWO_UP_EMPTY, TO_ZERO)) assertTrue(replay(name).none { TellTales.CHARGING in it.lamps }, name)
         for (name in listOf(CUTOFF, EVENING)) assertTrue(replay(name).filter { it.moving }.none { TellTales.CHARGING in it.lamps }, name)
     }
 
-    /** Regen right after a full charge: 43.5 V (19.10 afternoon) and 44.0 V (evening); nowhere else over 43 V. */
-    @Test fun overvoltOnTheNineteenthOnly() {
+    /** «Зарядка ждёт остывания»: the charger in (b4 0x40), the BMS's hot-charge latch (b6 0x04), no current, still — on the
+     *  four logs where the pack came hot to the charger, nowhere else. */
+    @Test fun chargingWaitsForTheHotPack() {
+        fun waits(s: Snap) = s.level(TellTales.CHARGING) == LampLevel.AMBER
+        for (name in NAMES) {
+            val sn = replay(name)
+            assertEquals(name in CHARGE_WAITS, sn.any(::waits), name)
+            for (s in sn.filter(::waits)) {
+                assertEquals("Зарядка ждёт остывания", s.lamps.getValue(TellTales.CHARGING).text)
+                assertTrue((s.speed ?: 0.0) < 0.5 && kotlin.math.abs(s.i ?: 0.0) < 0.1 && (s.tempC ?: 0.0) >= 40, "$name ${s.t}")
+            }
+        }
+        // 19.10 evening, 1 % at 41 / 45 °C: waited 6.6 min, unplugged at 398 s; replugged cooler (37 / 39 °C) it charged
+        val sn = replay("20261019-193325-log-app.json.gz")
+        val w = periods(sn, TellTales.CHARGING) { it.level == LampLevel.AMBER }.single()
+        assertTrue(w.t0 <= 10_000 && w.t1 in 398_000..405_000, "${w.t0}–${w.t1}")
+        assertTrue(sn.any { it.level(TellTales.CHARGING) == LampLevel.GREEN && it.t > 520_000 })
+        // 19.10 after the cutoff the charger came in at 5598 s: it waited to the end of the log (56 → 46 °C)
+        assertTrue(replay(CUTOFF).filter { it.t > 5_610_000 }.all(::waits))
+    }
+
+    /** Regen on a full pack: the BMS's over-voltage warning (b5 0x08, from 42.23 V) and protection (0x04, regen cut),
+     *  else regen above 42.3 V. 19.10 to 43.5 V (afternoon) and 44.0 V (evening), 20.10 at 98 % (135–139 s, 42.5 V),
+     *  16.10 one warning at 42.25 V; never on the charger (≤ 41.9 V). */
+    @Test fun overvoltOnAFullPack() {
         for (name in NAMES) {
             val ps = periods(replay(name), TellTales.OVERVOLT)
-            assertEquals(name == CUTOFF || name == EVENING, ps.isNotEmpty(), name)
+            assertEquals(name in listOf(TWO_UP_HALF, CUTOFF, EVENING, TO_ZERO), ps.isNotEmpty(), name)
         }
         val peak = { name: String -> replay(name).mapNotNull { it.lamps[TellTales.OVERVOLT]?.value }.max() }
         assertEquals(43.5, peak(CUTOFF), 0.05)
         assertEquals(44.04, peak(EVENING), 0.01)
+        assertEquals(42.53, peak(TO_ZERO), 0.01)
+        // 20.10: the protection from 135.6 s (the warning's single frame at 135.2 s falls between two snapshots)
+        val z = periods(replay(TO_ZERO), TellTales.OVERVOLT).single()
+        assertTrue(z.t0 in 135_000..137_000 && z.t1 in 139_000..145_000 && z.level == LampLevel.RED, "${z.t0}–${z.t1} ${z.level}")
+        assertEquals("Защита от перенапряжения", replay(TO_ZERO).first { it.t == z.t0 }.lamps.getValue(TellTales.OVERVOLT).text)
+        val h = periods(replay(TWO_UP_HALF), TellTales.OVERVOLT).single()
+        assertTrue(h.t0 in 73_000..74_000 && h.level == LampLevel.AMBER, "${h.t0} ${h.level}")
+        assertEquals("Полная — тормози мягко", replay(TWO_UP_HALF).first { it.t == h.t0 }.lamps.getValue(TellTales.OVERVOLT).text)
+        // both 19.10 rides reached the protection
+        for (name in listOf(CUTOFF, EVENING)) assertTrue(periods(replay(name), TellTales.OVERVOLT).any { it.level == LampLevel.RED }, name)
     }
 
     /** Graded by the hotter sensor: тёплая ≥ 40, горячая ≥ 48, перегрев ≥ 55, each clearing 2 °C lower. */
@@ -181,22 +219,35 @@ class TellTalesTest {
         for (name in RIDES) assertTrue(replay(name).filter(::sagged).all { (it.pct ?: 100.0) <= 35 }, name)
         val cut = RideLogs.CUTOFF_T.getValue(RideLogs.CUTOFF)
         assertTrue(replay(CUTOFF).any { sagged(it) && it.t in cut - 600_000..cut })
+        // … held a minute down there instead of relighting on every pull (it lit 12 times from 30 % on 20.10, 16 on 14.10,
+        // 5 on 19.10): from 30 % to the end at most two stretches, and lit at the 20.10 cutoff
+        val lowSag = { name: String -> periods(replay(name), TellTales.TRACTION) { it.text.endsWith("просадка") }.filter { p -> replay(name).first { it.t == p.t0 }.pctFine!! <= 30 } }
+        for (name in listOf(SOLO, CUTOFF_HOT, CUTOFF, TO_ZERO)) assertTrue(lowSag(name).size in 1..2, "$name ${lowSag(name).size}")
+        val zeroCut = RideLogs.CUTOFF_T.getValue(RideLogs.TO_ZERO)
+        assertTrue(sagged(replay(TO_ZERO).last { it.t <= zeroCut }))
     }
 
-    /** ECO in gentle stretches, in any mode (FLY too), never while pulling hard or at the traction limit. */
+    /** ECO in gentle stretches, in any mode (FLY too), never while pulling hard, at the traction limit or at the speed
+     *  limiter (from 88 % of the mode's limit: FLY 22.7 km/h, where it starts cutting the current). Solo half the riding
+     *  is up there (14.10: 741 of 1527 s, 20.10: 993 of 2131 s); below it ECO lit 100 and 118 s (it was 30 % of all
+     *  the riding, 180 and 319 s of it at the limiter); two-up 1–7 %. */
     @Test fun ecoWhenGentle() {
-        val solo = replay(SOLO).filter { it.moving }
-        assertTrue(share(solo) { TellTales.ECO in it.lamps } > 0.25)
-        assertTrue(solo.count { TellTales.ECO in it.lamps && it.mode == 3 } > 300)
+        for (name in SOLOS) {
+            val solo = replay(name).filter { it.moving }
+            assertTrue(share(solo) { TellTales.ECO in it.lamps } in 0.04..0.15, "$name ${share(solo) { TellTales.ECO in it.lamps }}")
+            val fly = solo.count { TellTales.ECO in it.lamps && it.mode == 3 }
+            assertTrue(fly > 50, "$name $fly in FLY")
+        }
         for (name in TWO_UP) {
             val mv = replay(name).filter { it.moving }
             val eco = share(mv) { TellTales.ECO in it.lamps }
-            assertTrue(eco > 0.0 && eco < 0.25, "$name $eco")
+            assertTrue(eco > 0.0 && eco < 0.1, "$name $eco")
         }
-        assertTrue(share(replay(TWO_UP_HALF).filter { it.moving }) { TellTales.ECO in it.lamps } < 0.1)
+        assertTrue(share(replay(TWO_UP_HALF).filter { it.moving }) { TellTales.ECO in it.lamps } < 0.02)
         for (name in NAMES) for (s in replay(name)) if (TellTales.ECO in s.lamps) {
             assertTrue(TellTales.TRACTION !in s.lamps, "$name ${s.t}")
             assertTrue(s.lamps.getValue(TellTales.ECO).value!! <= 300, "$name ${s.t}")   // the last 10 s on average
+            assertTrue((s.speed ?: 0.0) < 0.88 * (TellTales.limitKmh(s.mode) ?: Double.MAX_VALUE), "$name ${s.t} ${s.speed}")
         }
     }
 
@@ -212,6 +263,10 @@ class TellTalesTest {
 
     /** «Заряд»: red with the advisor's «Сейчас отключится» (19.10 ≥ 1 min before the cutoff), amber below 25 %. */
     @Test fun battery() {
+        // 20.10: «Сейчас отключится» 2.6 min before the BMS cut the pack off
+        val zeroCut = RideLogs.CUTOFF_T.getValue(RideLogs.TO_ZERO)
+        val zeroRed = first(replay(TO_ZERO)) { it.level(TellTales.BATTERY) == LampLevel.RED }!!
+        assertTrue(zeroCut - zeroRed in 120_000..180_000, "${(zeroCut - zeroRed) / 1000} s")
         val cut = RideLogs.CUTOFF_T.getValue(RideLogs.CUTOFF)
         val red = first(replay(CUTOFF)) { it.level(TellTales.BATTERY) == LampLevel.RED }!!
         assertTrue(cut - red >= 60_000)
@@ -242,10 +297,49 @@ class TellTalesTest {
     @Test fun linkOnlyAroundSilence() {
         for (name in NAMES) {
             val sn = replay(name)
-            for (p in periods(sn, TellTales.LINK)) assertTrue(sn.any { it.t in p.t0..p.t1 && !it.streaming }, "$name ${p.t0}")
+            for (p in periods(sn, TellTales.LINK) { !it.text.startsWith("Код") }) assertTrue(sn.any { it.t in p.t0..p.t1 && !it.streaming }, "$name ${p.t0}")
             assertTrue(TellTales.LINK !in sn.first().lamps, name)                  // not in the first 3 s of a connection
         }
         assertTrue(replay("20261014-160502-log.json").drop(5).all { TellTales.LINK in it.lamps })   // the dash never spoke
+        // the dash answering with no frame for 5 s: after the BMS cut the pack off (20.10, twice rebooted with the BMS
+        // silent, error 12) and after the 15.10 thermal cutoff; a power-on's boot lines alone are not it
+        fun dash(s: Snap) = s.lamps[TellTales.LINK]?.text == "Руль на связи, BMS молчит"
+        for (name in NAMES) assertEquals(name == TO_ZERO || name == CUTOFF_HOT, replay(name).any(::dash), name)
+        val z = periods(replay(TO_ZERO), TellTales.LINK) { it.text == "Руль на связи, BMS молчит" }
+        assertTrue(z.all { p -> p.t0 in 1_822_000..1_830_000 || p.t0 in 2_117_000..2_157_000 }, z.joinToString { "${it.t0}–${it.t1}" })
+        assertTrue(z.any { it.t0 in 2_117_000..2_143_000 } && z.any { it.t0 in 2_145_000..2_157_000 })   // boots A and B
+        assertTrue(replay(TO_ZERO).filter { it.t in 2_159_000..2_162_000 }.none(::dash))                 // boot C: data came
+    }
+
+    /** The controller's code (byte 8 of 3A 17): 0x21 for 20 s parked on 15.10 on the link lamp; 0x26 (20.10, the BMS gone)
+     *  is the charge lamp's «Нет связи с BMS». */
+    @Test fun controllerCode() {
+        fun code(s: Snap) = s.lamps[TellTales.LINK]?.text?.startsWith("Код контроллера") == true
+        for (name in NAMES) assertEquals(name == CUTOFF_HOT, replay(name).any(::code), name)
+        val sn = replay(CUTOFF_HOT).filter(::code)
+        assertTrue(sn.all { it.t in 112_000..138_000 && it.streaming }, sn.joinToString { "${it.t}" })
+        assertEquals(Lamp(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0), sn.first().lamps.getValue(TellTales.LINK))
+    }
+
+    /** 20.10, the BMS's under-voltage cutoff: «BMS отключает батарею» from its flag (b5 0x02, 1810.0–1812.4 s), then the
+     *  controller's 0x26 «Нет связи с BMS» until the next power-on (boot C at 2162.9 s); never on another log. */
+    @Test fun bmsCutoffOnTheTwentieth() {
+        fun cut(s: Snap) = s.lamps[TellTales.BATTERY]?.text == "BMS отключает батарею"
+        fun gone(s: Snap) = s.lamps[TellTales.BATTERY]?.text == "Нет связи с BMS"
+        for (name in NAMES - TO_ZERO) assertTrue(replay(name).none { cut(it) || gone(it) }, name)
+        val sn = replay(TO_ZERO)
+        val c = sn.filter(::cut)
+        assertTrue(c.size >= 3 && c.all { it.t in 1_810_000..1_815_000 && it.level(TellTales.BATTERY) == LampLevel.RED }, c.joinToString { "${it.t}" })
+        assertEquals(31.25, c.first().lamps.getValue(TellTales.BATTERY).value!!, 0.01)
+        val g = periods(sn, TellTales.BATTERY) { it.text == "Нет связи с BMS" }.single()
+        assertTrue(g.t0 in 1_814_000..1_816_000 && g.t1 in 2_162_000..2_168_000 && g.level == LampLevel.RED, "${g.t0}–${g.t1}")
+        // after boot C the advisor's «Сейчас отключится» again (the pack was not charged)
+        assertEquals("Сейчас отключится", sn.first { it.t > 2_170_000 }.lamps.getValue(TellTales.BATTERY).text)
+    }
+
+    /** Every text fits the dial's line (≈ 24 characters at its font). */
+    @Test fun textsFit() {
+        for (name in NAMES) for (s in replay(name)) for (l in s.lamps.values) assertTrue(l.text.length <= 25, "$name ${s.t} «${l.text}»")
     }
 
     @Test fun neverLitInTheLogs() {
@@ -295,6 +389,68 @@ class TellTalesTest {
         val r = RangeEstimate(1.0, 0.6, 20.0, 21.4, "recent")
         assertEquals("Расход 21 Вт·ч/км", tt.lamps(t + 300, r, emptyList(), Link.CONNECTED, true).single { it.id == TellTales.CONSUMPTION }.text)
         assertTrue(tt.lamps(t + 10_000, r.copy(basis = "session"), emptyList(), Link.CONNECTED, true).none { it.id == TellTales.CONSUMPTION })
+    }
+
+    /** The BMS's status bits and the controller's code on a made-up stream. */
+    @Test fun unitStatusBits() {
+        val tt = TellTales()
+        fun bms(t: Long, b4: Int = 0x03, b5: Int = 0, b6: Int = 0, v: Double = 38.0, i: Double = 0.06, temp: Int = 30) =
+            tt.onBms(t, BmsFrame(v, i, false, temp, temp, 2000, 3936, 50, b4, b5, b6, 110), FastPower.Sample(i, v * i), 0.25, 30)
+        fun motion(t: Long, code: Int = 0, kmh: Double = 0.0) = tt.onMotion(t, MotionFrame(kmh, 10.0, 3, 1.0, 1460.0, code))
+        fun lamp(t: Long, id: String, streaming: Boolean = true) = tt.lamps(t, null, emptyList(), Link.CONNECTED, streaming).firstOrNull { it.id == id }
+        val crit = listOf(BatteryWarning(BatteryAdvisor.LOW, WarningLevel.CRITICAL, "Сейчас отключится", 31.5))
+        var t = 0L
+        motion(t); bms(t)
+        // under-voltage beats the advisor, held 5 s after the last flagged frame
+        bms(300, b5 = 0x22, v = 31.25, i = 7.7)
+        assertEquals(Lamp(TellTales.BATTERY, LampLevel.RED, "BMS отключает батарею", 31.25), tt.lamps(300, null, crit, Link.CONNECTED, true).single { it.id == TellTales.BATTERY })
+        assertEquals("BMS отключает батарею", lamp(5300, TellTales.BATTERY, streaming = false)?.text)
+        assertEquals("Сейчас отключится", tt.lamps(5301, null, crit, Link.CONNECTED, false).single { it.id == TellTales.BATTERY }.text)
+        // the controller's 0x26: the BMS gone, kept while no 3A 17 says otherwise, and 5 s after the last 0x26
+        motion(6000, code = 0x26, kmh = 12.5)
+        assertEquals(Lamp(TellTales.BATTERY, LampLevel.RED, "Нет связи с BMS"), lamp(600_000, TellTales.BATTERY, streaming = false))
+        motion(600_000, code = 0x26); motion(600_100)
+        assertEquals("Нет связи с BMS", lamp(605_000, TellTales.BATTERY)?.text)
+        assertNull(lamp(605_001, TellTales.BATTERY))
+        // any other code: the link lamp while frames stream, held 5 s
+        t = 700_000
+        motion(t, code = 0x21)
+        assertEquals(Lamp(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0), lamp(t, TellTales.LINK))
+        motion(t + 300)
+        assertEquals("Код контроллера 0x21", lamp(t + 5000, TellTales.LINK)?.text)
+        assertNull(lamp(t + 5001, TellTales.LINK))
+        assertNull(tt.lamps(t, null, emptyList(), Link.CONNECTED, false).firstOrNull { it.id == TellTales.LINK && it.text.startsWith("Код") })
+        // over-voltage: warning AMBER, protection RED, the peak voltage; regen above 42.3 V without the flags
+        t = 800_000
+        bms(t, b5 = 0x08, v = 42.23, i = -1.4)
+        assertEquals(Lamp(TellTales.OVERVOLT, LampLevel.AMBER, "Полная — тормози мягко", 42.23), lamp(t, TellTales.OVERVOLT))
+        bms(t + 300, b5 = 0x04, v = 42.52, i = -1.9)
+        assertEquals(Lamp(TellTales.OVERVOLT, LampLevel.RED, "Защита от перенапряжения", 42.52), lamp(t + 300, TellTales.OVERVOLT))
+        bms(t + 600, v = 41.0, i = 1.3)
+        assertEquals(LampLevel.RED, lamp(t + 5300, TellTales.OVERVOLT)?.level)
+        assertNull(lamp(t + 5301, TellTales.OVERVOLT))
+        val tv = TellTales()
+        tv.onBms(0, BmsFrame(42.36, 0.5, false, 25, 25, 3800, 3936, 96), FastPower.Sample(-2.0, -84.72), 0.25, 30)
+        assertEquals("Перенапряжение 42,4 В", tv.lamps(0, null, emptyList(), Link.CONNECTED, true).single { it.id == TellTales.OVERVOLT }.text)
+        val tc = TellTales()
+        tc.onBms(0, BmsFrame(42.35, -0.5, false, 25, 25, 3800, 3936, 96), FastPower.Sample(0.4, 16.9), 0.25, 30)
+        assertTrue(tc.lamps(0, null, emptyList(), Link.CONNECTED, true).none { it.id == TellTales.OVERVOLT })   // not regen by the fast current
+        // charger in, hot-charge latch, no current, still: «ждёт остывания» after 3 s; the current flowing is «Зарядка»
+        t = 900_000
+        for (k in 0..10) bms(t + k * 300L, b4 = 0x41, b6 = 0x04, i = 0.057, temp = 45)
+        assertEquals(Lamp(TellTales.CHARGING, LampLevel.AMBER, "Зарядка ждёт остывания", 45.0), lamp(t + 3000, TellTales.CHARGING))
+        // the dash answering again and again with no frame for 5 s: «Руль на связи, BMS молчит»
+        val td = TellTales()
+        td.onMotion(0, MotionFrame(0.0, 0.0, 3, 0.0, 1460.0))
+        td.lamps(0, null, emptyList(), Link.CONNECTED, true)
+        td.onDash(4000)
+        assertEquals("Руль молчит", td.lamps(5000, null, emptyList(), Link.CONNECTED, false).single { it.id == TellTales.LINK }.text)
+        td.onDash(6500)
+        assertEquals("Руль на связи, BMS молчит", td.lamps(6500, null, emptyList(), Link.CONNECTED, false).single { it.id == TellTales.LINK }.text)
+        assertEquals("Руль молчит", td.lamps(11_501, null, emptyList(), Link.CONNECTED, false).single { it.id == TellTales.LINK }.text)
+        td.restartStreams()                                                       // a new connection: its boot lines alone are not it
+        td.onDash(12_000); td.onDash(12_200)
+        assertEquals("Руль молчит", td.lamps(13_000, null, emptyList(), Link.CONNECTED, false).single { it.id == TellTales.LINK }.text)
     }
 
     @Test fun helpers() {

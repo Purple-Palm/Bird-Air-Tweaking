@@ -181,10 +181,11 @@ object Dial {
         Modes.name(t.mode),
     ).joinToString(" · ")
 
-    /** «180 Вт тяга», «150 Вт рекуп.»; standing still, the watts alone. */
+    /** «180 Вт тяга», «150 Вт рекуп.», «3 Вт накат»; standing still, the watts alone. */
     fun powerText(p: Double?, flow: Flow): String {
         val label = when (flow) {
             Flow.DRIVE -> "тяга"
+            Flow.COAST -> "накат"
             Flow.REGEN -> "рекуп."
             Flow.CHARGE -> "зарядка"
             Flow.INTO -> "в батарею"

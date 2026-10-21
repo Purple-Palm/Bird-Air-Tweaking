@@ -1,6 +1,7 @@
 package io.github.purplepalm.birdair.wear
 
 import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.core.PowerState
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
 import io.github.purplepalm.birdair.core.TellTales
@@ -134,11 +135,13 @@ object Arc {
     }
 }
 
-/** The page's flowState(): what the energy is doing, from current, power and speed. */
+/** The page's flowState(): what the energy is doing, from current, power and speed; riding, the phone's [PowerState]
+ *  (with its deadband: coasting at −0.2 A is «накат», not «рекуперация»). */
 enum class Flow(val label: String, val tone: Long) {
     NONE("нет данных", Palette.MUTED),
     IDLE("стоит", Palette.MUTED),
     DRIVE("тяга", Palette.DRAW),
+    COAST("накат", Palette.MUTED),
     REGEN("рекуперация", Palette.FLOW),
     CHARGE("зарядка", Palette.FLOW),
     INTO("в батарею", Palette.FLOW);
@@ -147,6 +150,9 @@ enum class Flow(val label: String, val tone: Long) {
         /** [fast]: judge by the fast current and power ([PowerView]), as the gauge shows them. */
         fun of(t: Telemetry, fast: Boolean = false): Flow {
             val i = PowerView.amps(t, fast); val spd = t.speedKmh; val p = PowerView.watts(t, fast)
+            t.powerState?.let { s ->
+                if (spd != null && spd > 1) return when (s) { PowerState.TRACTION -> DRIVE; PowerState.COAST -> COAST; PowerState.REGEN -> REGEN }
+            }
             if (i == null && p == null && spd == null) return NONE
             val into = if (i != null) i < -0.15 else (p != null && p < -5)
             if (into) return when { spd != null && spd > 1 -> REGEN; spd != null -> CHARGE; else -> INTO }

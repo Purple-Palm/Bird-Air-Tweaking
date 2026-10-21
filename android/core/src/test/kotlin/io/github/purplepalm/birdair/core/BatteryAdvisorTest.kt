@@ -118,8 +118,18 @@ class BatteryAdvisorTest {
             val st = replay(path)
             val low = first(st, BatteryAdvisor.LOW, false)!!
             assertTrue(cut - low >= 5 * 60_000, "$path: «Заряд на исходе» ${(cut - low) / 1000} s before")
-            assertTrue(cut - first(st, BatteryAdvisor.HOT, true)!! >= 5 * 60_000, path)
         }
+        // two-up both were hot (61 / 58 °C)
+        for (path in listOf(RideLogs.CUTOFF_HOT, RideLogs.CUTOFF))
+            assertTrue(RideLogs.CUTOFF_T.getValue(path) - first(replay(path), BatteryAdvisor.HOT, true)!! >= 5 * 60_000, path)
+        // 20.10, the BMS's under-voltage cutoff solo (31.24 V at 7.7 A, BMS 5 %, ≤ 50 °C): «Сейчас отключится» 2.6 min
+        // before, active at the cutoff; «перегрета» not needed and not lit
+        val zero = replay(RideLogs.TO_ZERO)
+        val zeroCut = RideLogs.CUTOFF_T.getValue(RideLogs.TO_ZERO)
+        val zeroCrit = first(zero, BatteryAdvisor.LOW, true)!!
+        assertTrue(zeroCut - zeroCrit in 120_000..180_000, "«Сейчас отключится» ${(zeroCut - zeroCrit) / 1000} s before")
+        assertEquals(BatteryAdvisor.LOW to WarningLevel.CRITICAL, zero.last { it.t <= zeroCut }.ws.first().let { it.id to it.level })
+        assertNull(first(zero, BatteryAdvisor.HOT, true))
         // 19.10, the low-voltage cutoff: «Сейчас отключится» ≥ 1 min before, active at the cutoff (a re-sent log may
         // go on after it, cooling down)
         val cut = RideLogs.CUTOFF_T.getValue(RideLogs.CUTOFF)
