@@ -87,5 +87,13 @@ enum class SmoothPref(val key: String, val label: String) {
     }
 }
 
-/** The watch's own settings (SharedPreferences "bal.wear"). */
-data class WatchPrefs(val keepOn: Boolean = true, val smooth: SmoothPref = SmoothPref.PHONE)
+/**
+ * The watch's own settings (SharedPreferences "bal.wear", see [Settings]). [overspeedOn] / [overspeedMph]: vibrate
+ * without a stop while faster than this ([OverspeedAlarm]), on at 16 mph by default.
+ */
+data class WatchPrefs(
+    val keepOn: Boolean = true,
+    val smooth: SmoothPref = SmoothPref.PHONE,
+    val overspeedOn: Boolean = true,
+    val overspeedMph: Double = OverspeedPref.DEFAULT_MPH,
+)

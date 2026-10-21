@@ -1,23 +1,17 @@
 package io.github.purplepalm.birdair.wear
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
@@ -32,57 +26,75 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.layout.AlignmentLine
+import androidx.compose.ui.layout.FirstBaseline
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeTextDefaults
-import io.github.purplepalm.birdair.core.BatteryWarning
+import io.github.purplepalm.birdair.core.Lamp
+import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
-import io.github.purplepalm.birdair.core.WarningLevel
+import io.github.purplepalm.birdair.core.TellTales
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /*
- * The gauge, laid out on a 240-unit round design grid scaled to the screen (≈ 240 dp on the 480 px
- * Galaxy Watch Ultra): the power arc along the edge, the time (or what is wrong with the data, or the phone's
- * battery warning) at the top, the speed in the middle, battery and mode under it with the range below, the power
- * value in the gap at the bottom where the arc ends (±135° from 12 o'clock).
+ * The dial, like a car cluster (mock3.html, approved): the power arc along the edge, inside it the thin speed track
+ * with the dot («ириска») and the mode's limit, the battery with its fine % in the centre, the range, «V · °C · MODE»,
+ * the top lamp's line and the power under it; 12 tell-tales in two columns along the edges (TellTales.IDS: the right
+ * column top to bottom, then the left). Laid out on the 240-unit grid of [Dial], scaled to the screen.
  */
 
-/** Design units → dp / sp. Text sizes follow the screen, not the font scale: the gauge is a fixed drawing. */
+/** Design units → dp / sp. Text sizes follow the screen, not the font scale: the dial is a fixed drawing. */
 private class Grid(val unit: Dp, val density: Density) {
     fun dp(n: Float): Dp = unit * n
     fun sp(n: Float): TextUnit = with(density) { (unit * n).toSp() }
 }
 
-/** Places the child centred horizontally with its vertical centre at [y] of 240 units. */
+/** Places the child centred horizontally with its vertical centre at [y] of the grid. */
 private fun Modifier.centreAt(y: Float): Modifier = layout { m, c ->
     val p = m.measure(c.copy(minWidth = 0, minHeight = 0))
     layout(c.maxWidth, c.maxHeight) {
-        p.place((c.maxWidth - p.width) / 2, (c.maxHeight * y / 240f - p.height / 2f).roundToInt())
+        p.place((c.maxWidth - p.width) / 2, (c.maxHeight * y / Dial.GRID - p.height / 2f).roundToInt())
+    }
+}
+
+/** Places the child centred horizontally with its first baseline at [y] of the grid (the mock's text y). */
+private fun Modifier.baselineAt(y: Float): Modifier = layout { m, c ->
+    val p = m.measure(c.copy(minWidth = 0, minHeight = 0))
+    val b = p[FirstBaseline].takeIf { it != AlignmentLine.Unspecified } ?: p.height
+    layout(c.maxWidth, c.maxHeight) {
+        p.place((c.maxWidth - p.width) / 2, (c.maxHeight * y / Dial.GRID - b).roundToInt())
     }
 }
 
 private val TNUM = TextStyle(fontFeatureSettings = "tnum")
 
 /**
- * [target] (the arc's fraction) as it is drawn: with [smooth], eased towards each new value on every frame by a
+ * [target] (a fraction of a scale) as it is drawn: with [smooth], eased towards each new value on every frame by a
  * critically damped [Spring] (no overshoot, 95 % in [Spring.SETTLE_MS]); without, it jumps. Read the State
  * inside a draw lambda: then only the canvas redraws per frame, nothing recomposes.
  */
@@ -115,80 +127,105 @@ fun rememberSpring(target: Float, smooth: Boolean): State<Float> {
     return shown
 }
 
-/** Vertical centres of the gauge's lines on the 240-unit grid. */
-private object Rows {
-    const val STATUS = 46f
-    const val SPEED = 98f
-    const val UNIT = 143f
-    const val BATTERY = 166f
-    const val RANGE = 185f
-    const val POWER = 202f
-    const val FLOW = 220f
+/** The red lamps' ~1 Hz ([Blink]): lit first, then dark and lit by turns while [enabled]; lit otherwise. */
+@Composable
+private fun rememberBlink(enabled: Boolean): State<Boolean> {
+    val on = remember { mutableStateOf(true) }
+    LaunchedEffect(enabled) {
+        on.value = true
+        if (!enabled) return@LaunchedEffect
+        var since = 0L
+        while (true) {
+            delay(Blink.HALF_MS)
+            since += Blink.HALF_MS
+            on.value = Blink.on(since)
+        }
+    }
+    return on
 }
 
-/** [smooth]: the arc eases (see [rememberSpring]); ambient always jumps (one update a second at most). */
+/**
+ * [smooth]: the power arc and the speed dot ease (see [rememberSpring]); ambient always jumps (one update a second at
+ * most), shows no glow and no blink, outlines only.
+ */
 @Composable
 fun GaugeScreen(s: Screen, ambient: AmbientState?, smooth: Boolean = true) {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val side = minOf(maxWidth, maxHeight)
-        val g = Grid(side / 240f, LocalDensity.current)
+        val g = Grid(side / Dial.GRID, LocalDensity.current)
         val amb = ambient != null
+        val lowBit = ambient?.lowBit == true
         val shift = if (ambient?.burnIn == true) BurnIn.offset(ambient.tick) else 0f to 0f
         val t = s.t
         val live = s.health.live
         val watts = if (live) PowerView.watts(t, s.fast) else null
         // old power is not shown as power: the arc rests at zero unless the data is live (as on the phone)
-        val frac = rememberSpring(if (live) Arc.fraction(watts, t.peakW) else 0f, smooth && !amb)
-        // a warning on old data is not news: the line at the top says what is wrong with the data instead
-        val warning = if (live) Warnings.top(t.warnings) else null
+        val power = rememberSpring(if (live) Arc.fraction(watts, t.peakW) else 0f, smooth && !amb)
+        val speedF = Dial.speedFraction(t.speedKmh, t.units)
+        val speed = rememberSpring(speedF ?: 0f, smooth && !amb)
+        val lamps = Cluster.lamps(t)
+        val bulb = s.bulb && !amb
+        val shown = if (bulb) TellTales.bulbCheck() else lamps
+        val blink = rememberBlink(!amb && !bulb && shown.any { Lamps.blinks(it.level) })
+        val msg = Dial.message(lamps, bulb)
         Box(Modifier.size(side).offset(shift.first.dp, shift.second.dp)) {
             Box(Modifier.fillMaxSize().alpha(s.health.alpha)) {
-                PowerArc({ frac.value }, amb, Modifier.fillMaxSize(), tint = warning?.let { Warnings.argb(it.level) })
-                Speed(t, amb, g)
-                Text(
-                    Fmt.speedUnit(t.units),
-                    Modifier.centreAt(Rows.UNIT),
-                    color = argb(if (amb) Palette.AMB_DIM else Palette.INK2),
-                    fontSize = g.sp(14f),
+                Tracks(
+                    TrackState(power, speed, speedF != null, Dial.dotLabel(t.speedKmh, t.units), Dial.limitFraction(t.mode, t.units),
+                        Dial.ticks(t.units), s.overspeed && live),
+                    amb, lowBit, Modifier.fillMaxSize(),
                 )
-                BatteryAndMode(t, amb, g, Modifier.centreAt(Rows.BATTERY))
-                RangeLine(t, amb, g, Modifier.centreAt(Rows.RANGE))
-                Power(t, watts, s.fast, live, amb, g)
+                CentreBattery(t, lamps, amb, lowBit, Modifier.fillMaxSize())
+                Lines(t, watts, s.fast, live, msg, amb, g)
             }
-            if (warning != null) WarningBanner(warning, amb, g, Modifier.centreAt(Rows.STATUS))
-            else StatusLine(s.health, amb, g, Modifier.centreAt(Rows.STATUS))
+            // the check is the watch's own, at full strength even on old data
+            LampColumns(shown, blink, amb, lowBit, Modifier.fillMaxSize().alpha(if (bulb) 1f else s.health.alpha))
+            StatusLine(s.health, amb, g)
         }
     }
 }
 
-/**
- * The arc: faint ±135° track (tinted amber / red by [tint] while a battery warning is on), ticks at 0, ±50 % and
- * the ends, then the value from 12 o'clock (see [Arc.bar]). [fraction] is read while drawing.
- */
+private class TrackState(
+    val power: State<Float>,
+    val speed: State<Float>,
+    val hasSpeed: Boolean,
+    val dot: String?,
+    val limit: Float?,
+    val ticks: List<Float>,
+    val over: Boolean,
+)
+
+/** The power arc and the speed track in one canvas; the springs are read while drawing. */
 @Composable
-fun PowerArc(fraction: () -> Float, ambient: Boolean, modifier: Modifier = Modifier, tint: Long? = null) {
-    Canvas(modifier) {
-        val f = fraction()
-        val colour = argb(Arc.colorFor(f.toDouble()))
-        val u = size.minDimension / 240f
-        val band = BAND * u
-        val r = size.minDimension / 2 - EDGE * u - band / 2
-        val tl = Offset(center.x - r, center.y - r)
-        val sz = Size(2 * r, 2 * r)
-        val (ts, tw) = Arc.track
-        if (ambient) drawArc(argb(Palette.AMB_LINE), ts, tw, false, tl, sz, style = Stroke(1.2f * u, cap = StrokeCap.Round))
-        else {
-            val track = if (tint != null) argb(tint).copy(alpha = TINT_ALPHA) else argb(Palette.HAIR)
-            drawArc(track, ts, tw, false, tl, sz, style = Stroke(band, cap = StrokeCap.Round))
-        }
-        ticks(r - band / 2, u, ambient)
-        val w = if (ambient) 3.5f * u else band
-        Arc.bar(f, Math.toDegrees((w / 2 / r).toDouble()).toFloat())?.let { b ->
-            // a soft halo under the bar, then the bar; one filled outline each, so the halo has no darker overlap
-            if (!ambient) drawPath(barPath(r, w + 9f * u, b), colour.copy(alpha = 0.18f))
-            drawPath(barPath(r, w, b), colour)
-        }
+private fun Tracks(st: TrackState, ambient: Boolean, lowBit: Boolean, modifier: Modifier) {
+    val measurer = rememberTextMeasurer()
+    Canvas(modifier.graphicsLayer()) {
+        val u = size.minDimension / Dial.GRID
+        powerArc(st.power.value, u, ambient, lowBit)
+        speedTrack(st, u, ambient, lowBit, measurer)
     }
+}
+
+/**
+ * The outer arc: the ±135° track, the value from 12 o'clock (traction clockwise, regen counter-clockwise, see
+ * [Arc.bar]), the white zero tick on top.
+ */
+private fun DrawScope.powerArc(f: Float, u: Float, ambient: Boolean, lowBit: Boolean) {
+    val r = Dial.POWER_R * u
+    val tl = Offset(center.x - r, center.y - r)
+    val sz = Size(2 * r, 2 * r)
+    val (ts, tw) = Arc.track
+    if (ambient) drawArc(argb(Palette.AMB_LINE), ts, tw, false, tl, sz, style = Stroke(1.2f * u, cap = StrokeCap.Round))
+    else drawArc(argb(Palette.POWER_TRACK), ts, tw, false, tl, sz, style = Stroke(Dial.POWER_W * u, cap = StrokeCap.Round))
+    val w = if (ambient) 3.5f * u else Dial.POWER_W * u
+    val colour = argb(if (ambient && lowBit) Palette.AMB_INK else Arc.colorFor(f.toDouble()))
+    Arc.bar(f, Math.toDegrees((w / 2 / r).toDouble()).toFloat())?.let { drawPath(barPath(r, w, it), colour) }
+    drawLine(
+        argb(if (ambient) Palette.AMB_DIM else Palette.INK),
+        Offset(center.x, center.y - Dial.ZERO_TICK_OUT * u),
+        Offset(center.x, center.y - Dial.ZERO_TICK_IN * u),
+        strokeWidth = Dial.ZERO_TICK_W * u,
+    )
 }
 
 /** [b] as an outline [width] wide on radius [r]: square at 12 o'clock, a half-disc tip past the body. */
@@ -205,155 +242,199 @@ private fun DrawScope.barPath(r: Float, width: Float, b: Arc.Bar): Path = Path()
     close()
 }
 
-private const val EDGE = 3f
-private const val BAND = 13f
-/** The warning colour on the track: visible at a glance, still well under the bar itself. */
-private const val TINT_ALPHA = 0.32f
-private val TICKS = floatArrayOf(0f, 67.5f, -67.5f, 135f, -135f)
+/** A line across the radius at clock angle [deg], from [r1] to [r2] grid units. */
+private fun DrawScope.radial(r1: Float, r2: Float, deg: Float, c: Color, width: Float, u: Float) {
+    val (x1, y1) = Dial.point(r1, deg)
+    val (x2, y2) = Dial.point(r2, deg)
+    drawLine(c, Offset(x1 * u, y1 * u), Offset(x2 * u, y2 * u), strokeWidth = width * u)
+}
 
-private fun DrawScope.ticks(inner: Float, u: Float, ambient: Boolean) {
-    for (deg in TICKS) {
-        val zero = deg == 0f
-        val a = Math.toRadians((Arc.ZERO_DEG + deg).toDouble())
-        val r1 = inner - (if (zero) 9f else 6f) * u
-        val r2 = inner - 2.5f * u
-        val c = if (ambient) argb(Palette.AMB_DIM) else argb(if (zero) Palette.INK2 else Palette.BASE)
-        drawLine(
-            c,
-            Offset(center.x + r1 * cos(a).toFloat(), center.y + r1 * sin(a).toFloat()),
-            Offset(center.x + r2 * cos(a).toFloat(), center.y + r2 * sin(a).toFloat()),
-            strokeWidth = (if (zero) 2f else 1.4f) * u,
-            cap = StrokeCap.Round,
+/** The thin speed track: ticks, the mode's limit in red, the passed part and the dot with the speed in it. */
+private fun DrawScope.speedTrack(st: TrackState, u: Float, ambient: Boolean, lowBit: Boolean, measurer: TextMeasurer) {
+    val r = Dial.SPEED_R * u
+    val tl = Offset(center.x - r, center.y - r)
+    val sz = Size(2 * r, 2 * r)
+    val start = Dial.composeDeg(Dial.START_DEG)
+    val line = (if (ambient) 1f else Dial.SPEED_W) * u
+    drawArc(argb(if (ambient) Palette.AMB_LINE else Palette.SPEED_TRACK), start, Dial.SPAN_DEG, false, tl, sz, style = Stroke(line, cap = StrokeCap.Round))
+    if (!ambient) for (f in st.ticks) radial(Dial.SPEED_R - Dial.TICK_HALF, Dial.SPEED_R + Dial.TICK_HALF, Dial.speedDeg(f), argb(Palette.SPEED_TICK), Dial.TICK_W, u)
+    st.limit?.let {
+        val c = argb(if (ambient) (if (lowBit) Palette.AMB_DIM else Palette.LIMIT) else Palette.LIMIT)
+        radial(Dial.SPEED_R - Dial.LIMIT_HALF, Dial.SPEED_R + Dial.LIMIT_HALF, Dial.speedDeg(it), c, Dial.LIMIT_W, u)
+    }
+    if (!st.hasSpeed) return
+    val f = st.speed.value.coerceIn(0f, 1f)
+    val sweep = Dial.SPAN_DEG * f
+    if (sweep > 0.3f) drawArc(argb(if (ambient) Palette.AMB_DIM else Palette.MUTED), start, sweep, false, tl, sz, style = Stroke(line, cap = StrokeCap.Round))
+    val (gx, gy) = Dial.point(Dial.SPEED_R, Dial.speedDeg(f))
+    val c = Offset(gx * u, gy * u)
+    val dotR = Dial.DOT_R * u
+    val ink: Color
+    if (ambient) {
+        val col = argb(if (st.over && !lowBit) Palette.LAMP_RED else Palette.AMB_INK)
+        drawCircle(Color.Black, dotR, c)
+        drawCircle(col, dotR, c, style = Stroke(0.8f * u))
+        ink = col
+    } else {
+        // overspeed vibration on: the dot turns red with a halo
+        if (st.over) drawCircle(argb(Palette.LAMP_RED).copy(alpha = 0.3f), dotR + 3f * u, c)
+        drawCircle(argb(if (st.over) Palette.LAMP_RED else Palette.INK), dotR, c)
+        ink = if (st.over) Color.White else Color.Black
+    }
+    val label = st.dot ?: return
+    val layout = measurer.measure(label, TNUM.copy(fontSize = (Dial.DOT_FONT * u).toSp(), fontWeight = FontWeight.Bold))
+    // the mock's baseline: 2 units under the dot's centre
+    drawText(layout, ink, Offset(c.x - layout.size.width / 2f, c.y + 2f * u - layout.firstBaseline))
+}
+
+/** The battery in the centre: body and nub, the fill in the battery's colour, «56,3 %» over it with a dark halo. */
+@Composable
+private fun CentreBattery(t: Telemetry, lamps: List<Lamp>, ambient: Boolean, lowBit: Boolean, modifier: Modifier) {
+    val measurer = rememberTextMeasurer()
+    val text = Dial.pctText(t)
+    val pct = Dial.pct(t)
+    val tone = Dial.toneArgb(Dial.batteryTone(t, lamps))
+    Canvas(modifier) {
+        val u = size.minDimension / Dial.GRID
+        val outline = argb(if (ambient) Palette.AMB_DIM else Palette.INK2)
+        val body = if (ambient) Stroke(1.2f * u) else Stroke(Dial.BODY_LINE * u)
+        drawRoundRect(outline, Offset(Dial.BODY_X * u, Dial.BODY_Y * u), Size(Dial.BODY_W * u, Dial.BODY_H * u), CornerRadius(Dial.BODY_RX * u), style = body)
+        drawRoundRect(
+            outline, Offset(Dial.NUB_X * u, Dial.NUB_Y * u), Size(Dial.NUB_W * u, Dial.NUB_H * u), CornerRadius(Dial.NUB_RX * u),
+            style = if (ambient) Stroke(1f * u) else Fill,
         )
+        val fw = Dial.fillWidth(pct)
+        if (fw > 0f) {
+            val at = Offset(Dial.FILL_X * u, Dial.FILL_Y * u)
+            val fs = Size(fw * u, Dial.FILL_H * u)
+            val rx = CornerRadius(minOf(Dial.FILL_RX, fw / 2) * u)
+            if (ambient) drawRoundRect(argb(if (lowBit) Palette.AMB_INK else tone), at, fs, rx, style = Stroke(1f * u))
+            else drawRoundRect(argb(tone), at, fs, rx, alpha = Dial.FILL_ALPHA)
+        }
+        val layout = pctLayout(measurer, text, u)
+        val at = Offset(Dial.PCT_X * u - layout.size.width / 2f, Dial.PCT_Y * u - layout.firstBaseline)
+        if (ambient) {
+            drawText(layout, argb(Palette.AMB_INK), at, drawStyle = Stroke(0.6f * u))
+        } else {
+            // the mock's paint-order stroke: the halo first, the fill over it (Fill explicitly: the paint keeps the stroke)
+            drawText(layout, Color.Black, at, drawStyle = Stroke(Dial.PCT_HALO * u, join = StrokeJoin.Round))
+            drawText(layout, Color.White, at, drawStyle = Fill)
+        }
     }
 }
 
+/** «56,3 %» at [Dial.PCT_FONT], smaller when it would not fit the battery. */
+private fun DrawScope.pctLayout(measurer: TextMeasurer, text: String, u: Float): TextLayoutResult {
+    val style = TNUM.copy(fontSize = (Dial.PCT_FONT * u).toSp(), fontWeight = FontWeight.Bold)
+    val first = measurer.measure(text, style, softWrap = false, maxLines = 1)
+    val max = Dial.PCT_MAX_W * u
+    if (first.size.width <= max) return first
+    return measurer.measure(text, style.copy(fontSize = (Dial.PCT_FONT * u * max / first.size.width).toSp()), softWrap = false, maxLines = 1)
+}
+
+/** Under the battery: the range, «V · °C · MODE», the top lamp's line, the power. */
 @Composable
-private fun Speed(t: Telemetry, ambient: Boolean, g: Grid) {
-    val (whole, tail) = Fmt.speedParts(t.speedKmh, t.units)
-    val text = buildAnnotatedString {
-        append(whole)
-        withStyle(SpanStyle(fontSize = g.sp(32f), fontWeight = if (ambient) FontWeight.Light else FontWeight.Normal)) { append(tail) }
+private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, msg: Dial.Message?, ambient: Boolean, g: Grid) {
+    Dial.rangeText(t.range, t.units)?.let {
+        Text(
+            it,
+            Modifier.baselineAt(Dial.RANGE_Y).widthIn(max = g.dp(140f)),
+            color = argb(if (ambient) Palette.AMB_INK else if (RangeText.rough(t.range)) Palette.MUTED else Palette.INK),
+            style = TNUM.copy(fontSize = g.sp(Dial.RANGE_FONT), fontWeight = FontWeight.Medium),
+            maxLines = 1,
+        )
     }
+    val details = Dial.detailsText(t)
+    if (details.isNotEmpty()) {
+        Text(
+            details,
+            Modifier.baselineAt(Dial.DETAILS_Y).widthIn(max = g.dp(150f)),
+            color = argb(if (ambient) Palette.AMB_DIM else Palette.MUTED),
+            style = TNUM.copy(fontSize = g.sp(Dial.DETAILS_FONT)),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    if (msg != null) {
+        Text(
+            msg.text,
+            Modifier.baselineAt(Dial.MSG_Y).widthIn(max = g.dp(Dial.MSG_MAX_W)),
+            color = argb(if (ambient) Palette.AMB_INK else msg.argb),
+            fontSize = g.sp(Dial.MSG_FONT),
+            fontWeight = if (ambient) FontWeight.Normal else FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    val flow = if (live) Flow.of(t, fast) else Flow.NONE
     Text(
-        text,
-        Modifier.centreAt(Rows.SPEED),
-        color = argb(if (ambient) Palette.AMB_INK else Palette.INK),
-        style = TNUM.copy(
-            fontSize = g.sp(88f),
-            fontWeight = if (ambient) FontWeight.Light else FontWeight.Medium,
-            drawStyle = if (ambient) Stroke(width = with(g.density) { g.dp(1.3f).toPx() }) else null,
-        ),
+        Dial.powerText(watts, flow),
+        Modifier.baselineAt(if (msg != null) Dial.POWER_Y else Dial.POWER_ALONE_Y),
+        color = argb(if (ambient) Palette.AMB_INK else Dial.powerArgb(watts)),
+        style = TNUM.copy(fontSize = g.sp(Dial.POWER_FONT)),
         maxLines = 1,
-        softWrap = false,
     )
 }
 
+/**
+ * The 12 tell-tales. Off: dim; lit: their colour on a soft disc; RED ones blink with [blink]; the temperature's ▲ while
+ * it climbs fast. Ambient: lit ones only, outlined, steady, no disc.
+ */
 @Composable
-private fun BatteryAndMode(t: Telemetry, ambient: Boolean, g: Grid, modifier: Modifier) {
-    val level = Battery.level(t)
-    val mode = Modes.name(t.mode)
-    // «Заряд на исходе» makes the battery amber at least, whatever % the BMS still claims
-    val tone = Warnings.batteryTone(level?.pct, t.warnings)
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        BatteryBar(level?.pct, tone, ambient, Modifier.size(g.dp(27f), g.dp(12f)))
-        Spacer(Modifier.width(g.dp(5f)))
-        Text(
-            Fmt.pct(level),
-            color = argb(if (ambient) Palette.AMB_INK else tone.ink),
-            style = TNUM.copy(fontSize = g.sp(17f), fontWeight = FontWeight.Medium),
-            maxLines = 1,
-        )
-        if (mode != null) {
-            Spacer(Modifier.width(g.dp(9f)))
-            Box(
-                Modifier
-                    .border(g.dp(1.6f), argb(if (ambient) Palette.AMB_DIM else Modes.argb(t.mode)), RoundedCornerShape(50))
-                    .padding(horizontal = g.dp(7f), vertical = g.dp(1.5f)),
-            ) {
-                Text(
-                    mode,
-                    color = argb(if (ambient) Palette.AMB_INK else Palette.INK),
-                    fontSize = g.sp(12.5f),
-                    fontWeight = if (ambient) FontWeight.Normal else FontWeight.Bold,
-                    letterSpacing = 0.6.sp,
-                    maxLines = 1,
-                )
+private fun LampColumns(lamps: List<Lamp>, blink: State<Boolean>, ambient: Boolean, lowBit: Boolean, modifier: Modifier) {
+    val paths = remember { Glyphs.BY_ID.mapValues { (_, gs) -> gs.map { PathParser().parsePathString(it.d).toPath() } } }
+    val byId = lamps.associateBy { it.id }
+    Canvas(modifier.graphicsLayer()) {
+        val u = size.minDimension / Dial.GRID
+        val on = blink.value
+        val half = Dial.ICON * u / 2
+        val scale = Dial.ICON * u / Glyphs.BOX
+        TellTales.IDS.forEachIndexed { k, id ->
+            val lamp = byId[id]
+            val level = Lamps.shown(lamp?.level ?: LampLevel.OFF, on, ambient)
+            if (ambient && level == LampLevel.OFF) return@forEachIndexed
+            val (gx, gy) = Dial.lampCentre(k)
+            val c = Offset(gx * u, gy * u)
+            val colour = argb(if (level == LampLevel.OFF) Palette.LAMP_OFF else if (ambient && lowBit) Palette.AMB_INK else Lamps.argb(level))
+            if (!ambient && level != LampLevel.OFF) drawCircle(colour.copy(alpha = Dial.GLOW_ALPHA), Dial.GLOW_R * u, c)
+            val glyphs = Glyphs.BY_ID.getValue(id)
+            val ps = paths.getValue(id)
+            withTransform({ translate(c.x - half, c.y - half); scale(scale, scale, Offset.Zero) }) {
+                for (i in glyphs.indices) {
+                    val gl = glyphs[i]
+                    val style = if (gl.fill && !ambient) Fill else Stroke(
+                        width = if (gl.fill) 1.2f else gl.width * (if (ambient) 0.8f else 1f),
+                        cap = if (gl.roundCap) StrokeCap.Round else StrokeCap.Butt,
+                        join = if (gl.roundJoin) StrokeJoin.Round else StrokeJoin.Miter,
+                    )
+                    drawPath(ps[i], colour, style = style)
+                }
+            }
+            if (lamp?.rising == true && level != LampLevel.OFF) {
+                val tri = Path().apply {
+                    Glyphs.RISING.forEachIndexed { j, (dx, dy) ->
+                        val x = c.x + dx * u; val y = c.y + dy * u
+                        if (j == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                drawPath(tri, colour, style = if (ambient) Stroke(0.8f * u, join = StrokeJoin.Round) else Fill)
             }
         }
     }
 }
 
-/** Outline with a nub; the fill in the tone colour (green / amber / red), a thin line only in ambient. */
-@Composable
-private fun BatteryBar(pct: Double?, batteryTone: BatteryTone, ambient: Boolean, modifier: Modifier) {
-    val tone = argb(batteryTone.argb)
-    Canvas(modifier) {
-        val u = size.height / 12f
-        val nub = 2f * u
-        val w = size.width - nub
-        val line = 1.3f * u
-        val outline = argb(if (ambient) Palette.AMB_DIM else Palette.MUTED)
-        drawRoundRect(outline, Offset(line / 2, line / 2), Size(w - line, size.height - line), CornerRadius(2.5f * u), style = Stroke(line))
-        drawRoundRect(outline, Offset(w, size.height * 0.32f), Size(nub, size.height * 0.36f), CornerRadius(u))
-        val f = ((pct ?: 0.0) / 100).coerceIn(0.0, 1.0).toFloat()
-        if (pct == null) return@Canvas
-        val inset = 2.6f * u
-        // a sliver stays visible down to 0 %: the red of an empty battery must show
-        val fw = maxOf((w - 2 * inset) * f, 1.6f * u)
-        if (ambient) {
-            drawLine(argb(Palette.AMB_INK), Offset(inset, size.height / 2), Offset(inset + fw, size.height / 2), strokeWidth = 1.5f * u, cap = StrokeCap.Round)
-        } else {
-            drawRoundRect(tone, Offset(inset, inset), Size(fw, size.height - 2 * inset), CornerRadius(1.2f * u))
-        }
-    }
-}
-
-/** «запас ≈4,2 км» under the battery, when the phone sends a range; dimmer while it is only the default guess. */
-@Composable
-private fun RangeLine(t: Telemetry, ambient: Boolean, g: Grid, modifier: Modifier) {
-    val text = RangeText.line(t.range, t.units) ?: return
-    Text(
-        text,
-        modifier,
-        color = argb(if (ambient) Palette.AMB_DIM else if (RangeText.rough(t.range)) Palette.MUTED else Palette.INK2),
-        style = TNUM.copy(fontSize = g.sp(11.5f), fontWeight = FontWeight.Medium),
-        maxLines = 1,
-    )
-}
-
-/** [p]: the watts the arc shows (fast or BMS, see [PowerView]); null when the data is not live. */
-@Composable
-private fun Power(t: Telemetry, p: Double?, fast: Boolean, live: Boolean, ambient: Boolean, g: Grid) {
-    val flow = if (live) Flow.of(t, fast) else Flow.NONE
-    Text(
-        Fmt.watts(p),
-        Modifier.centreAt(Rows.POWER),
-        color = argb(if (ambient) Palette.AMB_INK else if (p == null || p == 0.0) Palette.INK2 else Arc.colorFor(p)),
-        style = TNUM.copy(fontSize = g.sp(21f), fontWeight = if (ambient) FontWeight.Normal else FontWeight.Bold),
-        maxLines = 1,
-    )
-    Text(
-        flow.label,
-        Modifier.centreAt(Rows.FLOW),
-        color = argb(if (ambient) Palette.AMB_DIM else flow.tone),
-        fontSize = g.sp(11.5f),
-        letterSpacing = 0.4.sp,
-        maxLines = 1,
-    )
-}
-
 /** Top line: what is wrong with the data, or the time when all is live. Not dimmed with the values. */
 @Composable
-private fun StatusLine(h: Health, ambient: Boolean, g: Grid, modifier: Modifier) {
+private fun StatusLine(h: Health, ambient: Boolean, g: Grid) {
     val label = h.gaugeLabel
     if (label != null) {
         Text(
             label,
-            modifier.widthIn(max = g.dp(140f)),
+            Modifier.centreAt(Dial.STATUS_Y).widthIn(max = g.dp(Dial.STATUS_MAX_W)),
             color = argb(if (ambient) Palette.AMB_INK else h.tone),
-            fontSize = g.sp(12.5f),
-            lineHeight = g.sp(15f),
+            fontSize = g.sp(Dial.STATUS_FONT),
+            lineHeight = g.sp(11.5f),
             fontWeight = FontWeight.Medium,
             textAlign = TextAlign.Center,
             maxLines = 2,
@@ -362,40 +443,10 @@ private fun StatusLine(h: Health, ambient: Boolean, g: Grid, modifier: Modifier)
         val time = TimeTextDefaults.timeSource(TimeTextDefaults.timeFormat()).currentTime
         Text(
             time,
-            modifier,
+            Modifier.baselineAt(Dial.CLOCK_Y),
             color = argb(if (ambient) Palette.AMB_DIM else Palette.MUTED),
-            style = TNUM.copy(fontSize = g.sp(14f), fontWeight = FontWeight.Medium),
+            style = TNUM.copy(fontSize = g.sp(Dial.CLOCK_FONT)),
             maxLines = 1,
-        )
-    }
-}
-
-/**
- * The phone's top battery warning in place of the time: a pill inside the arc, amber for WARNING, red for CRITICAL
- * (the arc's track takes the same colour). Not dimmed with the values. The value (volts, °C) is on the details page.
- */
-@Composable
-private fun WarningBanner(w: BatteryWarning, ambient: Boolean, g: Grid, modifier: Modifier) {
-    val crit = w.level == WarningLevel.CRITICAL
-    val shape = RoundedCornerShape(50)
-    val line = argb(if (ambient) Palette.AMB_DIM else Warnings.argb(w.level))
-    val fill = if (ambient) Color.Black else argb(Warnings.argb(w.level)).copy(alpha = if (crit) 0.34f else 0.2f)
-    Box(
-        modifier
-            // the round ends stay inside the arc band at this height up to ~140 units wide
-            .widthIn(max = g.dp(136f))
-            .background(fill, shape)
-            .border(g.dp(1.4f), line, shape)
-            .padding(horizontal = g.dp(7f), vertical = g.dp(2.5f)),
-    ) {
-        Text(
-            Warnings.text(w),
-            color = argb(if (ambient) Palette.AMB_INK else if (crit) Palette.INK else Warnings.ink(w.level)),
-            fontSize = g.sp(11.5f),
-            fontWeight = if (ambient) FontWeight.Normal else FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
     }
 }

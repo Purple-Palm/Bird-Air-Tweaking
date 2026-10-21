@@ -3,6 +3,7 @@ package io.github.purplepalm.birdair.wear
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
+import io.github.purplepalm.birdair.core.TellTales
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
@@ -24,7 +25,19 @@ object Palette {
     const val MODE_TAKE = 0xFF9AA5A1
     const val MODE_GLIDE = 0xFFF0BF2A
     const val MODE_FLY = 0xFFEF5A5A
-    // ambient: greys only, the power arc keeps a thin line of its colour
+    // the dial (mock3.html): tracks, the mode-limit tick, the dot
+    const val POWER_TRACK = 0xFF1D2422
+    const val SPEED_TRACK = 0xFF262E2B
+    const val SPEED_TICK = 0xFF4B5451
+    const val LIMIT = 0xFFE3324A
+    // lamps: off, then lit by level
+    const val LAMP_OFF = 0xFF2C3532
+    const val LAMP_GREEN = 0xFF2ECC40
+    const val LAMP_BLUE = 0xFF4AA3FF
+    const val LAMP_YELLOW = 0xFFFFE14D
+    const val LAMP_AMBER = 0xFFFFB020
+    const val LAMP_RED = 0xFFFF3B30
+    // ambient: greys only, the power arc and lit lamps keep a thin line of their colour
     const val AMB_INK = 0xFFC4C4C4
     const val AMB_DIM = 0xFF6A6A6A
     const val AMB_LINE = 0xFF3C3C3C
@@ -297,19 +310,19 @@ object RideStatus {
     /** Status updates at most this often: each one reposts the notification. */
     const val EVERY_MS = 30_000L
 
-    /** A battery warning first: «Сейчас отключится · 11 % · 5,8 км». */
+    /** The top lamp's line first (as on the dial): «Перегрев — сбавь газ · 11 % · 5,8 км». */
     fun text(t: Telemetry, h: Health): String {
         if (!h.live) return h.label ?: "Bird Air"
         val parts = ArrayList<String>(3)
-        Warnings.top(t.warnings)?.let { parts += Warnings.text(it) }
+        TellTales.top(Cluster.lamps(t))?.text?.takeIf { it.isNotBlank() }?.let { parts += it }
         Battery.level(t)?.let { parts += Fmt.pct(it) }
         t.tripKm?.let { parts += Fmt.withUnit(Fmt.dist(it, t.units), 1, Fmt.distUnit(t.units)) }
         return if (parts.isEmpty()) "едем" else parts.joinToString(" · ")
     }
 
-    /** The top warning as it changes the status: a new or stronger one is shown at once, not after [EVERY_MS]. */
+    /** The top lamp as it changes the status: a new or stronger one is shown at once, not after [EVERY_MS]. */
     fun warningKey(t: Telemetry, h: Health): String? =
-        if (!h.live) null else Warnings.top(t.warnings)?.let { it.id + ":" + it.level }
+        if (!h.live) null else TellTales.top(Cluster.lamps(t))?.let { it.id + ":" + it.level }
 
     fun due(text: String, shown: String?, key: String?, shownKey: String?, sinceMs: Long): Boolean =
         text != shown && (key != shownKey || sinceMs >= EVERY_MS)

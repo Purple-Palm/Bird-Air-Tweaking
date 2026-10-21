@@ -21,6 +21,9 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyListState
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults
+import androidx.wear.compose.material.Icon
+import androidx.wear.compose.material.InlineSlider
+import androidx.wear.compose.material.InlineSliderDefaults
 import androidx.wear.compose.material.ListHeader
 import androidx.wear.compose.material.PositionIndicator
 import androidx.wear.compose.material.Scaffold
@@ -29,9 +32,13 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import androidx.wear.compose.material.ToggleChip
 import androidx.wear.compose.material.ToggleChipDefaults
+import io.github.purplepalm.birdair.core.BatteryAdvisor
 import io.github.purplepalm.birdair.core.BatteryWarning
+import io.github.purplepalm.birdair.core.Lamp
+import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
+import io.github.purplepalm.birdair.core.TellTales
 
 /** One value of the details page. */
 data class Cell(val label: String, val value: String)
@@ -75,11 +82,33 @@ fun detailRows(t: Telemetry, fast: Boolean = false): List<List<Cell>> {
 /** The details page's warning lines: «Сейчас отключится» over «31,8 В под нагрузкой». */
 fun warningLines(ws: List<BatteryWarning>): List<Pair<BatteryWarning, String?>> = ws.map { it to Warnings.valueText(it) }
 
+/**
+ * The lit lamps in words, strongest first: «Перегрев — сбавь газ» over «Температура батареи · 56 °C». The battery adds
+ * the phone's «31,8 В под нагрузкой». The icons on the dial are learnt here.
+ */
+fun lampLines(t: Telemetry): List<Pair<Lamp, String>> =
+    Cluster.lamps(t).filter { it.level != LampLevel.OFF }
+        .sortedWith(compareByDescending<Lamp> { it.level.ordinal }.thenBy { TellTales.IDS.indexOf(it.id) })
+        .map { l ->
+            val name = TellTales.NAMES[l.id] ?: l.id
+            val value = when (l.id) {
+                TellTales.TEMP -> l.value?.let { Fmt.withUnit(it, 0, "°C") }
+                TellTales.BATTERY -> t.warnings.firstOrNull { it.id == BatteryAdvisor.LOW }?.let { Warnings.valueText(it) }
+                // «предел тока» carries the current, «просадка» the voltage
+                TellTales.TRACTION -> l.value?.let { Fmt.withUnit(it, 1, if (l.text.contains("предел")) "А" else "В") }
+                else -> null
+            }
+            l to (if (value != null) "$name · $value" else name)
+        }
+
 /** This build, at the bottom of the details page: «Часы: версия 0.3 (12)». */
 fun versionLine(name: String, code: Int): String = "Часы: версия $name ($code)"
 
 /** Index of the «Плавно» chip in the details list (the screenshots scroll there). */
-fun smoothChipIndex(s: Screen): Int = 2 + warningLines(s.t.warnings).size + detailRows(s.t, s.fast).size + 1
+fun smoothChipIndex(s: Screen): Int = 2 + lampLines(s.t).size + detailRows(s.t, s.fast).size + 1
+
+/** Index of the overspeed vibration switch, right under «Плавно». */
+fun overspeedChipIndex(s: Screen): Int = smoothChipIndex(s) + 1
 
 /** [list]: by default starts with the first values in the middle, the header and state above them. */
 @Composable
@@ -105,7 +134,7 @@ fun DetailsScreen(
                     textAlign = TextAlign.Center,
                 )
             }
-            for ((w, value) in warningLines(s.t.warnings)) item { WarningRow(w, value, s.health.alpha) }
+            for ((lamp, about) in lampLines(s.t)) item { LampRow(lamp, about, s.health.alpha) }
             for (row in detailRows(s.t, s.fast)) item { CellRow(row, s.health.alpha) }
             item {
                 ToggleChip(
@@ -129,6 +158,19 @@ fun DetailsScreen(
                 )
             }
             item {
+                ToggleChip(
+                    checked = prefs.overspeedOn,
+                    onCheckedChange = { onPrefs(prefs.copy(overspeedOn = it)) },
+                    label = { Text("Вибро > " + OverspeedPref.mph(prefs.overspeedMph), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    secondaryLabel = { Text("жужжит, пока быстрее", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    toggleControl = { Switch(checked = prefs.overspeedOn) },
+                    colors = ToggleChipDefaults.toggleChipColors(checkedEndBackgroundColor = argb(Palette.LAMP_RED).copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item { OverspeedSlider(prefs, s.t.units, onPrefs) }
+            // SLOT: watch self-update (Updater*.kt) — its chip («Обновить часы») goes here, above the version line
+            item {
                 Text(
                     versionLine(HelloInfo.THIS.versionName, HelloInfo.THIS.versionCode),
                     color = argb(Palette.MUTED),
@@ -141,18 +183,43 @@ fun DetailsScreen(
     }
 }
 
+/** A lit lamp: its line in its colour (two lines for a long one), what it is about under it. */
 @Composable
-private fun WarningRow(w: BatteryWarning, value: String?, alpha: Float) {
+private fun LampRow(l: Lamp, about: String, alpha: Float) {
     Column(Modifier.fillMaxWidth().alpha(alpha), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            Warnings.text(w),
-            color = argb(Warnings.ink(w.level)),
+            l.text.ifBlank { TellTales.NAMES[l.id] ?: l.id },
+            color = argb(Lamps.argb(l.level)),
             style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Bold),
             textAlign = TextAlign.Center,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        if (value != null) Text(value, color = argb(Palette.INK2), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(about, color = argb(Palette.INK2), fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** The overspeed threshold in [OverspeedPref.STEP] mph steps; greyed while the vibration is off. */
+@Composable
+private fun OverspeedSlider(prefs: WatchPrefs, units: String, onPrefs: (WatchPrefs) -> Unit) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            OverspeedPref.describe(prefs.overspeedMph, units),
+            color = argb(if (prefs.overspeedOn) Palette.INK else Palette.MUTED),
+            style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium, fontFeatureSettings = "tnum"),
+            maxLines = 1,
+        )
+        InlineSlider(
+            value = prefs.overspeedMph.toFloat(),
+            onValueChange = { onPrefs(prefs.copy(overspeedMph = OverspeedPref.clamp(it.toDouble()))) },
+            steps = OverspeedPref.STEPS,
+            decreaseIcon = { Icon(InlineSliderDefaults.Decrease, "медленнее") },
+            increaseIcon = { Icon(InlineSliderDefaults.Increase, "быстрее") },
+            valueRange = OverspeedPref.MIN.toFloat()..OverspeedPref.MAX.toFloat(),
+            segmented = false,
+            enabled = prefs.overspeedOn,
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        )
     }
 }
 

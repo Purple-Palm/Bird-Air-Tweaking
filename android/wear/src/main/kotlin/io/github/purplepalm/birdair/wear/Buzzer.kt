@@ -9,21 +9,31 @@ import android.os.Vibrator
 import android.os.VibratorManager
 
 /**
- * Plays a [Buzz] on the watch's motor. Usage «alarm»: the warning must be felt with the screen off and the app in
- * the background (other usages are dropped for background apps), and «Сейчас отключится» is worth it.
+ * The watch's motor. Usage «alarm»: a lamp's buzz and the overspeed vibration must be felt with the screen off and the
+ * app in the background (other usages are dropped for background apps).
  */
 class Buzzer(ctx: Context) {
     private val vibrator: Vibrator? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) ctx.getSystemService(VibratorManager::class.java)?.defaultVibrator
         else @Suppress("DEPRECATION") ctx.getSystemService(Vibrator::class.java)
 
-    fun play(b: Buzz) {
+    /** A lamp's [Buzz], once. */
+    fun play(b: Buzz) = vibrate(b.timings, b.amplitudes, -1)
+
+    /** [OverspeedAlarm]'s waveform, repeated until [stop]; calling it again arms it again. */
+    fun rumble() = vibrate(OverspeedAlarm.TIMINGS, OverspeedAlarm.AMPLITUDES, OverspeedAlarm.REPEAT)
+
+    fun stop() {
+        try { vibrator?.cancel() } catch (e: RuntimeException) { /* no motor */ }
+    }
+
+    private fun vibrate(timings: LongArray, amplitudes: IntArray, repeat: Int) {
         val v = vibrator ?: return
         try {
             if (!v.hasVibrator()) return
             val effect =
-                if (v.hasAmplitudeControl()) VibrationEffect.createWaveform(b.timings, b.amplitudes, -1)
-                else VibrationEffect.createWaveform(b.timings, -1)
+                if (v.hasAmplitudeControl()) VibrationEffect.createWaveform(timings, amplitudes, repeat)
+                else VibrationEffect.createWaveform(timings, repeat)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 v.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM))
             } else {
@@ -31,7 +41,7 @@ class Buzzer(ctx: Context) {
                 v.vibrate(effect, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build())
             }
         } catch (e: RuntimeException) {
-            // no motor, or the system refused: the banner on the gauge still shows the warning
+            // no motor, or the system refused: the dial still shows it
         }
     }
 }

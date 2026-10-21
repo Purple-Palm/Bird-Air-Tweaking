@@ -299,11 +299,20 @@ class WarningsTest {
         assertEquals(BatteryTone.GOOD, Warnings.batteryTone(80.0, listOf(w(BatteryAdvisor.HOT, WarningLevel.CRITICAL))))
     }
 
-    @Test fun rideStatusPutsTheWarningFirst() {
+    @Test fun rideStatusPutsTheTopLampFirst() {
+        // two red lamps: the temperature comes first in the cluster order
         val t = Samples.critical
-        assertEquals("Сейчас отключится · 12\u00A0% · 3,6\u00A0км", RideStatus.text(t, Health.LIVE))
-        assertEquals("battery_low:CRITICAL", RideStatus.warningKey(t, Health.LIVE))
-        assertNull(RideStatus.warningKey(t, Health.RECONNECTING))
+        assertEquals("Перегрев — сбавь газ · 12 % · 3,6 км", RideStatus.text(t, Health.LIVE))
+        assertEquals("temp:RED", RideStatus.warningKey(t, Health.LIVE))
+        // the standing «Сервис» lamp says nothing in the status
+        assertEquals("54 % · 3,6 км", RideStatus.text(Samples.riding, Health.LIVE))
+        assertNull(RideStatus.warningKey(Samples.riding, Health.LIVE))
+        // an older phone without lamps: its warnings stand in, with the short lamp text
+        assertEquals("Перегрев — сбавь газ · 12 % · 3,6 км", RideStatus.text(t.copy(lamps = emptyList()), Health.LIVE))
+        assertEquals("battery:AMBER", RideStatus.warningKey(Samples.warning.copy(lamps = emptyList()), Health.LIVE))
+    }
+
+    @Test fun rideStatusTiming() {
         // a changed warning goes out at once, other text changes wait for EVERY_MS
         assertTrue(RideStatus.due("a", "b", "battery_low:CRITICAL", "battery_low:WARNING", 1_000))
         assertFalse(RideStatus.due("a", "b", null, null, 1_000))
@@ -330,68 +339,6 @@ class RangeTextTest {
         assertEquals("≈2,1\u00A0км", cells["Запас хода"])
         assertEquals("19,5\u00A0Вт·ч/км", cells["по последним 2 км"])
         assertEquals("1\u00A0431,7\u00A0км", cells["Пробег по приложению"])
-    }
-}
-
-class WarningAlarmTest {
-    private val low = BatteryWarning(BatteryAdvisor.LOW, WarningLevel.WARNING, "Заряд на исходе", 32.1)
-    private val lowCrit = low.copy(level = WarningLevel.CRITICAL, text = "Сейчас отключится")
-    private val hot = BatteryWarning(BatteryAdvisor.HOT, WarningLevel.WARNING, "Батарея греется", 51.0)
-
-    @Test fun buzzesOnceWhenItAppearsAndAgainWhenItRises() {
-        val a = WarningAlarm()
-        assertNull(a.onMessage(emptyList(), true, 0))
-        assertSame(Buzz.WARNING, a.onMessage(listOf(low), true, 1_000))
-        // it stays on for minutes: quiet (past the cooldown too)
-        for (k in 1..600) assertNull(a.onMessage(listOf(low), true, 1_000 + k * 1_000L))
-        // «Сейчас отключится» seconds after a buzz: at once, the strong one
-        val b = WarningAlarm()
-        b.onMessage(listOf(low), true, 0)
-        assertSame(Buzz.CRITICAL, b.onMessage(listOf(lowCrit), true, 5_000))
-        // back to WARNING and up again within the cooldown: quiet
-        assertNull(b.onMessage(listOf(low), true, 30_000))
-        assertNull(b.onMessage(listOf(lowCrit), true, 60_000))
-        // after the cooldown: again
-        assertNull(b.onMessage(listOf(low), true, 100_000))
-        assertSame(Buzz.CRITICAL, b.onMessage(listOf(lowCrit), true, 5_000 + WarningAlarm.COOLDOWN_MS))
-    }
-
-    @Test fun flickerAndSecondWarningWaitForTheCooldown() {
-        val a = WarningAlarm()
-        assertNotNull(a.onMessage(listOf(hot), true, 0))
-        assertNull(a.onMessage(emptyList(), true, 10_000))
-        assertNull(a.onMessage(listOf(hot), true, 20_000))
-        // a second warning at the same level within the cooldown: quiet; the banner shows it
-        assertNull(a.onMessage(listOf(hot, low), true, 30_000))
-        assertNull(a.onMessage(emptyList(), true, 60_000))
-        assertSame(Buzz.WARNING, a.onMessage(listOf(low), true, WarningAlarm.COOLDOWN_MS))
-    }
-
-    @Test fun onlyLiveMessagesCount() {
-        val a = WarningAlarm()
-        assertNull(a.onMessage(listOf(lowCrit), false, 0))
-        // the same warning once the data is live again is news
-        assertSame(Buzz.CRITICAL, a.onMessage(listOf(lowCrit), true, 1_000))
-        // a stale gap does not make a warning that stayed on new
-        assertNull(a.onMessage(listOf(lowCrit), false, 2_000))
-        assertNull(a.onMessage(listOf(lowCrit), true, 500_000))
-    }
-
-    @Test fun criticalFeelsStronger() {
-        val w = Buzz.WARNING
-        val c = Buzz.CRITICAL
-        assertEquals(WarningLevel.WARNING, w.level)
-        assertSame(c, Buzz.of(WarningLevel.CRITICAL))
-        assertEquals(2, w.pulses)
-        assertEquals(3, c.pulses)
-        assertTrue(c.onMs > 2 * w.onMs)
-        assertTrue(c.amplitudes.max() > w.amplitudes.max())
-        // short: the whole pattern is over within a second
-        assertTrue(c.timings.sum() < 1_000)
-        assertEquals(w.timings.size, w.amplitudes.size)
-        assertEquals(c.timings.size, c.amplitudes.size)
-        assertEquals(0L, w.timings[0])
-        assertTrue(w.amplitudes.all { it in 0..255 } && c.amplitudes.all { it in 0..255 })
     }
 }
 

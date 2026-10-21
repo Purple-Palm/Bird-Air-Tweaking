@@ -61,7 +61,7 @@ data class Feed(
  * The phone's stream, shared by [MainActivity] and [RideService]: a MessageClient listener on [Wire.PATH]
  * registered while at least one of them exists (so it keeps updating in ambient, and with the activity gone
  * while the ride service runs), and [Wire.HELLO] (with [HelloInfo]) to every connected node on the first [acquire],
- * then as [Hello] says. The phone's battery warnings vibrate here, once per [WarningAlarm] event, whichever of the
+ * then as [Hello] says. The phone's lamps vibrate here, once per [LampAlarm] event, whichever of the
  * two is alive. Main thread only.
  */
 object WatchFeed {
@@ -77,7 +77,7 @@ object WatchFeed {
     private var job: Job? = null
     private var lastHelloMs: Long? = null
     // process-wide: reopening the gauge or restarting the ride service does not buzz the same warning again
-    private val alarm = WarningAlarm()
+    private val alarm = LampAlarm()
 
     /** Each message is applied as it comes (main thread): the screen redraws on it, not on a timer. */
     private val listener = MessageClient.OnMessageReceivedListener { ev ->
@@ -85,7 +85,8 @@ object WatchFeed {
         val now = SystemClock.elapsedRealtime()
         val f = state.value.received(ev.data, now) ?: return@OnMessageReceivedListener
         state.value = f
-        alarm.onMessage(f.t.warnings, f.live, now)?.let { buzzer?.play(it) }
+        // an older phone sends no lamps: its battery warnings stand in (Cluster.lamps)
+        alarm.onMessage(Cluster.lamps(f.t), f.live, now)?.let { buzzer?.play(it) }
     }
 
     @MainThread

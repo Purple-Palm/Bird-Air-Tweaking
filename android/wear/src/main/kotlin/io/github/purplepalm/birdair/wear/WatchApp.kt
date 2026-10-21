@@ -29,8 +29,17 @@ import androidx.wear.compose.material.PageIndicatorState
 import io.github.purplepalm.birdair.core.Telemetry
 import kotlinx.coroutines.delay
 
-/** What the screen shows: the phone's telemetry, what the watch makes of its freshness, and the phone's flags. */
-data class Screen(val t: Telemetry = Telemetry(), val health: Health = Health.NO_PHONE, val flags: PhoneFlags = PhoneFlags()) {
+/**
+ * What the screen shows: the phone's telemetry, what the watch makes of its freshness, and the phone's flags.
+ * [bulb]: the «проверка ламп» is on ([BulbCheck]); [overspeed]: the overspeed vibration runs ([RideService.vibrating]).
+ */
+data class Screen(
+    val t: Telemetry = Telemetry(),
+    val health: Health = Health.NO_PHONE,
+    val flags: PhoneFlags = PhoneFlags(),
+    val bulb: Boolean = false,
+    val overspeed: Boolean = false,
+) {
     /** The arc and the watts use the fast estimate. */
     val fast: Boolean get() = PowerView.fast(flags)
 }

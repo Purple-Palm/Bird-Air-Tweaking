@@ -16,13 +16,19 @@ import androidx.wear.ongoing.Status
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
  * A tiny foreground service behind the Ongoing Activity: while the phone is on a ride (from «подключаюсь»
  * on), the app sits on the watch face (one tap back to the gauge) and its process — with [WatchFeed]'s
- * listener — stays alive.
+ * listener — stays alive. It also runs the overspeed vibration ([OverspeedAlarm]): it keeps running while the screen
+ * is dim or off, the activity may not.
  * It writes nothing anywhere and stops itself after [Idle.AFTER_MS] without live data, or on «Скрыть».
  */
 class RideService : Service() {
@@ -32,12 +38,16 @@ class RideService : Service() {
     private var shownText: String? = null
     private var shownKey: String? = null
     private var shownAtMs = 0L
+    private val overspeed = OverspeedAlarm()
+    private var buzzer: Buzzer? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         running = true
+        Settings.init(this)
+        buzzer = Buzzer(applicationContext)
         WatchFeed.acquire(this)
     }
 
@@ -50,12 +60,16 @@ class RideService : Service() {
         if (ongoing == null) {
             goForeground()
             scope.launch { watch() }
+            scope.launch { overspeedLoop() }
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         scope.cancel()
+        // the service goes: so does the vibration, at once
+        act(overspeed.stop())
+        buzzer = null
         WatchFeed.release()
         running = false
         super.onDestroy()
@@ -103,7 +117,7 @@ class RideService : Service() {
 
     /**
      * Once a second: stop when the ride is over, refresh the status text at most every [RideStatus.EVERY_MS] — at once
-     * when the phone's top battery warning changes.
+     * when the top lamp changes.
      */
     private suspend fun watch() {
         val startedAt = SystemClock.elapsedRealtime()
@@ -123,6 +137,32 @@ class RideService : Service() {
             }
             delay(1000)
         }
+    }
+
+    /**
+     * The overspeed vibration: judged on every message and on every change of the setting; while it runs, again when
+     * the message goes stale ([Health.STALE_MS], then it stops at once) and every [OverspeedAlarm.rearmMs] to arm it again.
+     */
+    private suspend fun overspeedLoop() {
+        combine(WatchFeed.feed, Settings.prefs) { f, p -> f to p }.collectLatest { (f, p) ->
+            while (true) {
+                val now = SystemClock.elapsedRealtime()
+                val live = Health.of(f.t, f.rxAtMs, now).live
+                act(overspeed.update(p.overspeedOn, p.overspeedMph, f.t.speedKmh, live, now))
+                if (!overspeed.on) return@collectLatest
+                val untilStale = (f.rxAtMs ?: now) + Health.STALE_MS + 1 - now
+                delay(minOf(overspeed.rearmMs, untilStale).coerceAtLeast(1))
+            }
+        }
+    }
+
+    private fun act(a: OverspeedAlarm.Action) {
+        when (a) {
+            OverspeedAlarm.Action.START -> buzzer?.rumble()
+            OverspeedAlarm.Action.STOP -> buzzer?.stop()
+            OverspeedAlarm.Action.NONE -> Unit
+        }
+        overspeeding.value = overspeed.on
     }
 
     private fun statusNow(): String {
@@ -145,5 +185,10 @@ class RideService : Service() {
 
         /** «Скрыть» was tapped: not started again until the gauge is opened anew. */
         @Volatile var hiddenByUser = false
+
+        private val overspeeding = MutableStateFlow(false)
+
+        /** The overspeed vibration is on now: the dial turns its speed dot red. */
+        val vibrating: StateFlow<Boolean> = overspeeding.asStateFlow()
     }
 }

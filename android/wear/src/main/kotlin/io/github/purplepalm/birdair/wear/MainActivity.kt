@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.wear.ambient.AmbientLifecycleObserver
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,10 +36,12 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val ambient = MutableStateFlow<AmbientState?>(null)
     private val screen = MutableStateFlow(Screen())
-    private val prefsState = MutableStateFlow(WatchPrefs())
     private lateinit var prefs: SharedPreferences
     @Volatile private var openedAtMs = 0L
     private var serviceTriedAtMs: Long? = null
+    private val bulbs = BulbCheck()
+    private val bulbOn = MutableStateFlow(false)
+    private var bulbJob: Job? = null
 
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -56,19 +59,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lifecycle.addObserver(AmbientLifecycleObserver(this, ambientCallback))
-        prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        prefsState.value = WatchPrefs(prefs.getBoolean(KEEP_ON, true), SmoothPref.of(prefs.getString(SMOOTH, null)))
+        prefs = getSharedPreferences(Settings.FILE, MODE_PRIVATE)
+        Settings.init(this)
         openedAtMs = SystemClock.elapsedRealtime()
         WatchFeed.acquire(this)
         askForNotifications()
+        // «проверка ламп» as the gauge opens, then on each (re)connection
+        bulbCheck()
         // until onDestroy, ambient included
         lifecycleScope.launch { present() }
         lifecycleScope.launch { holdScreen() }
+        lifecycleScope.launch {
+            WatchFeed.feed.collect { f -> if (bulbs.onFeed(f.rxAtMs, f.t.link, SystemClock.elapsedRealtime())) bulbCheck() }
+        }
         setContent {
             val s by screen.collectAsState()
             val a by ambient.collectAsState()
-            val p by prefsState.collectAsState()
-            WatchApp(s, a, p, onPrefs = ::setPrefs)
+            val p by Settings.prefs.collectAsState()
+            WatchApp(s, a, p, onPrefs = Settings::set)
         }
     }
 
@@ -92,13 +100,26 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** All lamps lit for [BulbCheck.durationMs]; a new check restarts the time. */
+    private fun bulbCheck() {
+        bulbs.start(SystemClock.elapsedRealtime())
+        bulbJob?.cancel()
+        bulbOn.value = true
+        bulbJob = lifecycleScope.launch {
+            delay(bulbs.durationMs)
+            bulbOn.value = false
+        }
+    }
+
     /**
      * Feed + clock → [screen]: each message from the phone at once (the feed changes, the screen follows on the next
      * frame); the [TICK_MS] clock only ages the data into «нет данных». In ambient at most once per [AMBIENT_REFRESH_MS].
      */
     private suspend fun present() {
         var shownAt = Long.MIN_VALUE / 2
-        combine(WatchFeed.feed, ticker(TICK_MS)) { f, now -> Screen(f.t, Health.of(f.t, f.rxAtMs, now), f.flags) }
+        combine(WatchFeed.feed, ticker(TICK_MS), bulbOn, RideService.vibrating) { f, now, bulb, over ->
+            Screen(f.t, Health.of(f.t, f.rxAtMs, now), f.flags, bulb = bulb, overspeed = over)
+        }
             .distinctUntilChanged()
             .collectLatest { s ->
                 if (ambient.value != null) {
@@ -114,7 +135,7 @@ class MainActivity : ComponentActivity() {
 
     /** FLAG_KEEP_SCREEN_ON while «Экран не гаснет» is on and the data was live within [Idle.AFTER_MS]. */
     private suspend fun holdScreen() {
-        combine(WatchFeed.feed, prefsState, ticker(5_000)) { f, p, now -> Idle.keepScreenOn(p.keepOn, f.liveAtMs, openedAtMs, now) }
+        combine(WatchFeed.feed, Settings.prefs, ticker(5_000)) { f, p, now -> Idle.keepScreenOn(p.keepOn, f.liveAtMs, openedAtMs, now) }
             .distinctUntilChanged()
             .collect { on ->
                 if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -136,11 +157,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun setPrefs(p: WatchPrefs) {
-        prefsState.value = p
-        prefs.edit().putBoolean(KEEP_ON, p.keepOn).putString(SMOOTH, p.smooth.key).apply()
-    }
-
     /** Once: without it the Ongoing Activity's notification (and its watch-face icon) stays hidden. */
     private fun askForNotifications() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
@@ -158,10 +174,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val PREFS = "bal.wear"
-        const val KEEP_ON = "keepScreenOn"
-        /** «Плавно»: [SmoothPref.key] — phone / on / off. */
-        const val SMOOTH = "smooth"
         const val ASKED_NOTIFICATIONS = "askedNotifications"
         const val TICK_MS = 500L
         const val AMBIENT_REFRESH_MS = 1000L
