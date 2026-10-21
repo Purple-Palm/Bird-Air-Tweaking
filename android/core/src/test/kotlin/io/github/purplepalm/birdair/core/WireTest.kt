@@ -33,6 +33,33 @@ class WireTest {
         assertTrue(Wire.encode(t).size < 900)
     }
 
+    /** The tell-tales and the fine charge: a busy cluster (6 lamps) stays well under 1.5 kB; defaults are left out. */
+    @Test fun lampsRoundTrip() {
+        val lamps = listOf(
+            Lamp(TellTales.TEMP, LampLevel.AMBER, "Горячая, быстро греется", 49.0, rising = true),
+            Lamp(TellTales.BATTERY, LampLevel.RED, "Сейчас отключится", 31.52),
+            Lamp(TellTales.TRACTION, LampLevel.AMBER, "Мало тяги: предел тока", 15.94),
+            Lamp(TellTales.CONSUMPTION, LampLevel.AMBER, "Расход 21 Вт·ч/км", 21.37),
+            Lamp(TellTales.SERVICE, LampLevel.AMBER, "Ёмкость 76 % от паспорта", 75.6),
+            Lamp(TellTales.LINK, LampLevel.AMBER, "Руль молчит"),
+        )
+        val t = full.copy(lamps = lamps, batteryPctFine = 56.3)
+        assertEquals(t, Wire.decode(Wire.encode(t)))
+        val n = Wire.encode(t).size - Wire.encode(full).size
+        assertTrue(n < 900, "$n bytes for the lamps")
+        val json = String(Wire.encode(full.copy(lamps = listOf(Lamp(TellTales.ECO, LampLevel.GREEN)))), Charsets.UTF_8)
+        assertTrue(json.contains("\"lamps\":[{\"id\":\"eco\",\"level\":\"GREEN\"}]"), json)
+        // an unknown level from a newer phone does not break the message
+        val d = Wire.decode("{\"lamps\":[{\"id\":\"x\",\"level\":\"VIOLET\"}],\"speedKmh\":3.5}".toByteArray())
+        assertEquals(3.5, d?.speedKmh)
+        assertEquals(listOf(Lamp("x", LampLevel.OFF)), d?.lamps)
+        // the live tracker's snapshot: service lit from the first BMS frame, the charge to 0.1 %
+        val live = TelemetryTracker(Repo.decoder()).apply { onNotification("ffe0", "ffe1", VOLT_FRAME + MODE_FRAME, 1) }.snapshot(2)
+        assertEquals(listOf(TellTales.SERVICE), live.lamps.map { it.id })
+        assertEquals(75.3, live.batteryPctFine)                            // 3287 / 4363 mAh = 75.34 %
+        assertEquals(live, Wire.decode(Wire.encode(live)))
+    }
+
     @Test fun compact() {
         assertEquals("{}", String(Wire.encode(Telemetry()), Charsets.UTF_8))
         val n = Wire.encode(full).size

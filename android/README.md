@@ -164,7 +164,7 @@ ANDROID_HOME=/path/to/android-sdk ./gradlew --no-daemon \
 
 | Модуль | Что там |
 | --- | --- |
-| `core/` | чистый Kotlin: кадры UART (`3A … 0D 0A`), декодер `birdair-lab-decoder`, телеметрия и энергия, быстрый ток по просадке напряжения (`FastPower`), предупреждения о батарее и запас хода (`BatteryAdvisor`), свой одометр (`AppOdometer`), лог `birdair-lab-log` v1 с описанием и разбиением на части (`LogRecorder`), белый список команд, обмен с часами (`Wire`). `FastPower`, `BatteryAdvisor` и `AppOdometer` — порты `tools/fast_power.py`, `tools/battery_advisor.py`, `tools/app_odometer.py`; тесты сверяют их с Python на всех логах |
+| `core/` | чистый Kotlin: кадры UART (`3A … 0D 0A`), декодер `birdair-lab-decoder`, телеметрия и энергия, быстрый ток по просадке напряжения (`FastPower`), предупреждения о батарее и запас хода (`BatteryAdvisor`), 12 ламп приборки (`TellTales`), свой одометр (`AppOdometer`), лог `birdair-lab-log` v1 с описанием и разбиением на части (`LogRecorder`), белый список команд, обмен с часами (`Wire`). `FastPower`, `BatteryAdvisor` и `AppOdometer` — порты `tools/fast_power.py`, `tools/battery_advisor.py`, `tools/app_odometer.py`; тесты сверяют их с Python на всех логах |
 | `phone/` | приложение для телефона, подробности — [`phone/README.md`](phone/README.md) |
 | `wear/` | приложение для часов, подробности — [`wear/README.md`](wear/README.md) |
 

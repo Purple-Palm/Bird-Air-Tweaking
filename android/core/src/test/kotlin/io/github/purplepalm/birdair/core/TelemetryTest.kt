@@ -55,6 +55,9 @@ class TelemetryTest {
         assertTrue(motor)
         assertTrue(3 in modes)
         assertEquals(4363.0, s.fullMah)
+        assertEquals(2.2, s.batteryPctFine!!, 1e-9)                         // 96 of 4363 mAh, BMS 2 %
+        assertEquals(listOf(TellTales.TEMP, TellTales.BATTERY, TellTales.SERVICE), s.lamps.map { it.id })
+        assertEquals(Lamp(TellTales.BATTERY, LampLevel.RED, "Сейчас отключится", Math.round(s.warnings[0].value!! * 100) / 100.0), s.lamps[1])
         assertEquals(8.5, s.odometerKm!! - firstOdo!!, 0.05)
         assertTrue(s.streaming)
         assertEquals(Link.CONNECTED, s.link)
@@ -107,6 +110,8 @@ class TelemetryTest {
         val r = tr.snapshot(end)
         assertNull(r.currentFastA)
         assertTrue(r.warnings.isEmpty())
+        assertTrue(r.lamps.isEmpty())
+        assertNull(r.batteryPctFine)
         assertNull(r.range)
         assertEquals(1433.3, r.appOdometerKm!!, 1e-9)
         assertTrue(r.seq > s.seq)

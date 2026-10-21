@@ -281,7 +281,7 @@ class WarningsTest {
         assertEquals(Palette.WARN, Warnings.argb(WarningLevel.WARNING))
         assertEquals(Palette.CRIT, Warnings.argb(WarningLevel.CRITICAL))
         assertEquals("Заряд на исходе", Warnings.text(low))
-        assertEquals("Батарея перегрета", Warnings.text(hot))
+        assertEquals("Батарея перегрета — скоро отключится, сбавь газ", Warnings.text(hot))
         assertEquals("Сейчас отключится", Warnings.text(BatteryWarning(BatteryAdvisor.LOW, WarningLevel.CRITICAL, "")))
         assertEquals("31,9\u00A0В под нагрузкой", Warnings.valueText(low))
         assertEquals("56\u00A0°C", Warnings.valueText(hot))

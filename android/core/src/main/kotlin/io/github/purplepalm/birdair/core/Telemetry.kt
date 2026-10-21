@@ -27,8 +27,9 @@ enum class Link { IDLE, SCANNING, CONNECTING, CONNECTED, RECONNECTING }
  * [currentFastA] / [powerFastW] the battery current and power from the voltage sag ([FastPower]), fresh on every
  * BMS frame where [currentA] refreshes ~1/s and lags ~0.6 s; [powerAtMs] the frame time (the tracker's clock) of
  * the latest power value; [warnings] low battery / overheat ([BatteryAdvisor]), CRITICAL first; [range] to the
- * observed empty; [appOdometerKm] the app's own odometer ([AppOdometer]). [seq] grows on every notification that
- * brought a new value, so the phone can publish on change instead of on a timer.
+ * observed empty; [appOdometerKm] the app's own odometer ([AppOdometer]); [lamps] the cluster's tell-tales
+ * ([TellTales]); [batteryPctFine] the charge to 0.1 %. [seq] grows on every notification that brought a new
+ * value, so the phone can publish on change instead of on a timer.
  */
 @Serializable
 data class Telemetry(
@@ -61,6 +62,10 @@ data class Telemetry(
     val warnings: List<BatteryWarning> = emptyList(),
     val range: RangeEstimate? = null,
     val appOdometerKm: Double? = null,
+    /** The lit tell-tales in [TellTales.IDS] order; an id not listed is off. */
+    val lamps: List<Lamp> = emptyList(),
+    /** 100 · remaining / full mAh of the last BMS frame, floored to 0.1 % (the BMS's own [batteryPct] floors to 1 %). */
+    val batteryPctFine: Double? = null,
 )
 
 /**
@@ -93,6 +98,7 @@ class TelemetryTracker(decoder: Decoder) {
     private var peakW = PEAK_MIN
     private val fast = FastPower()
     private val advisor = BatteryAdvisor()
+    private val tells = TellTales()
     private var odometer = AppOdometer()
     private var fastSample: FastPower.Sample? = null
     private var powerAt: Long? = null
@@ -145,15 +151,19 @@ class TelemetryTracker(decoder: Decoder) {
         for (a in asms.values) a.reset()
         jsonBufs.clear()
         fast.reset()
+        tells.restartStreams()
     }
 
     @Synchronized
     fun snapshot(nowMs: Long): Telemetry {
         val live = maxOf(frameT ?: Long.MIN_VALUE, dataT ?: Long.MIN_VALUE)
+        val streaming = live != Long.MIN_VALUE && nowMs - live <= STREAMING_MS
+        val warns = advisor.warnings()
+        val range = advisor.range()
         return Telemetry(
             t = nowMs,
             link = link,
-            streaming = live != Long.MIN_VALUE && nowMs - live <= STREAMING_MS,
+            streaming = streaming,
             units = units,
             speedKmh = vals["speed_kmh"],
             mode = vals["mode"]?.toInt(),
@@ -177,14 +187,16 @@ class TelemetryTracker(decoder: Decoder) {
             powerFastW = fastSample?.powerW,
             powerAtMs = powerAt,
             seq = seqN,
-            warnings = advisor.warnings(),
-            range = advisor.range(),
+            warnings = warns,
+            range = range,
             appOdometerKm = odometer.totalKm,
+            lamps = tells.lamps(nowMs, range, warns, link, streaming),
+            batteryPctFine = tells.batteryPctFine,
         )
     }
 
     /** Everything back to the start: values, energy, power scale, assemblers and their counters, the fast power
-     *  estimate and the battery advisor. Not the app odometer ([odometerState]) and not [Telemetry.seq], which only grows. */
+     *  estimate, the battery advisor and the tell-tales. Not the app odometer ([odometerState]) and not [Telemetry.seq], which only grows. */
     @Synchronized
     fun reset() {
         asms.clear(); jsonBufs.clear(); vals.clear(); extras.clear()
@@ -192,6 +204,7 @@ class TelemetryTracker(decoder: Decoder) {
         whOut = 0.0; whIn = 0.0; peakW = PEAK_MIN
         fast.reset(full = true); fastSample = null; powerAt = null
         advisor.reset()
+        tells.reset()
         seqN++
     }
 
@@ -242,9 +255,11 @@ class TelemetryTracker(decoder: Decoder) {
             fastSample = fast.update(t, b.voltage, b.currentA, b.motor)
             powerAt = t
             advisor.onBms(t, b.voltage, b.currentA, b.temp1C.toDouble(), b.temp2C.toDouble(), b.remainingMah.toDouble(), b.fullMah.toDouble())
+            tells.onBms(t, b, fastSample, fast.r, fast.anchors)
             return true
         }
         val m = ScooterFrames.motion(f) ?: return false
+        tells.onMotion(t, m)
         odometer.update(m.tripKm, m.odometerKm, epochOffsetMs?.let { it + t })
         // the distance ridden on this frame, not the total: «Задать» / «Взять с руля» ([odometerState]) is not a ride
         advisor.onDistance(t, odometer.lastAddedKm)

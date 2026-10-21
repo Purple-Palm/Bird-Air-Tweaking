@@ -113,7 +113,7 @@ class Shots {
 
     companion object {
         const val LOG = "logs/20261019-174739-log-app.json.gz"
-        /** Both warnings critical (the advisor: «Сейчас отключится» from 5080 s, «перегрета» from 5158 s). */
-        const val UNTIL_MS = 5_200_000L
+        /** Both warnings critical (the advisor: «перегрета» from 5158 s, «Сейчас отключится» from 5384 s; the cutoff at 5487 s). */
+        const val UNTIL_MS = 5_420_000L
     }
 }

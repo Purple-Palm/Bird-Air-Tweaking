@@ -27,11 +27,13 @@ data class RangeEstimate(val km: Double, val mi: Double, val whLeft: Double, val
  *
  *  - battery_low WARNING «Заряд на исходе»: under load (I ≥ [Params.loadA]) for [Params.sustainMs] in a row,
  *    V + rRef·(I − iRef) < [Params.lowV] (the voltage brought to 10 A); CRITICAL «Сейчас отключится»: the voltage
- *    under load itself < [Params.critV]. CRITICAL steps back to WARNING after [Params.clearMs] under load at
- *    ≥ [Params.critClearV]; both clear only after a charge: V ≥ [Params.chargedV] at I ≤ [Params.restA] for
- *    [Params.chargedMs].
- *  - battery_hot WARNING «Батарея греется» at max(temp1, temp2) ≥ [Params.hotC], CRITICAL «Батарея перегрета»
- *    at ≥ [Params.overheatC], each clearing [Params.hystC] lower.
+ *    under load itself < [Params.critV] (19.10 traction cut at 31.45 V on an empty pack; in the bottom ~30 % the
+ *    controller cuts the current to hold the pack at 31.5–31.7 V). CRITICAL steps back to WARNING after
+ *    [Params.clearMs] under load at ≥ [Params.critClearV]; both clear only after a charge: V ≥ [Params.chargedV]
+ *    at I ≤ [Params.restA] for [Params.chargedMs].
+ *  - battery_hot WARNING «Батарея греется» at max(temp1, temp2) ≥ [Params.hotC], CRITICAL «Батарея перегрета —
+ *    скоро отключится, сбавь газ» at ≥ [Params.overheatC] (15.10 went dark at 57 / 61 °C: the battery's
+ *    over-temperature protection), each clearing [Params.hystC] lower.
  *  - range: (remaining − reservePct % of full, mAh) · whPerMah ÷ Wh/km over the last windowKm (≥ minWindowKm),
  *    else since the start (≥ minSessionKm), else defaultWhKm. The distance is the advisor's own ([km]): the
  *    increments of the stream only, with the previous 3A 17 and the last BMS frame within [Params.gapMs] — what the
@@ -48,7 +50,7 @@ class BatteryAdvisor(val params: Params = Params()) {
         val rRef: Double = 0.25,
         val iRef: Double = 10.0,
         val lowV: Double = 32.4,
-        val critV: Double = 32.0,
+        val critV: Double = 31.6,
         val critClearV: Double = 32.5,
         val clearMs: Long = 20000,
         val chargedV: Double = 37.5,
@@ -215,7 +217,7 @@ class BatteryAdvisor(val params: Params = Params()) {
             (LOW to WarningLevel.WARNING) to "Заряд на исходе",
             (LOW to WarningLevel.CRITICAL) to "Сейчас отключится",
             (HOT to WarningLevel.WARNING) to "Батарея греется",
-            (HOT to WarningLevel.CRITICAL) to "Батарея перегрета",
+            (HOT to WarningLevel.CRITICAL) to "Батарея перегрета — скоро отключится, сбавь газ",
         )
     }
 }

@@ -67,7 +67,7 @@ class AlertsTest {
 
     @Test fun texts() {
         assertEquals("Сейчас отключится · 31,8 В под нагрузкой", WarnText.line(low(WarningLevel.CRITICAL, 31.83)))
-        assertEquals("Батарея перегрета · 56 °C", WarnText.line(hot(WarningLevel.CRITICAL, 56.0)))
+        assertEquals("Батарея перегрета — скоро отключится, сбавь газ · 56 °C", WarnText.line(hot(WarningLevel.CRITICAL, 56.0)))
         assertEquals("Заряд на исходе", WarnText.line(low(WarningLevel.WARNING).copy(value = null)))
         assertTrue(WarnText.hint(low(WarningLevel.CRITICAL)).isNotEmpty())
         val ws = listOf(low(WarningLevel.CRITICAL, 31.8), hot(WarningLevel.WARNING, 51.0))

@@ -25,17 +25,36 @@ class RealLogsTest(unittest.TestCase):
         for name, t_cut in rl.CUTOFF_T.items():
             ft = ba.first_times(steps(name))
             self.assertGreaterEqual(t_cut - ft[(LOW, W)], 5 * 60000, name)    # «Заряд на исходе» ≥ 5 min before
-            self.assertGreaterEqual(t_cut - ft[(LOW, C)], 60000, name)        # «Сейчас отключится» ≥ 1 min before
-            self.assertLessEqual(ft[(LOW, W)], ft[(LOW, C)], name)
             self.assertGreaterEqual(t_cut - ft[(HOT, C)], 5 * 60000, name)    # both were hot (61 / 58 °C)
+        # 19.10: the low-voltage cutoff (31.45 V at 8.6 A): «Сейчас отключится» ≥ 1 min before
+        ft = ba.first_times(steps(rl.CUTOFF))
+        self.assertGreaterEqual(rl.CUTOFF_T[rl.CUTOFF] - ft[(LOW, C)], 60000)
+        self.assertLessEqual(ft[(LOW, W)], ft[(LOW, C)])
+        # 15.10: the thermal cutoff (57 / 61 °C at 31.9 V): «перегрета» leads it by minutes
+        ft = ba.first_times(steps(rl.CUTOFF_HOT))
+        self.assertGreaterEqual(rl.CUTOFF_T[rl.CUTOFF_HOT] - ft[(HOT, C)], 15 * 60000)
 
     def test_full_discharges_warn_too(self):
         for name in (rl.SOLO, rl.TWO_UP_EMPTY):
             st = steps(name)
             end = ba.end_of_traction(st)[0]
             ft = ba.first_times(st)
-            self.assertGreaterEqual(end - ft[(LOW, C)], 60000, name)
+            self.assertGreaterEqual(end - ft[(LOW, W)], 5 * 60000, name)
             self.assertLessEqual(end - ft[(LOW, W)], 20 * 60000, name)      # not from the start of the ride
+        st = steps(rl.SOLO)                                               # solo it sagged to 31.1 V at the end
+        self.assertGreaterEqual(ba.end_of_traction(st)[0] - ba.first_times(st)[(LOW, C)], 60000)
+
+    def test_critical_only_below_its_threshold(self):
+        # «Сейчас отключится» never while the voltage under load holds ≥ 31.6 V: not on 15.10 (≥ 31.70 V, the
+        # thermal cutoff), 16.10 to 0 % (≥ 31.61 V) or the 19.10 evening ride (≥ 31.90 V); and when it fires,
+        # the 2 s before it were all under load below 31.6 V
+        for name in (rl.CUTOFF_HOT, rl.TWO_UP_EMPTY, rl.TWO_UP_HALF, rl.EVENING):
+            self.assertNotIn((LOW, C), ba.first_times(steps(name)), name)
+        for name in (rl.SOLO, rl.CUTOFF):
+            st = steps(name)
+            t = ba.first_times(st)[(LOW, C)]
+            run = [s[4] for s in st if t - 2000 <= s[0] <= t]
+            self.assertTrue(all(x.i >= 5 and x.v < 31.6 for x in run), name)
 
     def test_no_low_battery_alarm_above_half(self):
         # two-up at the 16 A limit 100 → 54 %: the voltage under load sags to 32.5 V, but not «на исходе»
@@ -48,8 +67,12 @@ class RealLogsTest(unittest.TestCase):
     def test_warnings_latch_until_charged(self):
         for name in rl.CUTOFF_T:
             st = steps(name)
-            first = ba.first_times(st)[(LOW, C)]
-            self.assertTrue(all(any(w.id == LOW and w.level == C for w in s[2]) for s in st if s[0] >= first), name)
+            ft = ba.first_times(st)
+            for lvl in (W, C):
+                if (LOW, lvl) not in ft:
+                    continue
+                first = ft[(LOW, lvl)]
+                self.assertTrue(all(any(w.id == LOW and (lvl == W or w.level == C) for w in s[2]) for s in st if s[0] >= first), name)
 
     def test_range_on_full_discharges(self):
         errs = []
@@ -110,10 +133,12 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(adv.warnings(), [])
         self.feed(adv, 3800, 6000, 32.2, 9.0)           # ≥ 2 s
         self.assertEqual([(w.id, w.level, w.text) for w in adv.warnings()], [(LOW, W, 'Заряд на исходе')])
-        self.feed(adv, 6000, 9000, 31.8, 10.0)
+        self.feed(adv, 6000, 9000, 31.7, 10.0)          # 31.7 V: still «на исходе»
+        self.assertEqual(adv.warnings()[0].level, W)
+        self.feed(adv, 9000, 12000, 31.5, 10.0)
         w = adv.warnings()[0]
-        self.assertEqual((w.id, w.level, w.text, w.value), (LOW, C, 'Сейчас отключится', 31.8))
-        self.feed(adv, 9000, 20000, 34.5, 0.1)          # rest: stays
+        self.assertEqual((w.id, w.level, w.text, w.value), (LOW, C, 'Сейчас отключится', 31.5))
+        self.feed(adv, 12000, 20000, 34.5, 0.1)         # rest: stays
         self.assertEqual(adv.warnings()[0].level, C)
         self.feed(adv, 20000, 45000, 32.8, 5.5)         # low load, V ≥ 32.5 for 20 s → back to «на исходе»
         self.assertEqual(adv.warnings()[0].level, W)
@@ -131,6 +156,8 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(levels, [None, W, W, None, C, C, W, W, W, None])
         adv.on_bms(9000, 38.0, 0.1, temp1=200, temp2=None)        # a broken sensor value is ignored
         self.assertEqual(adv.tmax, 47)
+        adv.on_bms(9300, 38.0, 0.1, temp1=57, temp2=61)             # where 15.10 went dark
+        self.assertEqual(adv.warnings()[0].text, 'Батарея перегрета — скоро отключится, сбавь газ')
 
     def test_range_default_session_recent(self):
         adv = ba.BatteryAdvisor()

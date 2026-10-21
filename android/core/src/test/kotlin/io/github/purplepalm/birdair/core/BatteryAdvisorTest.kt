@@ -117,19 +117,44 @@ class BatteryAdvisorTest {
         for ((path, cut) in RideLogs.CUTOFF_T) {
             val st = replay(path)
             val low = first(st, BatteryAdvisor.LOW, false)!!
-            val crit = first(st, BatteryAdvisor.LOW, true)!!
             assertTrue(cut - low >= 5 * 60_000, "$path: «Заряд на исходе» ${(cut - low) / 1000} s before")
-            assertTrue(cut - crit >= 60_000, "$path: «Сейчас отключится» ${(cut - crit) / 1000} s before")
             assertTrue(cut - first(st, BatteryAdvisor.HOT, true)!! >= 5 * 60_000, path)
-            // active at the moment of the cutoff (a re-sent log may go on after it, cooling down)
-            val w = st.last { it.t <= cut }.ws
-            assertEquals(listOf(BatteryAdvisor.LOW, BatteryAdvisor.HOT), w.map { it.id })
-            assertEquals("Сейчас отключится", w[0].text)
-            assertEquals(WarningLevel.CRITICAL, w[0].level)
         }
+        // 19.10, the low-voltage cutoff: «Сейчас отключится» ≥ 1 min before, active at the cutoff (a re-sent log may
+        // go on after it, cooling down)
+        val cut = RideLogs.CUTOFF_T.getValue(RideLogs.CUTOFF)
+        val st = replay(RideLogs.CUTOFF)
+        val crit = first(st, BatteryAdvisor.LOW, true)!!
+        assertTrue(cut - crit >= 60_000, "«Сейчас отключится» ${(cut - crit) / 1000} s before")
+        val w = st.last { it.t <= cut }.ws
+        assertEquals(listOf(BatteryAdvisor.LOW to WarningLevel.CRITICAL, BatteryAdvisor.HOT to WarningLevel.CRITICAL), w.map { it.id to it.level })
+        assertEquals("Сейчас отключится", w[0].text)
+        // 15.10, the thermal cutoff (57 / 61 °C at 31.9 V under load): «перегрета» leads it by minutes; the voltage
+        // never got under 31.70 V, so no «Сейчас отключится»
+        val hotCut = RideLogs.CUTOFF_T.getValue(RideLogs.CUTOFF_HOT)
+        val hst = replay(RideLogs.CUTOFF_HOT)
+        assertTrue(hotCut - first(hst, BatteryAdvisor.HOT, true)!! >= 15 * 60_000)
+        assertNull(first(hst, BatteryAdvisor.LOW, true))
+        val hw = hst.last { it.t <= hotCut }.ws
+        assertEquals(listOf(BatteryAdvisor.HOT to WarningLevel.CRITICAL, BatteryAdvisor.LOW to WarningLevel.WARNING), hw.map { it.id to it.level })
+        assertEquals("Батарея перегрета — скоро отключится, сбавь газ", hw[0].text)
         // two-up at 54 %, charging: nothing
         for (path in listOf(RideLogs.TWO_UP_HALF, RideLogs.CHARGE, RideLogs.CAR_CHARGE))
             assertTrue(replay(path).all { it.ws.isEmpty() }, path)
+    }
+
+    /** «Сейчас отключится» only once the voltage under load has stayed below 31.6 V for 2 s: never on 16.10 to 0 %
+     *  (≥ 31.61 V), and solo at the end ≥ 1 min before the last traction. */
+    @Test fun criticalOnlyBelowItsThreshold() {
+        assertNull(first(replay(RideLogs.TWO_UP_EMPTY), BatteryAdvisor.LOW, true))
+        for (path in listOf(RideLogs.SOLO, RideLogs.CUTOFF)) {
+            val st = replay(path)
+            val t = first(st, BatteryAdvisor.LOW, true)!!
+            assertTrue(st.filter { it.t in t - 2000..t }.all { it.f.currentA >= 5 && it.f.voltage < 31.6 }, path)
+        }
+        val solo = replay(RideLogs.SOLO)
+        val end = solo.last { it.f.currentA >= 5 }.t
+        assertTrue(end - first(solo, BatteryAdvisor.LOW, true)!! >= 60_000)
     }
 
     @Test fun rangeOnTheCutoffAtOnePercent() {
@@ -152,14 +177,16 @@ class BatteryAdvisorTest {
         assertTrue(a.warnings().isEmpty())
         feed(1800, 4500, 32.2, 9.0)
         assertEquals(listOf(BatteryWarning("battery_low", WarningLevel.WARNING, "Заряд на исходе", 32.2)), a.warnings())
-        feed(4500, 7500, 31.8, 10.0)
-        assertEquals(WarningLevel.CRITICAL, a.warnings()[0].level)
-        feed(7500, 30000, 32.8, 5.5)
+        feed(4500, 7500, 31.7, 10.0)                // 31.7 V under load: still «на исходе»
         assertEquals(WarningLevel.WARNING, a.warnings()[0].level)
-        feed(30000, 41000, 40.5, -1.5)
+        feed(7500, 7500 + 2400, 31.5, 10.0)
+        assertEquals(WarningLevel.CRITICAL, a.warnings()[0].level)
+        feed(9900, 32400, 32.8, 5.5)
+        assertEquals(WarningLevel.WARNING, a.warnings()[0].level)
+        feed(32400, 43400, 40.5, -1.5)
         assertTrue(a.warnings().isEmpty())
         feed(41000, 41300, 40.0, 0.1, 55.0)
-        assertEquals(BatteryWarning("battery_hot", WarningLevel.CRITICAL, "Батарея перегрета", 55.0), a.warnings().single())
+        assertEquals(BatteryWarning("battery_hot", WarningLevel.CRITICAL, "Батарея перегрета — скоро отключится, сбавь газ", 55.0), a.warnings().single())
         feed(41300, 41600, 40.0, 0.1, 53.0)
         assertEquals(WarningLevel.WARNING, a.warnings().single().level)
         feed(41600, 41900, 40.0, 0.1, 48.0)
