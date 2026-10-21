@@ -43,8 +43,10 @@ object Notifications {
         nm.createNotificationChannel(warn)
     }
 
-    /** The red and amber lamps, red first ([RideAlerts.items]); [loud]: buzz, else the text changes silently. */
-    fun warning(ctx: Context, items: List<AlertItem>, loud: Boolean, localOnly: Boolean = false) {
+    /** The red and amber lamps of [d] ([RideAlerts.items]), titled by the one that buzzed ([RideAlerts.Decision.head]);
+     *  [loud]: buzz, else the text changes silently. */
+    fun warning(ctx: Context, d: RideAlerts.Decision, loud: Boolean, localOnly: Boolean = false) {
+        val items = d.items
         if (items.isEmpty()) { cancelWarning(ctx); return }
         val open = PendingIntent.getActivity(
             ctx, 3,
@@ -52,13 +54,13 @@ object Notifications {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val crit = items.any { it.level == LampLevel.RED }
-        val hint = items.first().hint
+        val w = RideAlerts.text(items, d.head)
         val n = NotificationCompat.Builder(ctx, WARN_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_scooter)
             // a long title («Батарея перегрета — скоро отключится, сбавь газ») ellipsizes; the big text has every line whole
-            .setContentTitle(RideAlerts.title(items))
-            .setContentText(items.first().line)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(RideAlerts.body(items) + if (hint.isNotEmpty()) "\n$hint" else ""))
+            .setContentTitle(w.title)
+            .setContentText(w.text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(w.big))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setColor(if (crit) CRIT else WARN)

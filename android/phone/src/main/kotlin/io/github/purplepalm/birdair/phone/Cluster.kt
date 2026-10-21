@@ -5,13 +5,17 @@ import io.github.purplepalm.birdair.core.BatteryWarning
 import io.github.purplepalm.birdair.core.Lamp
 import io.github.purplepalm.birdair.core.LampChange
 import io.github.purplepalm.birdair.core.LampLevel
+import io.github.purplepalm.birdair.core.MotionFrame
 import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.core.WarningLevel
+import java.util.Locale
 
 /** The tell-tales in words: the «Приборка» card, its journal, the log marks and the notification. */
 object LampText {
-    /** The lamp's text without the advice after « — » («Перегрев — сбавь газ» → «Перегрев»). */
-    fun short(l: Lamp): String = l.text.substringBefore(" — ").ifEmpty { TellTales.NAMES[l.id] ?: l.id }
+    /** The lamp's text without the advice after « — » («Перегрев — сбавь газ» → «Перегрев»; «Полная — тормози мягко»,
+     *  the dial's short form, → «Батарея полная»). */
+    fun short(l: Lamp): String = l.text.substringBefore(" — ").let { WHOLE[it] ?: it }.ifEmpty { TellTales.NAMES[l.id] ?: l.id }
+    private val WHOLE = mapOf("Полная" to "Батарея полная")
 
     /** What the value is, when the text does not say it already: «49 °C», «15,8 А», «28,9 км/ч»; null: nothing to add. */
     fun value(l: Lamp, units: String = Units.KMH): String? {
@@ -28,9 +32,18 @@ object LampText {
         }
     }
 
-    /** «Батарея горячая 49 °C», «Перегрев 56 °C ▲» (▲: climbing fast, when the text does not say so), «ECO 180 Вт». */
+    /** «Батарея горячая 49 °C», «Перегрев 56 °C ▲» (▲: climbing fast, when the text does not say so), «ECO 180 Вт»,
+     *  «Нет связи с BMS (код 0x26)». */
     fun display(l: Lamp, units: String = Units.KMH): String =
-        short(l) + (value(l, units)?.let { " $it" } ?: "") + if (l.rising && l.id == TellTales.TEMP && !l.text.contains("греется")) " ▲" else ""
+        short(l) + (value(l, units)?.let { " $it" } ?: "") + (if (l.rising && l.id == TellTales.TEMP && !l.text.contains("греется")) " ▲" else "") +
+            if (l.id == TellTales.BATTERY && l.text.startsWith(NO_BMS)) " (код 0x" + String.format(Locale.ROOT, "%02X", MotionFrame.CODE_NO_BMS) + ")" else ""
+
+    /** The charge lamp lit for the BMS itself: its under-voltage flag or the controller's «no BMS» code. */
+    fun bms(text: String): Boolean = text.startsWith(NO_BMS) || text.startsWith(BMS_CUT)
+
+    /** The core's texts ([TellTales.lamps]) that the phone treats apart. */
+    const val NO_BMS = "Нет связи с BMS"
+    const val BMS_CUT = "BMS отключает батарею"
 
     /** The same with the advice («Перегрев — сбавь газ 56 °C»): the notification, the dial's line on the card. */
     fun full(l: Lamp, units: String = Units.KMH): String =
@@ -80,8 +93,8 @@ object LampText {
         TellTales.TEMP -> if (l.level == LampLevel.RED) "Дай батарее остыть: сбавь скорость или остановись. 15.10 защита батареи отключила самокат на 57 °C."
             else "Батарея горячая. Если поднимется до 55 °C — остановись остыть."
         TellTales.BATTERY -> when {
-            l.text.startsWith("Нет связи") -> "Контроллер не видит BMS (код 0x26): батарея отключена, мотор не потянет. На руле, видимо, ошибка 12."
-            l.text.startsWith("BMS") -> "BMS отключает батарею по низкому напряжению: через секунды мотор пропадёт. Остановись; дальше — зарядка."
+            l.text.startsWith(NO_BMS) -> "Контроллер не видит BMS (код 0x26): батарея отключена, мотор не потянет. На руле, видимо, ошибка 12."
+            l.text.startsWith(BMS_CUT) -> "BMS отключает батарею по низкому напряжению: через секунды мотор пропадёт. Остановись; дальше — зарядка."
             l.level == LampLevel.RED -> "Под нагрузкой у отсечки: контроллер вот-вот отключит мотор. Сбавь газ, ищи где встать."
             else -> "Батарея садится к отсечке: внизу заряда контроллер урезает ток, отключиться может раньше 0 %."
         }
@@ -127,18 +140,25 @@ class LampJournal(val capacity: Int = CAPACITY) {
  *  - a lamp stepping up to YELLOW, AMBER or RED is marked at once (a red never waits);
  *  - anything else (going off, stepping down, GREEN / BLUE states) at most once per lamp per [gapMs]: what is left
  *    is marked when the gap is over, if the lamp is still not as last marked (on and off again within it: nothing);
- *  - ECO, overspeed and link ([NOISY]) only that way, steps up included; ECO only once it has been on [ecoMinMs].
+ *  - ECO, overspeed, link and traction ([noisy]) only that way, steps up included; ECO only once it has been on
+ *    [ecoMinMs] (traction two-up at the current limit relights every few seconds: 15.10 30 marks, now 20);
+ *  - the BMS's and the controller's own conditions ([EVENTS]) at once when the lamp shows one, at its level or not and
+ *    noisy or not (20.10 the charge lamp was red with «Сейчас отключится» when the BMS cut the pack, the link lamp
+ *    amber with «Руль молчит» when the dash answered with the BMS silent); the same one of a lamp again only after
+ *    [gapMs].
  * Times are the session clock (the log's). Not thread-safe: the publisher is the one caller.
  */
-class LampMarks(val gapMs: Long = GAP_MS, val ecoMinMs: Long = ECO_MIN_MS) {
-    /** A mark to write: lamp [id] is now [level] (OFF: went off); [text] goes into the log. */
-    data class Mark(val id: String, val level: LampLevel, val text: String)
+class LampMarks(val gapMs: Long = GAP_MS, val ecoMinMs: Long = ECO_MIN_MS, val noisy: Set<String> = NOISY) {
+    /** A mark to write: lamp [id] is now [level] (OFF: went off); [text] goes into the log; [event]: one of [EVENTS]. */
+    data class Mark(val id: String, val level: LampLevel, val text: String, val event: Boolean = false)
 
     private class St {
         var marked = LampLevel.OFF
         var markedAt = Long.MIN_VALUE / 2
         var label = ""
         var since: Long? = null
+        var event: String? = null                   // the [EVENTS] text shown at the last update
+        val eventAt = HashMap<String, Long>()       // … and when each was marked
     }
 
     private val st = HashMap<String, St>()
@@ -152,11 +172,16 @@ class LampMarks(val gapMs: Long = GAP_MS, val ecoMinMs: Long = ECO_MIN_MS) {
             val l = by[id]?.takeIf { it.level != LampLevel.OFF }
             val cur = l?.level ?: LampLevel.OFF
             if (cur == LampLevel.OFF) s.since = null else if (s.since == null) s.since = nowMs
-            if (cur == s.marked) continue
-            if (id == TellTales.ECO && l != null && nowMs - (s.since ?: nowMs) < ecoMinMs) continue
-            val up = id !in NOISY && cur.ordinal > s.marked.ordinal && cur.ordinal >= LampLevel.YELLOW.ordinal
-            if (!up && nowMs - s.markedAt < gapMs) continue
-            (out ?: ArrayList<Mark>().also { out = it }).add(Mark(id, cur, if (l == null) LampText.offMark(s.label) else LampText.mark(l)))
+            val ev = l?.let { event(it) }
+            val newEvent = ev != null && ev != s.event && nowMs - (s.eventAt[ev] ?: Long.MIN_VALUE / 2) >= gapMs
+            s.event = ev
+            if (!newEvent) {
+                if (cur == s.marked) continue
+                if (id == TellTales.ECO && l != null && nowMs - (s.since ?: nowMs) < ecoMinMs) continue
+                val up = id !in noisy && cur.ordinal > s.marked.ordinal && cur.ordinal >= LampLevel.YELLOW.ordinal
+                if (!up && nowMs - s.markedAt < gapMs) continue
+            } else s.eventAt[ev!!] = nowMs
+            (out ?: ArrayList<Mark>().also { out = it }).add(Mark(id, cur, if (l == null) LampText.offMark(s.label) else LampText.mark(l), newEvent))
             s.marked = cur
             s.markedAt = nowMs
             if (l != null) s.label = LampText.offLabel(l)
@@ -170,7 +195,18 @@ class LampMarks(val gapMs: Long = GAP_MS, val ecoMinMs: Long = ECO_MIN_MS) {
     companion object {
         const val GAP_MS = 30_000L
         const val ECO_MIN_MS = 30_000L
-        val NOISY = setOf(TellTales.ECO, TellTales.OVERSPEED, TellTales.LINK)
+        val NOISY = setOf(TellTales.ECO, TellTales.OVERSPEED, TellTales.LINK, TellTales.TRACTION)
+
+        /** The core's texts ([TellTales.lamps]) for what the BMS and the controller say themselves, by lamp. */
+        val EVENTS: Map<String, List<String>> = mapOf(
+            TellTales.BATTERY to listOf(LampText.BMS_CUT, LampText.NO_BMS),
+            TellTales.LINK to listOf("Руль на связи, BMS молчит"),
+            TellTales.OVERVOLT to listOf("Защита от перенапряжения"),
+            TellTales.CHARGING to listOf("Зарядка ждёт остывания"),
+        )
+
+        /** The [EVENTS] text lamp [l] shows, or null. */
+        fun event(l: Lamp): String? = EVENTS[l.id]?.firstOrNull { l.text.startsWith(it) }
     }
 }
 
@@ -183,27 +219,31 @@ data class AlertItem(val id: String, val level: LampLevel, val title: String, va
  *  - RED: when it lights or steps up to red, at most once per lamp per [redCooldownMs];
  *  - AMBER: once per ride (and not again within [redCooldownMs] after a quick restart);
  *  - going down never buzzes, the text changes silently; nothing left — the notification goes.
+ * The title is the item that buzzed ([Decision.head]), not the first in the list: 20.10 «Заряд на исходе» buzzed with
+ * «Батарея горячая» (lit and buzzed before, first in [TellTales.IDS]) as the title. It stays the title while it is on
+ * and nothing stronger is; then the strongest item is.
  * Not on it: [TellTales.QUIET] lamps (standing conditions, ECO) and the link (the «Поездка» notification says it).
  * Pure logic (the clock is passed in); not thread-safe — the publisher is the one caller.
  */
 class RideAlerts(val redCooldownMs: Long = COOLDOWN_MS) {
     enum class Action { NONE, ALERT, UPDATE, CANCEL }
 
-    /** [rang]: the items that made it buzz (ALERT only). */
-    class Decision(val action: Action, val items: List<AlertItem>, val rang: List<AlertItem> = emptyList())
+    /** [rang]: the items that made it buzz (ALERT only), strongest first; [head]: the notification's title item. */
+    class Decision(val action: Action, val items: List<AlertItem>, val rang: List<AlertItem> = emptyList(), val head: AlertItem? = items.firstOrNull())
 
     private var prev: Map<String, LampLevel> = emptyMap()
     private val redAt = HashMap<String, Long>()
     private val amberAt = HashMap<String, Long>()
     private val amberThisRide = HashSet<String>()
+    private var headId: String? = null
 
     fun update(lamps: List<Lamp>, warnings: List<BatteryWarning>, nowMs: Long, units: String = Units.KMH): Decision {
         val items = items(lamps, warnings, units)
         val cur = items.associate { it.id to it.level }
-        if (cur == prev) return Decision(Action.NONE, items)
+        if (cur == prev) return Decision(Action.NONE, items, head = head(items))
         val was = prev
         prev = cur
-        if (cur.isEmpty()) return Decision(Action.CANCEL, items)
+        if (cur.isEmpty()) { headId = null; return Decision(Action.CANCEL, items) }
         val rang = ArrayList<AlertItem>()
         for (item in items) {
             val id = item.id
@@ -219,11 +259,21 @@ class RideAlerts(val redCooldownMs: Long = COOLDOWN_MS) {
                 if (last == null || nowMs - last >= redCooldownMs) { rang.add(item); amberAt[id] = nowMs }
             }
         }
-        return Decision(if (rang.isNotEmpty()) Action.ALERT else Action.UPDATE, items, rang)
+        if (rang.isNotEmpty()) { headId = rang.first().id; return Decision(Action.ALERT, items, rang, rang.first()) }
+        return Decision(Action.UPDATE, items, head = head(items))
+    }
+
+    /** The item that buzzed last while it is on and as strong as any, else the strongest. */
+    private fun head(items: List<AlertItem>): AlertItem? {
+        val top = items.firstOrNull() ?: return null
+        val h = items.firstOrNull { it.id == headId }
+        if (h != null && h.level == top.level) return h
+        headId = top.id
+        return top
     }
 
     /** A new ride: what is on counts as new again and AMBER may buzz once more; the cooldowns stay. */
-    fun reset() { prev = emptyMap(); amberThisRide.clear() }
+    fun reset() { prev = emptyMap(); amberThisRide.clear(); headId = null }
 
     companion object {
         const val COOLDOWN_MS = 5 * 60_000L
@@ -241,19 +291,32 @@ class RideAlerts(val redCooldownMs: Long = COOLDOWN_MS) {
                 val lvl = if (w.level == WarningLevel.CRITICAL) LampLevel.RED else LampLevel.AMBER
                 val have = out[id]
                 if (have == null || lvl.ordinal > have.level.ordinal) out[id] = AlertItem(id, lvl, w.text, WarnText.line(w), WarnText.hint(w))
-                else if (have.level == lvl) out[id] = have.copy(hint = WarnText.hint(w))
+                // the advisor's advice, unless the charge lamp is lit for the BMS itself («BMS отключает батарею», «Нет связи с BMS»)
+                else if (have.level == lvl && !(id == TellTales.BATTERY && LampText.bms(have.title))) out[id] = have.copy(hint = WarnText.hint(w))
             }
             return out.values.sortedWith(compareByDescending<AlertItem> { it.level.ordinal }.thenBy { TellTales.IDS.indexOf(it.id) })
         }
 
         fun title(items: List<AlertItem>): String = items.firstOrNull()?.title ?: ""
         fun body(items: List<AlertItem>): String = items.joinToString("\n") { it.line }
+
+        /** The notification's words: title and line of [head] (the item that buzzed), every line in the big text with
+         *  [head]'s first, then its advice. */
+        fun text(items: List<AlertItem>, head: AlertItem? = items.firstOrNull()): AlertText {
+            val h = head ?: items.firstOrNull() ?: return AlertText("", "", "")
+            val body = body(listOf(h) + items.filter { it.id != h.id })
+            return AlertText(h.title, h.line, body + if (h.hint.isNotEmpty()) "\n" + h.hint else "")
+        }
     }
 }
 
+/** What the «Предупреждения» notification says: [title], [text] (collapsed), [big] (expanded). */
+data class AlertText(val title: String, val text: String, val big: String)
+
 /**
- * What the phone does with the lamps of each published snapshot: the journal ([journal], every level change), the log
- * marks ([LampMarks]) and the notification decision ([RideAlerts]). Not thread-safe: the publisher is the one caller.
+ * What the phone does with the lamps of each published snapshot: the journal ([journal], every level change and each
+ * BMS / controller condition), the log marks ([LampMarks]) and the notification decision ([RideAlerts]). Not
+ * thread-safe: the publisher is the one caller.
  */
 class ClusterWatch(capacity: Int = LampJournal.CAPACITY) {
     private var prev: List<Lamp> = emptyList()
@@ -261,12 +324,20 @@ class ClusterWatch(capacity: Int = LampJournal.CAPACITY) {
     val marks = LampMarks()
     val alerts = RideAlerts()
 
-    /** The lamp level changes of [lamps] since the last call, added to the journal at [wallMs]. */
+    /** The lamp level changes of [lamps] since the last call, and a lamp that kept its level but now shows one of
+     *  [LampMarks.EVENTS] («Сейчас отключится» → «BMS отключает батарею», red both), added to the journal at [wallMs]. */
     fun changes(lamps: List<Lamp>, wallMs: Long): List<LampChange> {
         val ch = TellTales.changes(prev, lamps)
+        val was = prev.associateBy { it.id }
         prev = lamps
-        for (c in ch) journal.add(LampEvent(wallMs, c.id, c.from, c.to, c.lamp))
-        return ch
+        val evs = lamps.filter { l ->
+            val e = LampMarks.event(l)
+            val w = was[l.id]
+            e != null && w != null && w.level == l.level && LampMarks.event(w) != e
+        }
+        val all = if (evs.isEmpty()) ch else (ch + evs.map { LampChange(it.id, it.level, it.level, it) }).sortedBy { TellTales.IDS.indexOf(it.id) }
+        for (c in all) journal.add(LampEvent(wallMs, c.id, c.from, c.to, c.lamp))
+        return all
     }
 
     /** A new recording: the journal, the marks and «once per ride» start over (the RED cooldown stays). */

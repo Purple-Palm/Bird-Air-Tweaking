@@ -384,12 +384,13 @@ private fun PowerCard(t: Telemetry, s: UiSettings) {
     val fast = s.fastPower
     val p = Power.watts(t, fast)
     val live = t.streaming && p != null
+    // riding, the tracker's PowerState: coasting at −0.2 A reads «Накат» in ink, not regen blue
     val flow = Flow.of(t, fast)
     val color = when {
         p == null || !live -> c.muted
-        p < 0 -> c.flow
-        abs(p) < 5 -> c.ink
-        else -> c.draw
+        flow.intoBattery -> c.flow
+        flow == Flow.DRIVE && abs(p) >= 5 -> c.draw
+        else -> c.ink
     }
     val frac = rememberSpring(if (live) (p / t.peakW).toFloat().coerceIn(-1f, 1f) else 0f, s.smooth)
     Panel {

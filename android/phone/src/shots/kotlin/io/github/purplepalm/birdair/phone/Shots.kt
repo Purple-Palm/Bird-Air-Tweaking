@@ -56,21 +56,23 @@ class Shots {
         override fun allowInstall() {}
     }
 
-    private fun replay(untilMs: Long, window: String) {
+    private fun replay(log: String, untilMs: Long, window: String) {
         val app = rule.activity.applicationContext
         ScooterRepo.init(app)
         ScooterRepo.tracker.setDecoder(TestLogs.decoder())
         ScooterRepo.tracker.odometerState = null   // each shot replays the log from its start
+        ScooterRepo.update.value = UpdateState()   // midRide's «Есть обновление» stays its own
         ScooterRepo.updateUi { it.copy(chartWindow = window, fastPower = true, smooth = true) }
         ScooterRepo.status.update { it.copy(running = true, link = Link.CONNECTED, deviceName = "scooter", address = "AA:BB:CC:DD:EE:FF") }
-        ScooterRepo.setNote("вдвоём, FLY, до отсечки")
+        ScooterRepo.setNote(if (log == LOG) "вдвоём, FLY, до отсечки" else "один, FLY, до отсечки, до нуля")
         val s = ScooterRepo.newSession("scooter", "AA:BB:CC:DD:EE:FF")
         ScooterRepo.setLink(Link.CONNECTED)
         var at = 0L
         var marked = false
-        for (e in TestLogs.rx(LOG)) {
+        for (e in TestLogs.rx(log, found = true)) {
             if (e.t > untilMs) break
             if (e.t > at) { ShadowSystemClock.advanceBy(Duration.ofMillis(e.t - at)); at = e.t }
+            if (e.found) { ScooterRepo.restartStreams(); continue }
             s.recorder.rx(e.s, e.u, e.b, s.now())
             s.rx.incrementAndGet()
             ScooterRepo.pipeline.onRx(e.s, e.u, e.b, s.now())
@@ -79,8 +81,8 @@ class Shots {
         }
     }
 
-    private fun shot(name: String, untilMs: Long, window: String, touchAt: Float? = null, tapLamp: String? = null, extra: () -> Unit = {}) {
-        replay(untilMs, window)
+    private fun shot(name: String, untilMs: Long, window: String, touchAt: Float? = null, tapLamp: String? = null, log: String = LOG, extra: () -> Unit = {}) {
+        replay(log, untilMs, window)
         extra()
         rule.setContent { BirdTheme(true) { MainScreen(ui, SystemState()) } }
         settle()
@@ -117,6 +119,11 @@ class Shots {
         ScooterRepo.watch.update { it.copy(nodes = listOf("Galaxy Watch Ultra"), checked = true, helloAt = android.os.SystemClock.elapsedRealtime(), version = WatchVersion(50, "0.50")) }
         ScooterRepo.unsent.value = listOf(LocalLog("20261019-174739-log.json.gz", 1_061_787, System.currentTimeMillis(), current = true), LocalLog("20261016-205717-log.json.gz", 1_300_730, System.currentTimeMillis() - 3 * 86_400_000L))
     }
+
+    /** 20.10, 1.1 s after the BMS's last frame: «BMS отключает батарею» (b5 0x02), the charge lamp tapped. */
+    @Test fun bmsCut() = shot("cluster-bms-cut", 1_813_500L, ChartWindow.ALL, tapLamp = "Заряд", log = TestLogs.TO_ZERO)
+    /** 20.10, 1826 s: the controller's 0x26 («Нет связи с BMS») and the dash answering with no frames, the link lamp tapped. */
+    @Test fun bmsSilent() = shot("cluster-bms-silent", 1_826_000L, "300", tapLamp = "Связь", log = TestLogs.TO_ZERO)
 
     companion object {
         const val LOG = "logs/20261019-174739-log-app.json.gz"
