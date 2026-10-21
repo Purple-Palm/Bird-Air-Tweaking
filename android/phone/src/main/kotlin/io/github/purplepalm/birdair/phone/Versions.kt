@@ -80,7 +80,8 @@ object Versions {
 
     /** The watch hint: null when it is fine or unknown; the phone's own code 1 is a local build and compares with nothing. */
     fun watchHint(w: WatchVersion?, helloSeen: Boolean, phoneCode: Int): String? {
-        val upd = "обнови часы: $WATCH_APK через Bugjaeger (android/README.md)"
+        // watch builds with WatchUpdater update themselves; older ones once more through Bugjaeger
+        val upd = "обнови часы: на часах свайп влево → «Обновить часы» (нет кнопки — $WATCH_APK через Bugjaeger, android/README.md)"
         if (w == null) return if (helloSeen && phoneCode > 1) "Часы не сообщают версию — там старая сборка, $upd." else null
         val c = w.versionCode ?: return null
         return if (c < phoneCode) "На часах v$c, на телефоне v$phoneCode — $upd." else null

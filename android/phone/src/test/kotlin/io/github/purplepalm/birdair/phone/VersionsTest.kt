@@ -54,6 +54,7 @@ class VersionsTest {
         // the hint
         assertNull(Versions.watchHint(WatchVersion(42, null), true, 42))
         assertTrue(Versions.watchHint(WatchVersion(40, null), true, 42)!!.contains("bird-air-watch.apk через Bugjaeger"))
+        assertTrue("the watch updates itself", Versions.watchHint(WatchVersion(40, null), true, 42)!!.contains("«Обновить часы»"))
         assertTrue(Versions.watchHint(null, true, 42)!!.contains("старая сборка"))
         assertNull("no hello yet: nothing to say", Versions.watchHint(null, false, 42))
         assertNull("a local phone build compares with nothing", Versions.watchHint(null, true, 1))

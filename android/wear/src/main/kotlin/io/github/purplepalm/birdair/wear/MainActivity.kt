@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
         prefsState.value = WatchPrefs(prefs.getBoolean(KEEP_ON, true), SmoothPref.of(prefs.getString(SMOOTH, null)))
         openedAtMs = SystemClock.elapsedRealtime()
         WatchFeed.acquire(this)
+        WatchUpdater.start(this)
         askForNotifications()
         // until onDestroy, ambient included
         lifecycleScope.launch { present() }

@@ -29,6 +29,16 @@
 - **Запас хода** — «запас ≈4,2 км» под зарядом (бледнее, пока расход не измерен и это оценка по
   15 Вт·ч/км), подробно — расход и откуда он.
 - **Версия часов** уходит телефону в каждом hello и видна внизу страницы «Подробно».
+- **Обновление без Bugjaeger** (`WatchUpdater`, `WatchUpdate.kt`, `InstallReceiver`): при запуске (не чаще раза в
+  10 минут) и раз в сутки — `version.json` релиза `android-latest`; если `versionCode` больше
+  `BuildConfig.VERSION_CODE`, внизу «Подробно» — «Обновить часы (vN)». Скачивание `bird-air-watch.apk` прямо на
+  часы: сначала просит Wi-Fi (`requestNetwork`, 8 с), иначе через телефон; переадресации только на GitHub по
+  HTTPS, таймауты 15 / 30 с, проценты и скорость, «Отменить» (недокачанное удаляется), после обрыва — докачка
+  (`Range`). Проверка: `watchSize` и `watchSha256` из `version.json`, если есть, затем пакет и версия. Установка —
+  сессия `PackageInstaller` (запись, fsync, commit с `PendingIntent` на `InstallReceiver`, FLAG_MUTABLE на
+  API 31+); окно подтверждения системы (STATUS_PENDING_USER_ACTION) открывается само, иначе — «Подтвердить
+  установку». Разрешение «Установка неизвестных приложений» — экран настроек; если его нет — подсказка
+  (`appops set … REQUEST_INSTALL_PACKAGES allow` через Bugjaeger). Ничего не ставится без нажатия.
 
 ## Обмен с телефоном
 
@@ -55,6 +65,9 @@ ANDROID_HOME=/root/android-sdk ./gradlew --no-daemon :wear:testDebugUnitTest -Ps
 JVM-тесты: `LogicTest.kt` (дуга, батарея, режимы, свежесть данных, форматирование, таймеры,
 подробности) и `UpdateTest.kt` (пружина: 95 % за 110 мс, без перелёта и отката при новой цели,
 независимость от частоты кадров; «Плавно»; флаги телефона; порядок сообщений; быстрая мощность;
-предупреждения, вибрация и её пауза; запас хода; hello с версией). Снимки (Robolectric, 480×480):
+предупреждения, вибрация и её пауза; запас хода; hello с версией), `WatchUpdateTest.kt` (version.json,
+сравнение версий, когда проверять, SHA-256 и размер, переадресации, докачка, статусы установщика, тексты
+кнопки). Снимки (Robolectric, 480×480):
 обычные состояния плюс `warning`, `critical`, `ambient-warning`, `warning-reconnecting`, `range-rough`,
-`range-mph`, `bms-power`, `details-warnings`, `details-settings`.
+`range-mph`, `bms-power`, `details-warnings`, `details-settings`, `update-offered`, `update-downloading`,
+`update-ready`.

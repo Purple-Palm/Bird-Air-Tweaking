@@ -128,6 +128,7 @@ fun DetailsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            item { WatchUpdateItem() }
             item {
                 Text(
                     versionLine(HelloInfo.THIS.versionName, HelloInfo.THIS.versionCode),
