@@ -92,6 +92,21 @@ object Versions {
     /** Where the watch app updates itself. */
     const val WATCH_UPDATE = "на часах: Подробно → Обновить часы"
 
+    /** The first watch build with the dial themes: android-latest v108 (a41290d) is the last with the classic dial only. */
+    const val WATCH_FACES_SINCE = 109
+
+    /**
+     * The watch said hello from a build without the dial themes (it never reads the face's DataItem): a version code
+     * under [WATCH_FACES_SINCE], or no version at all (older still). Code 1 is a local build, a name alone says nothing:
+     * not known, false.
+     */
+    fun watchWithoutFaces(w: WatchStatus): Boolean {
+        if (w.helloAt <= 0) return false
+        val v = w.version ?: return true
+        val c = v.versionCode ?: return false
+        return c in 2 until WATCH_FACES_SINCE
+    }
+
     private fun obj(text: String?): JsonObject? = try {
         text?.trim()?.takeIf { it.startsWith("{") }?.let { JSON.parseToJsonElement(it) as? JsonObject }
     } catch (e: Exception) { null }

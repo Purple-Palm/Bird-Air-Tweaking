@@ -69,7 +69,7 @@ import kotlin.math.tan
  *    then only the tile stays; a tap on the watch shows the next lit lamp for 6 s; when more than one is lit, the tile in
  *    the centre is ringed in white. A change of the centre is one 0,4 s crossfade, no dip to black.
  * The judge's rules: appearance ≤ 700 ms (a tile pops in 0,42 s with an overshoot, goes out in 0,3 s); long motion only for
- * red (FaceKit.pulse from its buzz, 55–100 %, on the fill, glow and icon — text never blinks) and the rumble; the ▲
+ * red (FaceKit.pulse from its buzz, 55–100 % on the glow and icon, the fill FaceKit.redFill — text never blinks) and the rumble; the ▲
  * «быстро греется» hops on appearance and every 10 s; the solid fill ≤ NIGHT_FILL; NBSP between a number and its unit.
  * Real data: texts are Lamp.title / valueText / detail, shrunk to fit, the detail in the value's place when there is no
  * value, ellipsized past that, every text inside the speed track's circle (or its bottom gap); lamps' history from
@@ -190,6 +190,10 @@ object RingLayout {
     const val BAT_Y = 138f
     const val BAT_W = 132f
     const val BAT_H = 62f
+    /** A two-line status (17 px): its baselines, and the battery that much lower meanwhile (the lamp's title still clear). */
+    const val STATUS_Y1 = 121f
+    const val STATUS_Y2 = 139f
+    const val STATUS_DROP = 10f
     /** Texts stay inside the speed track's ticks (r 148 − 5) or in its bottom gap (±[GAP_DEG] round 6 o'clock) inside
      *  the bottom tiles (red's inner edge 165, its pop's overshoot to 162). */
     const val R_TEXT = 143f
@@ -298,8 +302,8 @@ object RingLayout {
     /** The ▲ «быстро греется», [s] its half width, its middle at x, y. */
     data class Tri(val x: Float, val y: Float, val s: Float, val colour: Color, val alpha: Float, val outline: Boolean) : Op
 
-    /** The battery (FaceKit's drawBattery at [BAT_X]…), [charge] the light band's place. */
-    data class Battery(val pct: Double?, val tone: Color, val text: String, val charge: Float?, val alpha: Float) : Op
+    /** The battery (FaceKit's drawBattery at [BAT_X]…, [dy] lower under a two-line status), [charge] the light band's place. */
+    data class Battery(val pct: Double?, val tone: Color, val text: String, val charge: Float?, val alpha: Float, val dy: Float = 0f) : Op
 
     /** One line of text, its baseline at [baseline], fitted and ellipsized already. */
     data class Txt(
@@ -351,7 +355,7 @@ object RingLayout {
             val now = s.lamps[l.id]
             when {
                 now != null && now.level == l.level && now.lamp.text == l.text -> now.copy(lamp = l)
-                now != null -> DialLamp(l, now.sinceMs, now.sinceMs)
+                now != null -> DialLamp(l, now.sinceMs, now.sinceMs, levelSinceMs = if (now.level == l.level) now.levelSinceMs else now.sinceMs)
                 else -> s.lamps.gone.firstOrNull { it.id == l.id }?.let { DialLamp(l, it.sinceMs) } ?: DialLamp(l, at)
             }
         }.sortedWith(DialLamps.SEVERITY)
@@ -432,8 +436,8 @@ object RingLayout {
         ring(s, now, looks(s, now), centre, fade, dim, ops, tiles)
         comet(s, now, ops)
         ops += Speed(speedF, dim)
-        status(s, out)
-        battery(s, now, dim, out)
+        val drop = status(s, out)
+        battery(s, now, dim, drop, out)
         centreTexts(s, now, centre, fade, dim, out)
         return Frame(ops, centre, out.boxes, tiles)
     }
@@ -607,9 +611,10 @@ object RingLayout {
             fun tile(solidLook: Boolean, share: Float) {
                 if (share <= 0.002f) return
                 if (solidLook) {
-                    // a solid tile sits on black, so nothing under it shows through; red breathes 55–100 %
+                    // a solid tile sits on black, so nothing under it shows through; red breathes 55–100 % in its glow,
+                    // its fill 80–100 % (never a dark tile beside a steady amber)
                     body += Sector(r0, r1, a0, a1, cr, Color.Black, share * dimA)
-                    body += Sector(r0, r1, a0, a1, cr, shown, ka * br * fill * share * dimA)
+                    body += Sector(r0, r1, a0, a1, cr, shown, ka * FaceKit.redFill(br) * fill * share * dimA)
                 } else {
                     // «к сведению»: tinted inside, a 3 px edge in the colour
                     body += Sector(r0, r1, a0, a1, cr, shown, ka * share * dimA)
@@ -738,30 +743,35 @@ object RingLayout {
         }
     }
 
-    /** The clock's line, or the StatusLine in its place (one line, else two), not dimmed with the values. */
-    private fun status(s: DialState, out: Out) {
+    /**
+     * The clock's line, or the StatusLine in its place (one line, else two), not dimmed with the values; read at arm's
+     * length like the other faces' (17 px, two lines no smaller than 15 — lower, the battery moving down under them).
+     * Returns how far the battery moves down.
+     */
+    private fun status(s: DialState, out: Out): Float {
         val amb = s.ambient
         val st = s.status
         if (st == null) {
             if (s.clock.isNotBlank()) out.text(Group.STATUS, s.clock, C, 126f, 17f, 400, if (amb) AMB_DIM else MUTED, 1f)
-            return
+            return 0f
         }
         val colour = if (amb) AMB_INK else argb(s.health.tone)
         val one = st.replace('\n', ' ')
         val room1 = out.room(C, 126f - ASC * 17f, 126f + DESC * 17f, Anchor.CENTER, Float.MAX_VALUE)
-        if (!st.contains('\n') && out.width(one, 13f, 500) <= room1) {
-            out.text(Group.STATUS, one, C, 126f, 17f, 500, colour, 1f, min = 13f)
-            return
+        if (!st.contains('\n') && out.width(one, 15f, 500) <= room1) {
+            out.text(Group.STATUS, one, C, 126f, 17f, 500, colour, 1f, min = 15f)
+            return 0f
         }
-        val lines = if (st.contains('\n')) st.split('\n').take(2) else splitWords(out, one, 15f, 500) ?: listOf(one)
-        if (lines.size == 1) { out.text(Group.STATUS, lines[0], C, 126f, 17f, 500, colour, 1f, min = 12f); return }
+        val lines = if (st.contains('\n')) st.split('\n').take(2) else splitWords(out, one, 17f, 500) ?: listOf(one)
+        if (lines.size == 1) { out.text(Group.STATUS, lines[0], C, 126f, 17f, 500, colour, 1f, min = 12f); return 0f }
         // the same size for both lines: the smaller of their fits
         val px = lines.mapIndexed { i, ln ->
-            val y = if (i == 0) 115f else 130f
-            out.fit(ln, 15f, 11f, 500, out.room(C, y - ASC * 15f, y + DESC * 15f, Anchor.CENTER, Float.MAX_VALUE))
+            val y = if (i == 0) STATUS_Y1 else STATUS_Y2
+            out.fit(ln, 17f, 15f, 500, out.room(C, y - ASC * 17f, y + DESC * 17f, Anchor.CENTER, Float.MAX_VALUE))
         }.min()
-        out.text(Group.STATUS, lines[0], C, 115f, px, 500, colour, 1f)
-        out.text(Group.STATUS, lines[1], C, 130f, px, 500, colour, 1f)
+        out.text(Group.STATUS, lines[0], C, STATUS_Y1, px, 500, colour, 1f)
+        out.text(Group.STATUS, lines[1], C, STATUS_Y2, px, 500, colour, 1f)
+        return STATUS_DROP
     }
 
     /** [t] in two lines at [px], the break that keeps the wider one narrowest; null for one word. */
@@ -772,14 +782,14 @@ object RingLayout {
             .minBy { ls -> ls.maxOf { out.width(it, px, weight) } }
     }
 
-    private fun battery(s: DialState, now: Long, dim: Float, out: Out) {
+    private fun battery(s: DialState, now: Long, dim: Float, dy: Float, out: Out) {
         val b = s.battery
         val charge = if (s.ambient) null else charging(s)?.let { l ->
             val ph = Math.floorMod(now - l.sinceMs, SWEEP_EVERY_MS)
             if (now >= l.sinceMs && ph < SWEEP_MS) ph.toFloat() / SWEEP_MS else null
         }
-        out.ops += Battery(b.pct, argb(b.toneArgb), b.text, charge, dim)
-        out.boxes += Box(Group.BATTERY, "battery", BAT_X - 2, BAT_Y - 2, BAT_X + BAT_W + 3 + 11 + 1, BAT_Y + BAT_H + 2, dim)
+        out.ops += Battery(b.pct, argb(b.toneArgb), b.text, charge, dim, dy)
+        out.boxes += Box(Group.BATTERY, "battery", BAT_X - 2, BAT_Y + dy - 2, BAT_X + BAT_W + 3 + 11 + 1, BAT_Y + dy + BAT_H + 2, dim)
     }
 
     /** The passing line under the power in «детали»: the bulb check, the limiter's tap. */
@@ -1035,7 +1045,7 @@ private class RingPen {
                 else drawPath(p, op.colour, alpha = op.alpha)
             }
             is RingLayout.Battery -> drawBattery(
-                m, Offset(RingLayout.BAT_X * u, RingLayout.BAT_Y * u), Size(RingLayout.BAT_W * u, RingLayout.BAT_H * u), 4f * u,
+                m, Offset(RingLayout.BAT_X * u, (RingLayout.BAT_Y + op.dy) * u), Size(RingLayout.BAT_W * u, RingLayout.BAT_H * u), 4f * u,
                 op.pct, op.tone, op.text, 36f * u, s.ambient, s.lowBit, op.charge, op.alpha,
             )
             is RingLayout.Txt -> drawTextAt(m, op.text, style(op.px * u, op.weight), op.x * u, op.baseline * u, op.colour, op.anchor, alpha = op.alpha)

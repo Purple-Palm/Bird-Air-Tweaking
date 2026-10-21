@@ -291,6 +291,18 @@ class FaceRingTest {
         assertEquals(listOf("нет данных", "с телефона"), g.boxes.filter { it.group == RingLayout.Group.STATUS }.map { it.what })
         assertTrue(RingLayout.problems(gone, 10_000, g).isEmpty())
         assertTrue(g.boxes.filter { it.group == RingLayout.Group.IN }.all { it.alpha == Health.NO_PHONE.alpha })
+        // read at arm's length like the other faces' status: 15–17 px, the battery lower under the two lines
+        fun sizes(f: RingLayout.Frame) = f.ops.filterIsInstance<RingLayout.Txt>().filter { it.text in f.boxes.filter { b -> b.group == RingLayout.Group.STATUS }.map { b -> b.what } }.map { it.px }
+        assertTrue(sizes(g).size == 2 && sizes(g).all { it in 15f..17f }, "${sizes(g)}")
+        assertEquals(RingLayout.STATUS_DROP, g.ops.filterIsInstance<RingLayout.Battery>().single().dy)
+        assertEquals(0f, f.ops.filterIsInstance<RingLayout.Battery>().single().dy)
+        val idle = b.build(tele(emptyList(), link = Link.IDLE, streaming = false), Health.IDLE, 20_000)
+        val fi = RingLayout.frame(idle, 20_000, m)
+        assertTrue(sizes(fi).size == 2 && sizes(fi).all { it >= 15f }, "${sizes(fi)}")
+        assertTrue(RingLayout.problems(idle, 20_000, fi).isEmpty())
+        // a lamp in the centre under it: still clear of the battery
+        val lit = b.build(tele(listOf(cut, hot)), Health.NO_PHONE, 30_000)
+        assertTrue(RingLayout.problems(lit, 31_000, RingLayout.frame(lit, 31_000, m)).isEmpty())
     }
 
     @Test fun kmhAndMissingValues() {

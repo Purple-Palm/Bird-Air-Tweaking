@@ -12,10 +12,12 @@ import io.github.purplepalm.birdair.dial.DialBuilder
 import io.github.purplepalm.birdair.dial.DialFace
 import io.github.purplepalm.birdair.dial.DialState
 import io.github.purplepalm.birdair.dial.LocalFaceTextStyle
+import io.github.purplepalm.birdair.dial.LocalStackStage
 
 /**
  * The gauge page: the screen as a [DialState] (one [DialBuilder] keeps the lamps' history between messages) drawn by the
- * chosen face ([WatchPrefs.face]) in the watch theme's text style. [smooth]: the resolved «Плавно».
+ * chosen face ([WatchPrefs.face]) in the watch theme's text style, «Крупные лампы» showing [Landing] when its chips land.
+ * [smooth]: the resolved «Плавно».
  */
 @Composable
 fun WatchDial(s: Screen, ambient: AmbientState?, prefs: WatchPrefs, smooth: Boolean, modifier: Modifier = Modifier) {
@@ -23,7 +25,7 @@ fun WatchDial(s: Screen, ambient: AmbientState?, prefs: WatchPrefs, smooth: Bool
     val clock = TimeTextDefaults.timeSource(TimeTextDefaults.timeFormat()).currentTime
     val cues = prefs.tapOn to prefs.tapMph to (prefs.overspeedOn to prefs.overspeedMph)
     val state = remember(s, ambient, smooth, clock, cues) { dialState(builder, s, ambient, prefs, smooth, clock, SystemClock.elapsedRealtime()) }
-    CompositionLocalProvider(LocalFaceTextStyle provides LocalTextStyle.current) {
+    CompositionLocalProvider(LocalFaceTextStyle provides LocalTextStyle.current, LocalStackStage provides Landing.stage) {
         DialFace(prefs.face, state, modifier)
     }
 }

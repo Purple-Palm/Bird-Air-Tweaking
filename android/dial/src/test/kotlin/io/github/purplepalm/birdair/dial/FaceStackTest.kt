@@ -127,6 +127,53 @@ class FaceStackTest {
         assertTrue((0..1_000 step 50).none { ms -> StackLayout.scene(amber.at(1_500L + ms), ta, 1_500L + ms).fx.any { it is RingEl } })
     }
 
+    @Test fun aBuzzPlayedAFrameBeforeItsStateIsAboutThatChange() {
+        // the watch plays the motor in the message's listener and builds the state a frame later
+        val red = TellTales.lamp(TellTales.BATTERY, LampLevel.RED, TellTales.T_CUTTING, 31.5)
+        val b = DialBuilder()
+        val tl = StackTimeline()
+        tl.feed(b.build(tele(emptyList()), Health.LIVE, 0))
+        tl.feed(b.build(tele(listOf(red)), Health.LIVE, 1_030, cues = DialCues(buzz = LampBuzz(1_000, LampLevel.RED), redAtMs = 1_000)))
+        val z = tl.buzzes.single()
+        assertEquals(TellTales.BATTERY, z.id)
+        assertEquals(1_030L + Stack.LAND_MS, z.atMs)
+        assertEquals(1_000L, z.realMs)
+    }
+
+    @Test fun theWatchHoldsABuzzOnlyForAChipItsScreenShowsFlyingIn() {
+        val a = TellTales.lamp(TellTales.TEMP, LampLevel.AMBER, TellTales.T_HOT, 49.0)
+        val b = DialBuilder()
+        val tl = StackTimeline()
+        val stage = StackStage()
+        assertNull(tl.startsAt(0))
+        assertEquals(0L, stage.landingMs(0))                                     // no face: at once
+        tl.feed(b.build(tele(emptyList()), Health.LIVE, 0))
+        stage.show(tl, still = false)
+        // a change now starts now: the buzz waits for the landing
+        assertEquals(500L, tl.startsAt(500))
+        assertEquals(Stack.LAND_MS, stage.landingMs(500))
+        tl.feed(b.build(tele(listOf(a)), Health.LIVE, 1_000))
+        // the next one within 750 ms is queued: the motor goes at once (the face draws its rings as the chip lands)
+        assertEquals(1_750L, tl.startsAt(1_300))
+        assertEquals(0L, stage.landingMs(1_300))
+        assertEquals(Stack.LAND_MS, stage.landingMs(1_750))
+        // calm or ambient: no flight
+        stage.show(tl, still = true)
+        assertEquals(0L, stage.landingMs(5_000))
+        // another face (or the gauge page gone): at once; another timeline's leaving changes nothing
+        stage.show(tl, still = false)
+        stage.hide(StackTimeline())
+        assertEquals(Stack.LAND_MS, stage.landingMs(5_000))
+        stage.hide(tl)
+        assertEquals(0L, stage.landingMs(5_000))
+        // the startup holds a new lamp until its lamp part ends
+        val tb = StackTimeline()
+        tb.feed(DialBuilder().build(tele(emptyList()), Health.LIVE, 10_000, bulbAtMs = 10_000, bulbOn = true))
+        assertEquals(10_000L + Stack.BOOT_END, tb.startsAt(10_200))
+        stage.show(tb, still = false)
+        assertEquals(0L, stage.landingMs(10_200))
+    }
+
     @Test fun aRedClearedLeavesAGreenCheck() {
         val bms = DialScenarios["bms"]
         val tl = StackLayout.fed(bms, bms.lengthMs)

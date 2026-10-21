@@ -42,7 +42,8 @@ import kotlin.math.sin
  * (the second ×0,8, the third ×0,68; the rest mini badges 42 px, bare icons 30, pips 14) with a capsule tablet (as the
  * mock: Lamp.valueText where the number is the news — °C, V, speed, A — a word for traction, consumption, over-voltage,
  * the link and the BMS: GrowLayout.of); red and amber solid (amber at 80 %, red at the night cap, pulsing 1 Hz with
- * the red buzz: 55–100 %, ±6 %, a ripple), yellow / blue / green a dark disc with a ring in their colour, so an info lamp
+ * the red buzz: the glow 55–100 %, the fill no lower than FaceKit.RED_FILL_MIN, ±6 %, a ripple), yellow / blue / green a
+ * dark disc with a ring in their colour, so an info lamp
  * is never brighter than an alarm; quiet ones (service, weak, ECO) 28 px icons. The pop: a spring with one overshoot
  * and one ring. The centre: the battery, range, «V · °C · MODE» as one column, the top lamp's line and the power, kept
  * clear of the discs (FaceGrowLayout.kt); the motion in closed form (FaceGrowMotion.kt), so a shot at any ms is the live
@@ -334,7 +335,8 @@ private class GrowPainter(private val tm: TextMeasurer) {
         sp.pop?.let { p -> drawCircle(col, (d / 2 + 4 + 28 * FaceKit.easeOut(p)) * u, c, alpha = 0.7f * (1 - p), style = Stroke((4 * (1 - p) + 1) * u)) }
         val bg: Color
         if (solid) {
-            bg = shade(col, (if (lv == LampLevel.RED) FaceKit.NIGHT_FILL else AMBER_FILL) * bright)
+            // red's beat is in its glow, size and ripple; its fill stays a red, not a dark disc beside a steady amber
+            bg = shade(col, if (lv == LampLevel.RED) FaceKit.NIGHT_FILL * FaceKit.redFill(bright) else AMBER_FILL)
             drawCircle(bg, d / 2 * u, c)
         } else {
             bg = shade(col, 0.2f)

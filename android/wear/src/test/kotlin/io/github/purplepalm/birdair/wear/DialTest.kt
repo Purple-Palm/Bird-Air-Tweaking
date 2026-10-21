@@ -414,6 +414,58 @@ class LampAlarmTest {
         assertNull(a.onMessage(both, true, 7_000))
     }
 
+    @Test fun onlyABuzzThatCameWithItsRiseWaitsForTheChip() {
+        val a = LampAlarm()
+        assertSame(Buzz.AMBER, a.onMessage(listOf(lamp(traction, LampLevel.AMBER)), true, 0, 25.0))
+        assertTrue(a.rose)
+        assertSame(Buzz.RED, a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 1_000, 25.0))
+        assertTrue(a.rose)
+        // the repeat 30 s on: no new chip
+        assertSame(Buzz.RED, a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 31_000, 25.0))
+        assertFalse(a.rose)
+        // a second red held back by the gap goes later, on a message that changed nothing
+        val b = LampAlarm()
+        assertSame(Buzz.RED, b.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 0))
+        val both = listOf(lamp(temp, LampLevel.RED), lamp(battery, LampLevel.RED))
+        assertNull(b.onMessage(both, true, 1_000))
+        assertSame(Buzz.RED, b.onMessage(both, true, 5_000))
+        assertFalse(b.rose)
+        // a red that turns red in the very message a gap ends
+        val c = LampAlarm()
+        assertSame(Buzz.RED, c.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 0))
+        assertSame(Buzz.RED, c.onMessage(listOf(lamp(temp, LampLevel.RED), lamp(battery, LampLevel.RED)), true, 6_000))
+        assertTrue(c.rose)
+    }
+
+    @Test fun theLampBuzzWaitsOnlyWhileTheGaugeIsSeen() {
+        val tl = StackTimeline()
+        tl.feed(DialBuilder().build(Samples.normal, Health.LIVE, 0))
+        val stage = Landing.stage
+        try {
+            // the face drawing on the gauge, the activity started, the gauge page on screen: a new lamp's buzz lands with its chip
+            stage.show(tl, still = false)
+            Landing.started = true
+            Landing.gaugeShown = true
+            assertEquals(Stack.LAND_MS, Landing.waitMs(5_000, rose = true))
+            // a repeat, the screen off (only the ride service), «Подробно» or ambient: at once
+            assertEquals(0L, Landing.waitMs(5_000, rose = false))
+            Landing.started = false
+            assertEquals(0L, Landing.waitMs(5_000, rose = true))
+            Landing.started = true
+            Landing.gaugeShown = false
+            assertEquals(0L, Landing.waitMs(5_000, rose = true))
+            // calm («Убрать анимацию»): no flight
+            Landing.gaugeShown = true
+            stage.show(tl, still = true)
+            assertEquals(0L, Landing.waitMs(5_000, rose = true))
+        } finally {
+            stage.hide(tl)
+            Landing.started = false
+            Landing.gaugeShown = false
+        }
+        assertEquals(0L, Landing.waitMs(5_000, rose = true))
+    }
+
     @Test fun theLinkLampNeverBuzzes() {
         // lit only while the data is not live (or for its hold after): a buzz could only come once the data is back
         val a = LampAlarm()

@@ -194,6 +194,9 @@ object FaceKit {
 
     /** A solid chip's fill at most (night: a full-white-ish disc glares). */
     const val NIGHT_FILL = 0.82f
+    /** A pulsing red fill never drops below this share of its cap: the pulse is in the glow, rim and size, and a red
+     *  disc at the bottom of its beat does not read as a dark one beside a steady amber. */
+    const val RED_FILL_MIN = 0.8f
     /** A glow reaches at most this far past what it lights (mock px). */
     const val GLOW_MAX = 12f
 
@@ -249,6 +252,9 @@ object FaceKit {
     /** The limiter tap's flash. */
     const val TAP_MS = 700L
 
+    /** A red solid fill's share of its cap at the pulse's brightness [br] ([PULSE_MIN]…1): [RED_FILL_MIN]…1. */
+    fun redFill(br: Float): Float = lerp(RED_FILL_MIN, 1f, clamp01((br - PULSE_MIN) / (1 - PULSE_MIN)))
+
     /** The red pulse's brightness at [nowMs] for a lamp red since [sinceMs]: a cosine from 1 down to [PULSE_MIN] and back. */
     fun pulse(sinceMs: Long, nowMs: Long): Float {
         if (nowMs < sinceMs) return 1f
@@ -256,11 +262,15 @@ object FaceKit {
         return PULSE_MIN + (1 - PULSE_MIN) * (0.5f + 0.5f * cos(2 * PI.toFloat() * ph))
     }
 
-    /** When a red lamp's pulse starts: its red vibration if that came after it turned red, else when it turned red. */
+    /**
+     * When a red lamp's pulse beats from: its last red vibration once it was red (a repeat re-phases it; one up to a beat
+     * before counts — the state is built after the motor went, or it was another red's, felt the same), else when it
+     * turned red ([DialLamp.levelSinceMs]: a new text at red keeps the beat).
+     */
     fun redSince(l: DialLamp, cues: DialCues): Long {
-        val turned = if (l.before?.level == LampLevel.RED) l.sinceMs else l.changedMs
-        val b = cues.buzz
-        return if (b != null && b.level == LampLevel.RED && b.atMs >= turned && b.atMs - turned < PULSE_MS) b.atMs else turned
+        val turned = l.levelSinceMs
+        val b = cues.redBuzzMs
+        return if (b != null && b >= turned - PULSE_MS) b else turned
     }
 
     /** The ▲'s hop, 0…[height] px: on appearance at [sinceMs] and every [BOB_EVERY_MS] after. */

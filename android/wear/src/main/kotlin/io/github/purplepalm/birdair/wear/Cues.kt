@@ -20,5 +20,6 @@ object Cues {
 
     fun rumble(on: Boolean, atMs: Long) = state.update { if (it.rumble == on) it else it.copy(rumble = on, rumbleSinceMs = if (on) atMs else null) }
 
-    fun buzz(atMs: Long, level: LampLevel) = state.update { it.copy(buzz = LampBuzz(atMs, level)) }
+    fun buzz(atMs: Long, level: LampLevel) =
+        state.update { it.copy(buzz = LampBuzz(atMs, level), redAtMs = if (level == LampLevel.RED) atMs else it.redAtMs) }
 }

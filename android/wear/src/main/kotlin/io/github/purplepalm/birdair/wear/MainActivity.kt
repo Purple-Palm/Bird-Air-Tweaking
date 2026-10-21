@@ -88,7 +88,13 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         openedAtMs = SystemClock.elapsedRealtime()
         RideService.hiddenByUser = false
+        Landing.started = true
         WatchFeed.hello()
+    }
+
+    override fun onStop() {
+        Landing.started = false
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {

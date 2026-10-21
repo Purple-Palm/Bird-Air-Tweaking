@@ -35,4 +35,24 @@ class FacesTest {
         assertTrue(later.applied)
         assertEquals("Часы ещё не ответили — возьмут выбор, когда включатся", faceStatus(WatchFaceState(phone = p(DialFace.GROW, 1))))
     }
+
+    @Test fun aWatchBuildWithoutThemesIsToldToUpdate() {
+        val picked = WatchFaceState(phone = p(DialFace.GROW, 1))
+        fun hello(code: Int?, name: String? = "x") = WatchStatus(helloAt = 5_000, version = WatchVersion(code, name))
+        val update = "Обнови приложение на часах: эта версия не знает циферблатов (на часах: Подробно → Обновить часы)"
+        // v108 (the last with the classic dial only) never reads the pick
+        assertEquals(update, faceStatus(picked, hello(108)))
+        assertTrue(Versions.watchWithoutFaces(hello(108)))
+        // a hello without a version: older still
+        assertEquals(update, faceStatus(picked, WatchStatus(helloAt = 5_000)))
+        // a build with themes that has not reported yet, a local build (1), a name only, no hello at all: wait for it
+        val wait = "Часы ещё не ответили — возьмут выбор, когда включатся"
+        assertEquals(wait, faceStatus(picked, hello(Versions.WATCH_FACES_SINCE)))
+        assertEquals(wait, faceStatus(picked, hello(1, "dev")))
+        assertEquals(wait, faceStatus(picked, hello(null, "0.3")))
+        assertEquals(wait, faceStatus(picked, WatchStatus()))
+        // once the watch reports a face it knows them, whatever its hello said
+        assertEquals("На часах: «Растущие лампы»", faceStatus(picked.copy(watch = w(DialFace.GROW, 1)), hello(108)))
+        assertFalse(Versions.watchWithoutFaces(hello(Versions.WATCH_FACES_SINCE)))
+    }
 }

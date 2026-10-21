@@ -4,7 +4,10 @@ import android.provider.Settings
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -50,7 +53,8 @@ import kotlin.math.sin
  * up to x 402; the next ones 76 px in the «smile» (156,390 · 240,408 · 324,390), more in «+N» 56 px; the quiet ones
  * 30–36 px icons by the battery; the battery 140×66 → 124×54 → 112×48 as lamps come. A new lamp flies out of its dot
  * along the arc as a bead and blooms on a spring (amber and red land harder); the buzz lands with it (the watch plays
- * it [Stack.LAND_MS] after the message) with a ring per motor pulse; a red one breathes 1 Hz in phase with its buzz,
+ * it [Stack.LAND_MS] after the message while the flight is seen, [StackStage]) with a ring per motor pulse; a red one
+ * breathes 1 Hz in phase with its buzz,
  * text never; a lamp going out drains back into its dot, a red one leaves a green ✓. [StackScene] lays a frame out;
  * this file draws it on the 480-px grid scaled to the screen. Frames run only while something moves
  * ([StackTimeline.wakeAt]); ambient is still, outlines only.
@@ -69,6 +73,12 @@ fun StackFace(state: DialState, modifier: Modifier = Modifier, nowMs: Long? = nu
     val tl = remember { StackTimeline() }
     tl.feed(state)
     val reduced = calm ?: rememberNoAnimations()
+    val stage = LocalStackStage.current
+    if (stage != null && nowMs == null) {
+        val still = reduced || state.ambient
+        SideEffect { stage.show(tl, still) }
+        DisposableEffect(stage, tl) { onDispose { stage.hide(tl) } }
+    }
     val clock = rememberFaceClock(state, nowMs) { s, now -> tl.wakeAt(s, now, reduced) }
     val springs = nowMs == null && state.smooth && !state.ambient
     val power = rememberSpring(state.power.fraction, springs)
@@ -92,6 +102,41 @@ private fun rememberNoAnimations(): Boolean {
         try { Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f } catch (e: RuntimeException) { false }
     }
 }
+
+/**
+ * «Крупные лампы» as the watch's gauge draws it, so a lamp's buzz can go as its chip lands: the face shows its timeline here
+ * while composed under [LocalStackStage] (the gauge page only, not a picker's preview). Main thread.
+ */
+class StackStage {
+    private var tl: StackTimeline? = null
+    private var still = true
+
+    /** The face draws [tl] now; [still]: calm or ambient, no flight. */
+    fun show(tl: StackTimeline, still: Boolean) {
+        this.tl = tl
+        this.still = still
+    }
+
+    /** The face drawing [tl] left (another face, the gauge page gone). */
+    fun hide(tl: StackTimeline) {
+        if (this.tl === tl) this.tl = null
+    }
+
+    /**
+     * How long a buzz that came at [nowMs] with its lamp's change waits: [Stack.LAND_MS] when its chip flies in at once
+     * (the face is drawn, not calm or ambient, and no change before it nor the startup holds it back), else 0 — the motor
+     * goes now and the face draws its rings as the chip lands.
+     */
+    fun landingMs(nowMs: Long): Long {
+        val t = tl ?: return 0
+        if (still) return 0
+        val at = t.startsAt(nowMs) ?: return 0
+        return if (at <= nowMs) Stack.LAND_MS else 0
+    }
+}
+
+/** The watch gauge's [StackStage]; null elsewhere (the phone, previews, shots). */
+val LocalStackStage = staticCompositionLocalOf<StackStage?> { null }
 
 /**
  * The face's text and paint: layouts measured once per text and size (0,5-px steps, drawn scaled to the exact size)

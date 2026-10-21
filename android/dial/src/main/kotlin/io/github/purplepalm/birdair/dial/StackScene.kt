@@ -354,10 +354,11 @@ class StackTimeline {
         tone = tn
         s.cues.buzz?.let { z ->
             if (buzzes.none { it.realMs == z.atMs }) {
-                // about the set that had come by then; one that came with that set's change waits for the landing
-                val sn = snaps.lastOrNull { it.arrived <= z.atMs } ?: snaps.last()
+                // about the set that had come by then (the watch's state is built a frame after the motor went); one that
+                // came with that set's change waits for the landing
+                val sn = snaps.lastOrNull { it.arrived <= z.atMs + EARLY_MS } ?: snaps.last()
                 val id = buzzLamp(z, sn)
-                val early = id != null && sn.t != NEVER && z.atMs - sn.arrived in 0..EARLY_MS && sn.assign.slot(id).visible
+                val early = id != null && sn.t != NEVER && z.atMs - sn.arrived in -EARLY_MS..EARLY_MS && sn.assign.slot(id).visible
                 buzzes += Buzzed(if (early) max(z.atMs, sn.t + Stack.LAND_MS) else z.atMs, z.level, id, z.atMs)
                 if (buzzes.size > 4) buzzes.removeAt(0)
             }
@@ -389,6 +390,16 @@ class StackTimeline {
 
     /** No sooner than the startup's lamp part ends. */
     private fun hold(t: Long): Long = bootAt?.let { b -> if (t < b + Stack.BOOT_END) b + Stack.BOOT_END else t } ?: t
+
+    /**
+     * When a change of the alert lamps that comes at [nowMs] would start, as [show] queues it: [nowMs], or later behind
+     * the last change ([Stack.QGAP]) or the startup's lamp part; null before the first state (nothing on screen yet).
+     */
+    fun startsAt(nowMs: Long): Long? {
+        val top = snaps.lastOrNull() ?: return null
+        if (top.t > nowMs && snaps.size >= 2) return top.t
+        return hold(max(nowMs, max(top.t, top.alertT + Stack.QGAP)))
+    }
 
     /**
      * A new state's lamps: the same set — fresh values; another — shown [Stack.QGAP] after the last change of the lamps
@@ -503,8 +514,11 @@ class StackTimeline {
         const val NEVER = Long.MIN_VALUE / 4
         const val FAR = Long.MAX_VALUE / 4
         private const val KEEP = 10
-        /** A buzz this close after its change came with it (not after the landing, as the watch plays it). */
-        private const val EARLY_MS = 50L
+        /**
+         * A buzz this close to its change came with it (not after the landing, as the watch plays it while the chip is
+         * seen flying in): the phone's previews, a replay, the watch with the gauge not on screen or the change queued.
+         */
+        private const val EARLY_MS = 150L
     }
 }
 
@@ -1129,16 +1143,19 @@ class StackScene(
         /** The red's brightness: 1 Hz from its buzz (the peak with its first pulse), calmer 8 s after it; a repeat re-phases. */
         fun breath(id: String): Float {
             val redT = cur.levelSince[id] ?: StackTimeline.NEVER
-            val reds = tl.buzzes.filter { it.level == LampLevel.RED && it.atMs <= t && it.atMs >= redT }
-            val ph0 = if (reds.isNotEmpty()) reds.last().atMs else redT + Stack.LAND_MS
+            // the last two red buzzes since it turned red (one up to a beat before counts: another red's, felt the same)
+            var last: Long? = null
+            var prev: Long? = null
+            for (b in tl.buzzes) if (b.level == LampLevel.RED && b.atMs <= t && b.atMs >= redT - Stack.BREATH) { prev = last; last = b.atMs }
+            val ph0 = last ?: (redT + Stack.LAND_MS)
             if (t < ph0) return 1f
             fun br(p0: Long, since: Long): Float {
                 val dd = if (since < Stack.CALM_AFTER) Stack.DEPTH else Ez.lerp(Stack.DEPTH, Stack.DEPTH_CALM, Ez.fosi((since - Stack.CALM_AFTER).toFloat() / Stack.CALM_EASE))
                 return 1 - dd * (0.5f - 0.5f * cos(2 * PI.toFloat() * Math.floorMod(t - p0, Stack.BREATH) / Stack.BREATH))
             }
             var b = br(ph0, t - ph0)
-            val prev = if (reds.size > 1) reds[reds.size - 2].atMs else null
-            if (prev != null && t - ph0 < Stack.REPHASE) b = Ez.lerp(br(prev, t - prev), b, (t - ph0).toFloat() / Stack.REPHASE)
+            val p = prev
+            if (p != null && t - ph0 < Stack.REPHASE) b = Ez.lerp(br(p, t - p), b, (t - ph0).toFloat() / Stack.REPHASE)
             return b
         }
 

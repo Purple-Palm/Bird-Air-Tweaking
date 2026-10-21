@@ -33,11 +33,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.purplepalm.birdair.dial.DialFace
 import io.github.purplepalm.birdair.dial.FacePreview
 import io.github.purplepalm.birdair.phone.ScooterRepo
+import io.github.purplepalm.birdair.phone.Versions
 import io.github.purplepalm.birdair.phone.WatchFaceState
+import io.github.purplepalm.birdair.phone.WatchStatus
 
-/** The card's line about the watch: what it draws now, as far as the phone heard. */
-fun faceStatus(f: WatchFaceState): String = when {
+/** The card's line about the watch: what it draws now, as far as the phone heard ([w]: its hello, for a build without themes). */
+fun faceStatus(f: WatchFaceState, w: WatchStatus = WatchStatus()): String = when {
     f.applied -> "На часах: «" + f.selected.title + "»"
+    f.watch == null && Versions.watchWithoutFaces(w) -> "Обнови приложение на часах: эта версия не знает циферблатов (" + Versions.WATCH_UPDATE + ")"
     f.watch == null -> "Часы ещё не ответили — возьмут выбор, когда включатся"
     else -> "На часах пока «" + f.watch.face.title + "» — сменится, как только часы на связи"
 }
@@ -52,6 +55,7 @@ fun faceStatus(f: WatchFaceState): String = when {
 fun WatchFaceCard() {
     val c = LocalBal.current
     val f by ScooterRepo.face.collectAsStateWithLifecycle()
+    val w by ScooterRepo.watch.collectAsStateWithLifecycle()
     var open by rememberSaveable { mutableStateOf(false) }
     val sel = f.selected
     Panel("Циферблат часов", trailing = { TextButton(onClick = { open = !open }) { Text(if (open) "Свернуть" else "Выбрать") } }) {
@@ -60,7 +64,8 @@ fun WatchFaceCard() {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(sel.title, color = c.ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                Text(faceStatus(f), color = if (f.applied) c.goodInk else c.muted, fontSize = 13.sp)
+                val old = f.watch == null && Versions.watchWithoutFaces(w)
+                Text(faceStatus(f, w), color = if (f.applied) c.goodInk else if (old) c.warnInk else c.muted, fontSize = 13.sp)
             }
         }
         if (open) {

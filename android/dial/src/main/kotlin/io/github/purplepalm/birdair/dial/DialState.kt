@@ -79,12 +79,13 @@ data class DialBattery(
 
 /**
  * One lit lamp: [lamp] with its display fields ([Lamp.title], [Lamp.valueText], [Lamp.detail]; an older phone's are
- * derived, [TellTales.display]); [sinceMs] when it lit (from off) — a red one's 1 Hz pulse runs from here; [changedMs]
- * when its level or text last changed (= [sinceMs] when it has not); [before] what it was until then (null: it was off).
- * In [DialLamps.gone], [changedMs] is when it went out.
+ * derived, [TellTales.display]); [sinceMs] when it lit (from off); [changedMs] when its level or text last changed
+ * (= [sinceMs] when it has not); [before] what it was until then (null: it was off); [levelSinceMs] since when it has
+ * its level (a new text keeps it) — a red one's 1 Hz pulse runs from here, or from its buzz. In [DialLamps.gone],
+ * [changedMs] is when it went out.
  */
 @Immutable
-data class DialLamp(val lamp: Lamp, val sinceMs: Long, val changedMs: Long = sinceMs, val before: Lamp? = null) {
+data class DialLamp(val lamp: Lamp, val sinceMs: Long, val changedMs: Long = sinceMs, val before: Lamp? = null, val levelSinceMs: Long = changedMs) {
     val id: String get() = lamp.id
     val level: LampLevel get() = lamp.level
     /** Standing conditions and ECO ([TellTales.QUIET]): no text line, never buzz. */
@@ -130,7 +131,8 @@ data class LampBuzz(val atMs: Long, val level: LampLevel)
 
 /**
  * What the watch's motor did, so a face's ripples and the red pulse go with it: [tapAtMs] the last limiter tap (one short
- * vibration), [rumble] the vibration past the limiter runs now (since [rumbleSinceMs]), [buzz] the last lamp vibration.
+ * vibration), [rumble] the vibration past the limiter runs now (since [rumbleSinceMs]), [buzz] the last lamp vibration,
+ * [redAtMs] the last red one (the red pulse's beat, kept when an amber tap follows; null: [buzz] if red).
  */
 @Immutable
 data class DialCues(
@@ -138,7 +140,11 @@ data class DialCues(
     val rumble: Boolean = false,
     val rumbleSinceMs: Long? = null,
     val buzz: LampBuzz? = null,
-)
+    val redAtMs: Long? = null,
+) {
+    /** The last red lamp vibration, as far as known. */
+    val redBuzzMs: Long? get() = redAtMs ?: buzz?.takeIf { it.level == LampLevel.RED }?.atMs
+}
 
 /**
  * Everything a face draws. [telemetry]: the phone's snapshot as it came (the classic face reads it as v108 did; the others
@@ -288,7 +294,8 @@ class DialBuilder(val goneMs: Long = GONE_MS) {
             val p = lit[l.id]
             next[l.id] = when {
                 p == null -> DialLamp(l, nowMs).also { gone.remove(l.id) }
-                p.lamp.level != l.level || p.lamp.text != l.text -> DialLamp(l, p.sinceMs, nowMs, p.lamp)
+                p.lamp.level != l.level -> DialLamp(l, p.sinceMs, nowMs, p.lamp)
+                p.lamp.text != l.text -> DialLamp(l, p.sinceMs, nowMs, p.lamp, p.levelSinceMs)
                 else -> p.copy(lamp = l)
             }
         }

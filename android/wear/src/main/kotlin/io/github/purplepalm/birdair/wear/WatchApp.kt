@@ -9,7 +9,9 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
@@ -84,6 +86,10 @@ fun WatchApp(
         val pager = rememberPagerState { 2 }
         var touchedAt by remember { mutableLongStateOf(0L) }
         LaunchedEffect(ambient != null) { if (ambient != null) pager.scrollToPage(0) }
+        // a lamp's buzz waits for its chip only while the gauge is what the screen shows
+        val gauge = ambient == null && pager.currentPage == 0
+        SideEffect { Landing.gaugeShown = gauge }
+        DisposableEffect(Unit) { onDispose { Landing.gaugeShown = false } }
         LaunchedEffect(pager.currentPage, touchedAt) {
             if (pager.currentPage != 0) {
                 delay(DETAILS_TIMEOUT_MS)

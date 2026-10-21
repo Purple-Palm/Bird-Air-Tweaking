@@ -67,8 +67,8 @@ data class Feed(
  * registered while at least one of them exists (so it keeps updating in ambient, and with the activity gone
  * while the ride service runs), and [Wire.HELLO] (with [HelloInfo]) to every connected node on the first [acquire],
  * then as [Hello] says. The phone's lamps vibrate here, once per [LampAlarm] event, whichever of the
- * two is alive, unless «Вибрация ламп» is off ([WatchPrefs.lampBuzz]) — with «Крупные лампы» [Stack.LAND_MS] later, as
- * the lamp's chip lands; the dial face's DataItems are followed meanwhile
+ * two is alive, unless «Вибрация ламп» is off ([WatchPrefs.lampBuzz]) — with «Крупные лампы» on screen [Stack.LAND_MS]
+ * later, as the lamp's chip lands ([Landing]); the dial face's DataItems are followed meanwhile
  * ([FaceSync]). Main thread only.
  */
 object WatchFeed {
@@ -96,8 +96,9 @@ object WatchFeed {
         // follows the lamps, so switching it on again does not buzz what is already lit
         val buzz = alarm.onMessage(Cluster.lamps(f.t), f.live, now, f.t.speedKmh)
         if (buzz != null && Settings.prefs.value.lampBuzz) {
-            // «Крупные лампы»: the chip flies in and blooms; its buzz goes as it lands (the dial draws the rings from this)
-            val wait = if (Settings.prefs.value.face == DialFace.STACK) Stack.LAND_MS else 0L
+            // «Крупные лампы» on screen: the chip of the lamp that rose flies in and blooms, its buzz goes as it lands (the
+            // dial draws the rings from this); anything else — the screen off, a repeat, calm, queued — at once
+            val wait = if (Settings.prefs.value.face == DialFace.STACK) Landing.waitMs(now, alarm.rose) else 0L
             if (wait <= 0) play(buzz, now)
             else scope.launch { delay(wait); play(buzz, SystemClock.elapsedRealtime()) }
         }

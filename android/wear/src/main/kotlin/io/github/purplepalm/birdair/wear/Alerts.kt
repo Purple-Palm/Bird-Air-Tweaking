@@ -32,7 +32,8 @@ class Buzz private constructor(val level: LampLevel, val timings: LongArray, val
  * several lamps at once give one buzz (the strongest), and a lamp covered by a buzz (or rising within the gap after
  * one) counts as buzzed. Standing lamps ([TellTales.QUIET]: service, weak, ECO), the link lamp (it is lit only while the
  * data is not live, so it could only buzz late), falling levels, YELLOW / GREEN / BLUE, old data (not live) and a
- * bulb check never buzz. Clock: the watch's elapsedRealtime.
+ * bulb check never buzz. [rose]: the last buzz came with its lamp's rise in that message (an amber tap, a red that
+ * turned red just then), not a repeat nor a red held back by the gap. Clock: the watch's elapsedRealtime.
  */
 class LampAlarm(
     val amberCooldownMs: Long = AMBER_COOLDOWN_MS,
@@ -50,6 +51,9 @@ class LampAlarm(
     private var repeats = 0
     private var lastAt: Long? = null
     private var lastRed = false
+    /** The last buzz [onMessage] returned came with its lamp's rise in that message (the face shows it arriving). */
+    var rose = false
+        private set
 
     /** The buzz for this message's lamps, or null. [speedKmh]: null when unknown (repeats are not held back then). */
     fun onMessage(lamps: List<Lamp>, live: Boolean, nowMs: Long, speedKmh: Double? = null): Buzz? {
@@ -68,6 +72,7 @@ class LampAlarm(
         val ambers = now.filter { (id, lvl) -> lvl == LampLevel.AMBER && (before[id] ?: LampLevel.OFF) < LampLevel.AMBER }.keys
         val gapOk = lastAt.let { it == null || nowMs - it >= gapMs }
         val news = reds.any { it !in covered }
+        val turned = reds.any { it !in covered && before[it] != LampLevel.RED }
         val moving = speedKmh == null || speedKmh.isNaN() || speedKmh >= movingKmh
         val repeatDue = redAt.let { at -> at != null && repeats < redRepeatsMs.size && nowMs - at >= redRepeatsMs[repeats] }
         val buzz = when {
@@ -85,6 +90,7 @@ class LampAlarm(
         if (buzz != null) {
             lastAt = nowMs
             lastRed = buzz == Buzz.RED
+            rose = if (buzz == Buzz.RED) news && turned else true
         }
         return buzz
     }

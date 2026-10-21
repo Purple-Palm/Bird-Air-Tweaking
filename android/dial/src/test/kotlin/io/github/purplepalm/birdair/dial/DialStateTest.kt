@@ -22,6 +22,33 @@ class DialStateTest {
     private val over = TellTales.lamp(TellTales.TEMP, LampLevel.RED, TellTales.T_OVERHEAT, 56.0)
     private val svc = TellTales.lamp(TellTales.SERVICE, LampLevel.AMBER, "Ёмкость 75 % от паспорта", 75.0)
 
+    @Test fun theRedBeatKeepsItsPhaseThroughANewTextAndFollowsTheRepeats() {
+        // 20.10's battery: «Заряд на исходе» (amber), «Сейчас отключится» (red), «BMS отключает батарею» (red, a new text)
+        fun bat(level: LampLevel, text: String) = TellTales.lamp(TellTales.BATTERY, level, text, 31.5)
+        val b = DialBuilder()
+        b.build(t(listOf(bat(LampLevel.AMBER, TellTales.T_LOW))), Health.LIVE, 1_000)
+        val s1 = b.build(t(listOf(bat(LampLevel.RED, TellTales.T_CUTTING))), Health.LIVE, 5_300)
+        assertEquals(5_300L, s1.lamps[TellTales.BATTERY]!!.levelSinceMs)
+        val l = b.build(t(listOf(bat(LampLevel.RED, TellTales.T_BMS_CUT))), Health.LIVE, 9_000).lamps[TellTales.BATTERY]!!
+        assertEquals(1_000L, l.sinceMs)
+        assertEquals(9_000L, l.changedMs)
+        assertEquals(5_300L, l.levelSinceMs)
+        // no buzz: from when it turned red, not from when it lit amber
+        assertEquals(5_300L, FaceKit.redSince(l, DialCues()))
+        // its red buzz (the state built a frame after the motor) is the beat; an amber tap after it does not move it
+        val red = DialCues(buzz = LampBuzz(5_280, LampLevel.RED), redAtMs = 5_280)
+        assertEquals(5_280L, FaceKit.redSince(l, red))
+        assertEquals(5_280L, FaceKit.redSince(l, red.copy(buzz = LampBuzz(11_000, LampLevel.AMBER))))
+        // a repeat 30 s on re-phases it (a buzz alone, as the phone's previews give it, counts too)
+        assertEquals(35_280L, FaceKit.redSince(l, DialCues(buzz = LampBuzz(35_280, LampLevel.RED))))
+        // a red buzz of an earlier episode does not
+        assertEquals(5_300L, FaceKit.redSince(l, DialCues(redAtMs = 1_000)))
+        // the red fill dips no lower than 80 % of its cap at the bottom of the beat
+        assertEquals(FaceKit.RED_FILL_MIN, FaceKit.redFill(FaceKit.PULSE_MIN), 1e-6f)
+        assertEquals(1f, FaceKit.redFill(1f), 1e-6f)
+        assertTrue(FaceKit.NIGHT_FILL * FaceKit.redFill(FaceKit.PULSE_MIN) > 0.65f)
+    }
+
     @Test fun theLampsHistory() {
         val b = DialBuilder()
         val s0 = b.build(t(listOf(svc)), Health.LIVE, 1_000)

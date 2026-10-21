@@ -1,5 +1,6 @@
 package io.github.purplepalm.birdair.wear
 
+import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.dial.Cluster
@@ -42,7 +43,9 @@ object DialReplay {
             last = t
             val now = t.t
             step(t, now, Health.of(t, now, now).live && OverspeedAlarm.fresh(freshAt, now))
-            alarm.onMessage(Cluster.lamps(t), t.link == Link.CONNECTED && t.streaming, now, t.speedKmh)?.let { c = c.copy(buzz = LampBuzz(now, it.level)) }
+            alarm.onMessage(Cluster.lamps(t), t.link == Link.CONNECTED && t.streaming, now, t.speedKmh)?.let {
+                c = c.copy(buzz = LampBuzz(now, it.level), redAtMs = if (it.level == LampLevel.RED) now else c.redAtMs)
+            }
             each(
                 b.build(
                     t, Health.of(t, now, now), now, cues = c,
