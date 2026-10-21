@@ -95,7 +95,12 @@ fun lampLines(t: Telemetry): List<Pair<Lamp, String>> =
             val name = TellTales.NAMES[l.id] ?: l.id
             val value = when (l.id) {
                 TellTales.TEMP -> l.value?.let { Fmt.withUnit(it, 0, "°C") }
-                TellTales.BATTERY -> t.warnings.firstOrNull { it.id == BatteryAdvisor.LOW }?.let { Warnings.valueText(it) }
+                TellTales.BATTERY -> when (l.text) {
+                    // the BMS's own flag: the voltage it came at; with the BMS gone the advisor's value is old
+                    Cluster.BMS_CUT -> l.value?.let { Fmt.withUnit(it, 1, "В") }
+                    Cluster.NO_BMS -> null
+                    else -> t.warnings.firstOrNull { it.id == BatteryAdvisor.LOW }?.let { Warnings.valueText(it) }
+                }
                 // «предел тока» carries the current, «просадка» the voltage
                 TellTales.TRACTION -> l.value?.let { Fmt.withUnit(it, 1, if (l.text.contains("предел")) "А" else "В") }
                 else -> null
@@ -109,8 +114,11 @@ fun versionLine(name: String, code: Int): String = "Часы: версия $name
 /** Index of the «Плавно» chip in the details list (the screenshots scroll there). */
 fun smoothChipIndex(s: Screen): Int = 2 + lampLines(s.t).size + detailRows(s.t, s.fast).size + 1
 
-/** Index of the overspeed vibration switch, right under «Плавно». */
-fun overspeedChipIndex(s: Screen): Int = smoothChipIndex(s) + 1
+/** Index of the «Тап у ограничителя» switch, right under «Плавно»; its slider and pause follow. */
+fun tapChipIndex(s: Screen): Int = smoothChipIndex(s) + 1
+
+/** Index of the vibration past the limiter, under the tap's pause. */
+fun overspeedChipIndex(s: Screen): Int = tapChipIndex(s) + 3
 
 /** Index of «Вибрация ламп», under the overspeed threshold. */
 fun lampBuzzChipIndex(s: Screen): Int = overspeedChipIndex(s) + 2
@@ -133,7 +141,7 @@ fun DetailsScreen(
             item { ListHeader { Text("Подробно", color = argb(Palette.INK2)) } }
             item {
                 Text(
-                    s.health.label ?: "данные идут",
+                    Cluster.statusLabel(s.health, Cluster.lamps(s.t), gauge = false) ?: "данные идут",
                     color = argb(if (s.health.live) Palette.GOOD else s.health.tone),
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
@@ -162,18 +170,46 @@ fun DetailsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            // the speed cues: a tap where the limiter starts cutting, a rumble past it (FLY's mph, the others scale)
+            item {
+                ToggleChip(
+                    checked = prefs.tapOn,
+                    onCheckedChange = { onPrefs(prefs.copy(tapOn = it)) },
+                    label = { Text("Тап у ограничителя", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    secondaryLabel = { Text("толчок > " + SpeedPref.mph(prefs.tapMph), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    toggleControl = { Switch(checked = prefs.tapOn) },
+                    colors = ToggleChipDefaults.toggleChipColors(checkedEndBackgroundColor = argb(Palette.LAMP_AMBER).copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item { SpeedSlider(prefs.tapMph, prefs.tapOn, s.t.units) { onPrefs(prefs.copy(tapMph = SpeedPref.clamp(it, SpeedPref.TAP_MPH))) } }
+            item {
+                // one chip, two pauses: a tap goes 60 → 120 → 60 s
+                Chip(
+                    onClick = { onPrefs(prefs.copy(tapPauseS = TapPause.next(prefs.tapPauseS))) },
+                    label = { Text("Пауза тапа", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    secondaryLabel = { Text(TapPause.describe(prefs.tapPauseS), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    colors = ChipDefaults.secondaryChipColors(),
+                    enabled = prefs.tapOn,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             item {
                 ToggleChip(
                     checked = prefs.overspeedOn,
                     onCheckedChange = { onPrefs(prefs.copy(overspeedOn = it)) },
-                    label = { Text("Вибро > " + OverspeedPref.mph(prefs.overspeedMph), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    secondaryLabel = { Text("жужжит, пока быстрее", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = { Text("Вибро > " + SpeedPref.mph(prefs.overspeedMph), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    secondaryLabel = { Text("быстрее ограничителя", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     toggleControl = { Switch(checked = prefs.overspeedOn) },
                     colors = ToggleChipDefaults.toggleChipColors(checkedEndBackgroundColor = argb(Palette.LAMP_RED).copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            item { OverspeedSlider(prefs, s.t.units, onPrefs) }
+            item {
+                SpeedSlider(prefs.overspeedMph, prefs.overspeedOn, s.t.units) {
+                    onPrefs(prefs.copy(overspeedMph = SpeedPref.clamp(it, SpeedPref.RUMBLE_MPH)))
+                }
+            }
             item {
                 ToggleChip(
                     checked = prefs.lampBuzz,
@@ -216,26 +252,38 @@ private fun LampRow(l: Lamp, about: String, alpha: Float) {
     }
 }
 
-/** The overspeed threshold in [OverspeedPref.STEP] mph steps; greyed while the vibration is off. */
+/**
+ * A cue's FLY point in [SpeedPref.STEP] mph steps (km/h beside it while the phone shows km/h), what it is in the
+ * other modes under it; greyed while the cue is off.
+ */
 @Composable
-private fun OverspeedSlider(prefs: WatchPrefs, units: String, onPrefs: (WatchPrefs) -> Unit) {
+private fun SpeedSlider(mph: Double, enabled: Boolean, units: String, onMph: (Double) -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            OverspeedPref.describe(prefs.overspeedMph, units),
-            color = argb(if (prefs.overspeedOn) Palette.INK else Palette.MUTED),
+            "FLY " + SpeedPref.describe(mph, units),
+            color = argb(if (enabled) Palette.INK else Palette.MUTED),
             style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium, fontFeatureSettings = "tnum"),
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         InlineSlider(
-            value = prefs.overspeedMph.toFloat(),
-            onValueChange = { onPrefs(prefs.copy(overspeedMph = OverspeedPref.clamp(it.toDouble()))) },
-            steps = OverspeedPref.STEPS,
+            value = mph.toFloat(),
+            onValueChange = { onMph(it.toDouble()) },
+            steps = SpeedPref.STEPS,
             decreaseIcon = { Icon(InlineSliderDefaults.Decrease, "медленнее") },
             increaseIcon = { Icon(InlineSliderDefaults.Increase, "быстрее") },
-            valueRange = OverspeedPref.MIN.toFloat()..OverspeedPref.MAX.toFloat(),
+            valueRange = SpeedPref.MIN.toFloat()..SpeedPref.MAX.toFloat(),
             segmented = false,
-            enabled = prefs.overspeedOn,
+            enabled = enabled,
             modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        )
+        Text(
+            SpeedPref.otherModes(mph),
+            color = argb(Palette.MUTED),
+            style = TextStyle(fontSize = 11.sp, fontFeatureSettings = "tnum"),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 2.dp),
         )
     }
 }

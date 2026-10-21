@@ -31,6 +31,16 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
+    // SpeedCueLogTest replays the repo's ride logs through the phone's pipeline: rerun when they or the decoder change
+    testOptions {
+        unitTests.all {
+            val repo = rootDir.parentFile
+            it.systemProperty("repoRoot", repo.absolutePath)
+            it.inputs.dir(repo.resolve("logs")).withPropertyName("logs")
+            it.inputs.file(repo.resolve("decoders/current.json")).withPropertyName("decoder")
+            it.maxHeapSize = "1g"
+        }
+    }
     if (shots) {
         sourceSets.getByName("test").kotlin.srcDir("src/shots/kotlin")
         testOptions { unitTests { isIncludeAndroidResources = true } }

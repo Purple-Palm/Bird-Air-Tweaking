@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.wear.compose.material.LocalTextStyle
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeTextDefaults
 import io.github.purplepalm.birdair.core.Lamp
@@ -180,7 +181,7 @@ fun GaugeScreen(s: Screen, ambient: AmbientState?, smooth: Boolean = true) {
             }
             // the check is the watch's own, at full strength even on old data
             LampColumns(shown, blink, amb, lowBit, Modifier.fillMaxSize().alpha(if (bulb) 1f else s.health.alpha))
-            StatusLine(s.health, amb, g)
+            StatusLine(s.health, Cluster.statusLabel(s.health, lamps), amb, g)
         }
     }
 }
@@ -356,13 +357,24 @@ private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, ms
         )
     }
     if (msg != null) {
+        // a long lamp text («Руль на связи, BMS молчит») is set smaller first, ellipsized only past that
+        val weight = if (ambient) FontWeight.Normal else FontWeight.SemiBold
+        val measurer = rememberTextMeasurer()
+        val maxPx = with(LocalDensity.current) { g.dp(Dial.MSG_MAX_W).toPx() }
+        // measured in the style Text draws it with (the theme's font and spacing)
+        val base = LocalTextStyle.current
+        val font = remember(msg.text, weight, g.unit, maxPx, base) {
+            val style = base.merge(TextStyle(fontSize = g.sp(Dial.MSG_FONT), fontWeight = weight))
+            Dial.msgFont(measurer.measure(msg.text, style, softWrap = false, maxLines = 1).size.width.toFloat(), maxPx)
+        }
         Text(
             msg.text,
             Modifier.baselineAt(Dial.MSG_Y).widthIn(max = g.dp(Dial.MSG_MAX_W)),
             color = argb(if (ambient) Palette.AMB_INK else msg.argb),
-            fontSize = g.sp(Dial.MSG_FONT),
-            fontWeight = if (ambient) FontWeight.Normal else FontWeight.SemiBold,
+            fontSize = g.sp(font),
+            fontWeight = weight,
             maxLines = 1,
+            softWrap = false,
             overflow = TextOverflow.Ellipsis,
         )
     }
@@ -370,7 +382,7 @@ private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, ms
     Text(
         Dial.powerText(watts, flow),
         Modifier.baselineAt(if (msg != null) Dial.POWER_Y else Dial.POWER_ALONE_Y),
-        color = argb(if (ambient) Palette.AMB_INK else Dial.powerArgb(watts)),
+        color = argb(if (ambient) Palette.AMB_INK else Dial.powerArgb(watts, flow)),
         style = TNUM.copy(fontSize = g.sp(Dial.POWER_FONT)),
         maxLines = 1,
     )
@@ -424,10 +436,10 @@ private fun LampColumns(lamps: List<Lamp>, blink: State<Boolean>, ambient: Boole
     }
 }
 
-/** Top line: what is wrong with the data, or the time when all is live. Not dimmed with the values. */
+/** Top line: what is wrong with the data ([label], see [Cluster.statusLabel]), or the time when all is live. Not
+ *  dimmed with the values. */
 @Composable
-private fun StatusLine(h: Health, ambient: Boolean, g: Grid) {
-    val label = h.gaugeLabel
+private fun StatusLine(h: Health, label: String?, ambient: Boolean, g: Grid) {
     if (label != null) {
         Text(
             label,

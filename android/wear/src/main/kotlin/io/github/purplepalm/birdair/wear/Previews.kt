@@ -7,6 +7,7 @@ import io.github.purplepalm.birdair.core.BatteryWarning
 import io.github.purplepalm.birdair.core.Lamp
 import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.core.PowerState
 import io.github.purplepalm.birdair.core.RangeEstimate
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
@@ -85,7 +86,7 @@ object Samples {
         ),
     )
 
-    /** Downhill in FLY past 16 mph: the overspeed vibration runs, the blue lamp is lit past the limiter. */
+    /** Downhill in FLY at 18.3 mph, past the rumble's 17.5: the vibration runs, the blue lamp is lit past the limiter. */
     val overspeed = normal.copy(
         speedKmh = 29.5, currentA = -1.2, powerW = -48.0, currentFastA = -1.2, powerFastW = -48.0, range = range(8.6, 11.8),
         lamps = listOf(Lamp(TellTales.OVERSPEED, LampLevel.BLUE, "Быстрее ограничителя", 29.5), service),
@@ -95,6 +96,59 @@ object Samples {
     val roughRange = riding.copy(speedKmh = 6.0, tripKm = 0.1, batteryPct = 98.0, batteryPctFine = 98.2, range = range(26.0, 15.0, "default"))
 
     val silent = riding.copy(streaming = false)
+
+    /** Throttle released at 24 km/h: −0.3 A is coasting («накат», grey), not regen. */
+    val coasting = riding.copy(
+        speedKmh = 24.1, mode = 3, currentA = -0.2, powerW = -8.0, currentFastA = -0.3, powerFastW = -11.0, powerState = PowerState.COAST,
+    )
+
+    /** 20.10 at 1811.5 s, as the phone's pipeline makes it: 5 %, 31.2 V under 7.7 A, the BMS's under-voltage flag 2.4 s
+     *  before it cut the pack. */
+    val bmsCutoff = riding.copy(
+        speedKmh = 16.5, mode = 3, batteryPct = 5.0, batteryPctFine = 5.3, voltage = 31.245, currentA = 7.67, powerW = 239.6,
+        currentFastA = 7.64, powerFastW = 238.7, peakW = 329.0, temp1C = 45.0, temp2C = 50.0, tripKm = 9.6, odometerKm = 1464.6,
+        avgSpeedKmh = 19.0, remainingMah = 210.0, fullMah = 3936.0, whOut = 124.2, whIn = 6.1, range = range(0.25, 11.2),
+        appOdometerKm = 1464.6, powerState = PowerState.TRACTION,
+        warnings = listOf(warning(BatteryAdvisor.LOW, WarningLevel.CRITICAL, 31.2), warning(BatteryAdvisor.HOT, WarningLevel.WARNING, 50.0)),
+        lamps = listOf(
+            Lamp(TellTales.TEMP, LampLevel.AMBER, "Батарея горячая", 50.0),
+            Lamp(TellTales.BATTERY, LampLevel.RED, Cluster.BMS_CUT, 31.25),
+            Lamp(TellTales.TRACTION, LampLevel.AMBER, "Мало тяги: просадка", 31.25),
+            service,
+        ),
+    )
+
+    /** 20.10 at 1825 s: the BMS cut the pack 13 s ago; the dash still answers, no frame comes (on the dash: error 12). */
+    val bmsSilent = bmsCutoff.copy(
+        streaming = false, speedKmh = 12.5, batteryPctFine = 5.1, range = range(0.23, 11.3),
+        lamps = listOf(
+            Lamp(TellTales.TEMP, LampLevel.AMBER, "Батарея горячая", 50.0),
+            Lamp(TellTales.BATTERY, LampLevel.RED, Cluster.NO_BMS),
+            service,
+            Lamp(TellTales.LINK, LampLevel.AMBER, Cluster.DASH_NO_BMS),
+        ),
+    )
+
+    /** 16.10 at 73.5 s: braking on a full pack, the BMS warns of over-voltage at 42.28 V. */
+    val overvoltFull = riding.copy(
+        speedKmh = 9.6, mode = 3, batteryPct = 98.0, batteryPctFine = 98.7, voltage = 42.276, currentA = -0.01, powerW = -0.5,
+        currentFastA = -3.35, powerFastW = -141.6, peakW = 605.0, temp1C = 20.0, temp2C = 20.0, tripKm = 0.0, odometerKm = 1434.2,
+        range = range(9.8, 15.0, "default"), powerState = PowerState.REGEN,
+        lamps = listOf(Lamp(TellTales.OVERVOLT, LampLevel.AMBER, "Полная — тормози мягко", 42.28), service),
+    )
+
+    /** 19.10 at 100 s on the charger after the cutoff: the BMS lets no current in until the pack is cooler. */
+    val chargeWait = riding.copy(
+        speedKmh = 0.0, mode = 3, batteryPct = 1.0, batteryPctFine = 1.8, voltage = 35.03, currentA = 0.057, powerW = 2.0,
+        currentFastA = 0.0, powerFastW = 0.0, temp1C = 40.0, temp2C = 43.0, motorOn = false, range = range(0.0, 15.0, "default"),
+        powerState = PowerState.COAST,
+        lamps = listOf(
+            Lamp(TellTales.TEMP, LampLevel.YELLOW, "Батарея тёплая", 43.0),
+            Lamp(TellTales.BATTERY, LampLevel.AMBER, "Заряд 1,8 %", 1.8),
+            service,
+            Lamp(TellTales.CHARGING, LampLevel.AMBER, "Зарядка ждёт остывания", 43.0),
+        ),
+    )
 }
 
 @Preview(name = "Норма", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
@@ -113,9 +167,21 @@ private fun GaugeCriticalPreview() = WatchApp(Screen(Samples.critical, Health.LI
 @Composable
 private fun GaugeBulbPreview() = WatchApp(Screen(Samples.normal, Health.LIVE, bulb = true), null)
 
-@Preview(name = "Быстрее 16 mph", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
+@Preview(name = "Быстрее 17,5 mph", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
 @Composable
 private fun GaugeOverspeedPreview() = WatchApp(Screen(Samples.overspeed, Health.LIVE, overspeed = true), null)
+
+@Preview(name = "BMS отключает", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
+@Composable
+private fun GaugeBmsCutoffPreview() = WatchApp(Screen(Samples.bmsCutoff, Health.LIVE), null)
+
+@Preview(name = "BMS молчит", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
+@Composable
+private fun GaugeBmsSilentPreview() = WatchApp(Screen(Samples.bmsSilent, Health.SILENT), null)
+
+@Preview(name = "Полная — тормози мягко", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
+@Composable
+private fun GaugeOvervoltPreview() = WatchApp(Screen(Samples.overvoltFull, Health.LIVE), null)
 
 @Preview(name = "Рекуперация", device = WATCH, showSystemUi = true, backgroundColor = 0xFF000000, showBackground = true)
 @Composable
