@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.graphics.Color
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -19,12 +20,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import io.github.purplepalm.birdair.phone.ui.BirdTheme
 import io.github.purplepalm.birdair.phone.ui.MainScreen
 import io.github.purplepalm.birdair.phone.ui.SystemState
@@ -60,14 +64,36 @@ class MainActivity : ComponentActivity(), UiActions {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         ScooterRepo.init(this)
-        enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(0), navigationBarStyle = SystemBarStyle.dark(0))
+        enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT), navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         asked = savedInstanceState?.getBoolean("asked") ?: false
         setContent {
             val s by ScooterRepo.settings.collectAsStateWithLifecycle()
             val dark = s.theme == "dark" || isSystemInDarkTheme()
+            // the bars' icons follow the app's theme (the owner picks it), not the system's
+            LaunchedEffect(dark) {
+                val style = if (dark) SystemBarStyle.dark(Color.TRANSPARENT) else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            }
             BirdTheme(dark) { MainScreen(this, sys) }
         }
+        // a download the owner tapped for: the installer once it is ready, unless a recording runs
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                ScooterRepo.update.collect { u ->
+                    if (u.openWhenReady && UpdateFlow.phase(u, Updater.code) == UpdPhase.READY) {
+                        ScooterRepo.update.update { it.copy(openWhenReady = false) }
+                        if (!ScooterRepo.status.value.running) install()
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // a notification: back to the dash
+        if (intent.getBooleanExtra(EXTRA_DASH, false)) sys = sys.copy(dashTick = sys.dashTick + 1)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -106,7 +132,7 @@ class MainActivity : ComponentActivity(), UiActions {
         val missing = Perms.missing(this, Perms.all())
         val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        sys = SystemState(
+        sys = sys.copy(
             missingPerms = missing,
             permsBlocked = asked && missing.any { !shouldShowRequestPermissionRationale(it) },
             bluetoothOn = adapter?.isEnabled == true,
@@ -200,13 +226,23 @@ class MainActivity : ComponentActivity(), UiActions {
 
     override fun refreshLogs() { ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) } }
 
-    override fun checkUpdates() { ScooterRepo.scope.launch { Updater.check(applicationContext, manual = true) } }
+    /** The one update button: check → download → install, by the state it is in ([UpdateFlow.phase]). */
+    override fun updateStep() {
+        val app = applicationContext
+        when (Updater.phase()) {
+            UpdPhase.NONE -> ScooterRepo.scope.launch { Updater.check(app, manual = true) }
+            UpdPhase.AVAILABLE -> ScooterRepo.scope.launch { Updater.download(app, byTap = true) }
+            UpdPhase.READY -> install()
+            UpdPhase.CHECKING, UpdPhase.DOWNLOADING -> {}
+        }
+    }
 
-    /** «Обновить»: download (or take the cached APK), save a running recording, open the system installer. */
-    override fun startUpdate() {
+    /** «Установить»: never while moving; the running recording (every part) and the odometer are saved first. */
+    private fun install() {
+        if (ScooterRepo.moving.value) { ScooterRepo.toast("На ходу не ставлю: установка оборвёт связь. Остановись"); return }
         lifecycleScope.launch {
-            val f = Updater.download(applicationContext) ?: return@launch
             ScooterRepo.beforeInstall(applicationContext)
+            val f = Updater.readyFile(applicationContext) ?: run { ScooterRepo.update.update { it.copy(readyCode = null) }; return@launch }
             pendingInstall = f
             if (Updater.install(this@MainActivity, f)) pendingInstall = null
         }
@@ -227,5 +263,10 @@ class MainActivity : ComponentActivity(), UiActions {
 
     private fun startSafely(i: Intent) {
         try { startActivity(i) } catch (e: ActivityNotFoundException) { }
+    }
+
+    companion object {
+        /** On a notification's intent: show the dash. */
+        const val EXTRA_DASH = "dash"
     }
 }

@@ -15,6 +15,7 @@ import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
 
 /**
+ * Every notification opens the dash ([MainActivity.EXTRA_DASH]: a page that was pulled up folds down).
  * The «Поездка» channel and the service's ongoing notification (phone only: setLocalOnly, the watch has its app),
  * and the «Предупреждения» channel: the cluster's red and amber lamps (overheat, low battery, traction, overvoltage,
  * consumption), high priority with vibration ([RideAlerts] decides when it buzzes). Warnings reach the watch: mirrored by Wear OS, unless the watch app is active and
@@ -50,7 +51,7 @@ object Notifications {
         if (items.isEmpty()) { cancelWarning(ctx); return }
         val open = PendingIntent.getActivity(
             ctx, 3,
-            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra(MainActivity.EXTRA_DASH, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val crit = items.any { it.level == LampLevel.RED }
@@ -82,7 +83,7 @@ object Notifications {
     fun build(ctx: Context, t: Telemetry, fast: Boolean = true): Notification {
         val open = PendingIntent.getActivity(
             ctx, 0,
-            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra(MainActivity.EXTRA_DASH, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val stop = PendingIntent.getService(
@@ -118,7 +119,7 @@ object Notifications {
     fun alert(ctx: Context, text: String) {
         val open = PendingIntent.getActivity(
             ctx, 2,
-            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra(MainActivity.EXTRA_DASH, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = NotificationCompat.Builder(ctx, CHANNEL)

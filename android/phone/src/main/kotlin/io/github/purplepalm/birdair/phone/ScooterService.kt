@@ -117,6 +117,7 @@ class ScooterService : Service() {
     private fun stopAll() {
         ScooterRepo.prefs.wanted = false
         val was = ScooterRepo.status.value.running
+        if (was) ScooterRepo.ended(EndCause.OWNER)
         link.stop()
         loops?.cancel()
         loops = null
@@ -161,6 +162,7 @@ class ScooterService : Service() {
         if (ScooterRepo.watchLink === watch) ScooterRepo.watchLink = null
         if (ScooterRepo.status.value.running) {
             // ended by the system, not by «Отключить»
+            ScooterRepo.ended(EndCause.SYSTEM)
             ScooterRepo.status.update { it.copy(running = false) }
             ScooterRepo.setLink(Link.IDLE, "Фоновая работа остановлена системой", true)
             val s = ScooterRepo.session
@@ -297,6 +299,8 @@ class ScooterService : Service() {
         override fun gaveUp(reason: String) {
             scope.launch {
                 ScooterRepo.sys(reason, true)
+                // before stopAll: the reason is why it ended, not «Отключить»
+                ScooterRepo.ended(EndCause.LOST, reason)
                 stopAll()
                 ScooterRepo.setLink(Link.IDLE, reason, true)
                 Notifications.alert(this@ScooterService, reason)   // the screen is likely off

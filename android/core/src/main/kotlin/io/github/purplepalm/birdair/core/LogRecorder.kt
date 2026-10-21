@@ -105,6 +105,24 @@ class LogRecorder(val startedAtMs: Long, val maxEntries: Int = 250_000, val tOff
         }
     }
 
+    /**
+     * The marker [from] at [tMs] (the caller's clock) renamed [to] (cut to 60, like [mk]); false when this part has no such
+     * marker. Counts as a change ([pushed] + 1) so the next save and upload carry it.
+     */
+    @Synchronized
+    fun relabel(tMs: Long, from: String, to: String): Boolean {
+        val t = tMs - tOffsetMs
+        val name = from.take(60)
+        for (i in entries.indices.reversed()) {
+            val e = entries[i]
+            if (e.k != "mk" || e.t != t || e.n != name) continue
+            entries[i] = Entry(e.t, e.k, e.s, e.u, e.b, to.take(60), e.v, e.a, e.err)
+            pushed++
+            return true
+        }
+        return false
+    }
+
     @Synchronized
     fun clear() {
         entries.clear()

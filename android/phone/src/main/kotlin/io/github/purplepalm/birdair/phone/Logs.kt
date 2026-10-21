@@ -79,6 +79,9 @@ class Session(val startedAtMs: Long, private val clock: () -> Long, maxEntries: 
         return true
     }
 
+    /** The marker [from] at [tMs] (this recording's clock) renamed [to], in whichever part has it (a rotation may sit between). */
+    fun relabel(tMs: Long, from: String, to: String): Boolean = list.any { it.recorder.relabel(tMs, from, to) }
+
     /** [LogRecorder.needsRotation]: the next part starts now; returns the finished one, else null. */
     fun rotateIfNeeded(): LogPart? = synchronized(this) {
         val p = part

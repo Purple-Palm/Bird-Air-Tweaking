@@ -8,13 +8,16 @@ import io.github.purplepalm.birdair.core.Decoder
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
+import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.dial.DialFace
 import io.github.purplepalm.birdair.dial.FaceChoice
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -50,6 +53,13 @@ data class LogStatus(
     val bulkErr: Boolean = false,
     val markMessage: String = "",
     val markErr: Boolean = false,
+    /** «Отправить все»: [bulkDone] of [bulkTotal] sent so far; the last commit ([bulkCommit] short, [bulkUrl] its page) and
+     *  when the run ended with it ([bulkAt], wall clock; 0: never, or it failed). */
+    val bulkDone: Int = 0,
+    val bulkTotal: Int = 0,
+    val bulkCommit: String? = null,
+    val bulkUrl: String? = null,
+    val bulkAt: Long = 0,
 )
 
 data class WatchStatus(
@@ -96,6 +106,13 @@ data class UpdateState(
     val err: Boolean = false,
     /** Android wants «Установка неизвестных приложений» allowed for this app first. */
     val needsPermission: Boolean = false,
+    /** Bytes so far and in all (Content-Length, else version.json's phoneSize). */
+    val gotBytes: Long = 0,
+    val totalBytes: Long? = null,
+    /** versionCode of the verified APK kept in filesDir/update (it survives the process): «Установить vN». */
+    val readyCode: Int? = null,
+    /** The owner tapped for it and no recording runs: the activity opens the installer once it is ready. */
+    val openWhenReady: Boolean = false,
 )
 
 /**
@@ -144,6 +161,28 @@ object ScooterRepo {
     val markers = MutableStateFlow<List<Marker>>(emptyList())
     /** «Приборка»: the lamp transitions of this recording, newest first. */
     val journal = MutableStateFlow<List<LampEvent>>(emptyList())
+
+    /** «Еду» / «Стою» by speed with hysteresis ([MotionView]); false when nothing is recorded. */
+    val moving = MutableStateFlow(false)
+    /** The dash view the owner pinned until the ride ends. */
+    val viewPin = MutableStateFlow(ViewPin.AUTO)
+    /** This session had live frames at least once (before that the dash says «Подключаюсь…»). */
+    val streamed = MutableStateFlow(false)
+    /** elapsedRealtime until which every lamp is lit: the bulb check at start and at each (re)connection. */
+    val bulbUntil = MutableStateFlow(0L)
+    /** The last recording, for the idle dash («до 22:22», «Батарея (последнее)», why it ended). */
+    val lastRide = MutableStateFlow<LastRide?>(null)
+    private val toastFlow = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    /** One-line messages for the screen's snackbar (a download finished while riding…). */
+    val toasts: SharedFlow<String> get() = toastFlow
+    private val motion = MotionView()
+    /** Time above 1 km/h this session, counted per sample like [TripStats.movingSeconds] (the parked trip card, 5 Hz). */
+    @Volatile private var movingMs = 0L
+    private var prevT = Long.MIN_VALUE
+    private var prevKmh = Double.NaN
+    /** The BMS's charge when it flagged the cut (the idle dash: «… 31,2 В под нагрузкой, 5 %»). */
+    @Volatile private var cutPct: Double? = null
+    @Volatile private var endedFor: Session? = null
     private var chartAt = -CHART_EVERY_MS
     private var chartPending = false
 
@@ -168,6 +207,8 @@ object ScooterRepo {
         tracker.odometerState = prefs.odometer
         odoSaved = tracker.odometerState
         update.value = UpdateState(latest = Versions.parse(prefs.updateJson), checkedAt = prefs.updateCheckedAt)
+        lastRide.value = prefs.lastRide
+        bulbUntil.value = SystemClock.elapsedRealtime() + TellTales.BULB_CHECK_MS
         face.value = WatchFaceState(phone = prefs.watchFace)
         pipeline.onPublish = ::published
         // «под нагрузкой» for battery_low and its lamp (screen, notification, watch): one sample per BMS frame
@@ -183,6 +224,7 @@ object ScooterRepo {
             }
         }
         scope.launch(Dispatchers.IO) { refreshUnsent(app) }
+        scope.launch(Dispatchers.IO) { Updater.restore(app) }
         Updater.startDaily(app)
     }
 
@@ -191,10 +233,11 @@ object ScooterRepo {
         decoder.value = DecoderInfo(c.spec.version, c.source, c.spec.note)
     }
 
-    /** A new recording: values, energy, the power scale and the chart start over; the app odometer goes on. */
-    fun newSession(name: String?, address: String?): Session {
+    /** A new recording: values, energy, the power scale and the chart start over; the app odometer goes on.
+     *  [wallMs]: its start on the wall clock (now; a replay passes the log's). */
+    fun newSession(name: String?, address: String?, wallMs: Long = System.currentTimeMillis()): Session {
         val t0 = SystemClock.elapsedRealtime()
-        val s = Session(System.currentTimeMillis(), { SystemClock.elapsedRealtime() - t0 })
+        val s = Session(wallMs, { SystemClock.elapsedRealtime() - t0 })
         s.device(name, address)
         s.note = note.value
         tracker.reset()
@@ -207,8 +250,17 @@ object ScooterRepo {
         cluster.reset()
         journal.value = emptyList()
         sag.reset()
+        motion.reset()
+        moving.value = false
+        viewPin.value = ViewPin.AUTO
+        streamed.value = false
+        cutPct = null
+        movingMs = 0L
+        prevT = Long.MIN_VALUE
+        prevKmh = Double.NaN
         session = s
-        log.value = LogStatus()
+        // the last «Отправить все» stays on the tile for a while
+        log.update { LogStatus(bulkDone = it.bulkDone, bulkTotal = it.bulkTotal, bulkCommit = it.bulkCommit, bulkUrl = it.bulkUrl, bulkAt = it.bulkAt) }
         return s
     }
 
@@ -236,7 +288,17 @@ object ScooterRepo {
         val s = session ?: return
         // from the first 3A 17 of the session: what the app odometer added for a ride without the app is already in
         if (s.appOdoStartKm == null && t.odometerKm != null && t.appOdometerKm != null) s.appOdoStartKm = t.appOdometerKm
-        if (fresh) { samples.add(t.t, t); chartPending = true }
+        if (fresh) {
+            samples.add(t.t, t)
+            chartPending = true
+            val dt = t.t - prevT
+            if (prevT != Long.MIN_VALUE && dt in 1..Downsample.GAP_MS && prevKmh >= 1.0) movingMs += dt
+            prevT = t.t
+            prevKmh = t.speedKmh ?: Double.NaN
+        }
+        if (t.streaming && !streamed.value) streamed.value = true
+        val mv = status.value.running && motion.update(t.speedKmh, t.streaming, t.t)
+        if (moving.value != mv) moving.value = mv
         if (chartPending && (t.t - chartAt >= CHART_EVERY_MS || !fresh)) { chartAt = t.t; chartPending = false; chartRev.update { it + 1 } }
         watchLink?.offer(forWatch(t))
         lamps(s, t)
@@ -255,7 +317,11 @@ object ScooterRepo {
 
     /** The lamps of a published snapshot: the journal (every level change) and the log marks (rate-limited, [LampMarks]). */
     private fun lamps(s: Session, t: Telemetry) {
-        if (cluster.changes(t.lamps, s.startedAtMs + t.t).isNotEmpty()) journal.value = cluster.journal.list()
+        val ch = cluster.changes(t.lamps, s.startedAtMs + t.t)
+        if (ch.isNotEmpty()) {
+            journal.value = cluster.journal.list()
+            if (cutPct == null && ch.any { it.lamp?.text?.startsWith(LampText.BMS_CUT) == true }) cutPct = t.batteryPct ?: t.batteryPctFine
+        }
         for (m in cluster.marks.update(t.lamps, t.t)) s.recorder.mk(m.text, t.t)
     }
 
@@ -324,6 +390,7 @@ object ScooterRepo {
     }
 
     fun setLink(link: Link, message: String? = null, err: Boolean = false) {
+        if (link == Link.CONNECTED && status.value.link != Link.CONNECTED) bulbUntil.value = SystemClock.elapsedRealtime() + TellTales.BULB_CHECK_MS
         tracker.link = link
         status.update { it.copy(link = link, message = message ?: it.message, err = if (message != null) err else it.err) }
         pipeline.set(telemetry.value.copy(link = link))
@@ -346,21 +413,78 @@ object ScooterRepo {
         session?.note = t
     }
 
-    /** «Метка»: a timed marker in the running log (and on the chart). */
-    fun mark(label: String) {
+    /** «Метка»: a timed marker in the running log (and on the chart); the marker, or null (nothing running, no text). */
+    fun mark(label: String): Marker? {
         val s = session
         val l = label.trim().take(60)
-        when {
-            s == null || !status.value.running -> log.update { it.copy(markMessage = "Метка ставится в идущую запись — сначала «Подключить».", markErr = true) }
-            l.isEmpty() -> log.update { it.copy(markMessage = "Впиши текст метки.", markErr = true) }
+        return when {
+            s == null || !status.value.running -> { log.update { it.copy(markMessage = "Метка ставится в идущую запись — сначала «Подключить».", markErr = true) }; null }
+            l.isEmpty() -> { log.update { it.copy(markMessage = "Впиши текст метки.", markErr = true) }; null }
             else -> {
                 val t = s.now()
                 s.recorder.mk(l, t)
-                markers.update { (it + Marker(t, l)).takeLast(200) }
+                val m = Marker(t, l)
+                markers.update { (it + m).takeLast(200) }
                 chartRev.update { it + 1 }
                 log.update { it.copy(markMessage = "Метка «$l» в ${Fmt.clock(s.startedAtMs + t)}", markErr = false) }
+                m
             }
         }
+    }
+
+    /** One tap on «Метка» while riding: «Метка N» now (N: the owner's markers so far + 1), labelled later by [relabel]. */
+    fun markNow(): Marker? {
+        if (session == null || !status.value.running) return null
+        return mark(MarkerWords.next(markers.value))
+    }
+
+    /** [m] gets [label] in the log (it keeps its time; the next save and upload carry it) and on the chart. */
+    fun relabel(m: Marker, label: String): Boolean {
+        val s = session ?: return false
+        val l = label.trim().take(60)
+        if (!status.value.running || l.isEmpty()) return false
+        if (!s.relabel(m.t, m.label, l)) return false
+        markers.update { list ->
+            val i = list.indexOfFirst { it.t == m.t && it.label == m.label }
+            if (i < 0) list else list.toMutableList().also { it[i] = Marker(m.t, l) }
+        }
+        chartRev.update { it + 1 }
+        log.update { it.copy(markMessage = "Метка «$l» в ${Fmt.clock(s.startedAtMs + m.t)}", markErr = false) }
+        return true
+    }
+
+    /** The wall-clock time of a marker of this recording: «22:12:21». */
+    fun markClock(m: Marker): String = Fmt.clock((session?.startedAtMs ?: 0L) + m.t)
+
+    fun setViewPin(p: ViewPin) { viewPin.value = p }
+
+    /** Seconds above 1 km/h this session. */
+    fun movingSeconds(): Long = movingMs / 1000
+
+    fun toast(text: String) { toastFlow.tryEmit(text) }
+
+    /**
+     * The recording ends ([ScooterService]): what the idle dash shows next is kept ([LastRide], once per session: a lost
+     * link calls this before «Отключить» does, so its reason wins); the view goes back to auto.
+     */
+    fun ended(cause: EndCause, reason: String? = null) {
+        val s = session
+        if (s != null && endedFor !== s && s.rx.get() > 0) {
+            endedFor = s
+            val t = telemetry.value
+            val trip = TripStats.now(s, t, samples.copy())
+            val r = LastRide(
+                startMs = s.startedAtMs, endMs = s.startedAtMs + s.now(), km = trip.km, movingS = trip.movingS, whNet = trip.whNet,
+                whPerKm = trip.whPerKm, end = RideEnds.of(cause, reason, journal.value, t, cutPct),
+                pct = t.batteryPctFine ?: t.batteryPct, volts = t.voltage, mah = t.remainingMah, fullMah = t.fullMah,
+            )
+            lastRide.value = r
+            prefs.lastRide = r
+        }
+        motion.reset()
+        moving.value = false
+        viewPin.value = ViewPin.AUTO
+        streamed.value = false
     }
 
     fun updateGh(f: (GhConfig) -> GhConfig) {

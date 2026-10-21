@@ -1,4 +1,4 @@
-package io.github.purplepalm.birdair.phone.ui
+package io.github.purplepalm.birdair.phone.ui.watch
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +34,9 @@ import io.github.purplepalm.birdair.dial.DialFace
 import io.github.purplepalm.birdair.dial.FacePreview
 import io.github.purplepalm.birdair.phone.ScooterRepo
 import io.github.purplepalm.birdair.phone.WatchFaceState
+import io.github.purplepalm.birdair.phone.ui.LocalBal
+import io.github.purplepalm.birdair.phone.ui.Msg
+import io.github.purplepalm.birdair.phone.ui.Panel
 
 /** The card's line about the watch: what it draws now, as far as the phone heard. */
 fun faceStatus(f: WatchFaceState): String = when {

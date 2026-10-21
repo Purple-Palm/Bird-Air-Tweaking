@@ -2,7 +2,7 @@ package io.github.purplepalm.birdair.phone
 
 import io.github.purplepalm.birdair.dial.DialFace
 import io.github.purplepalm.birdair.dial.FaceChoice
-import io.github.purplepalm.birdair.phone.ui.faceStatus
+import io.github.purplepalm.birdair.phone.ui.watch.faceStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

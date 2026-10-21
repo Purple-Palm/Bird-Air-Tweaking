@@ -1,4 +1,4 @@
-package io.github.purplepalm.birdair.phone.ui
+package io.github.purplepalm.birdair.phone.ui.charts
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
@@ -63,6 +63,11 @@ import io.github.purplepalm.birdair.phone.Samples
 import io.github.purplepalm.birdair.phone.ScooterRepo
 import io.github.purplepalm.birdair.phone.Ticks
 import io.github.purplepalm.birdair.phone.Units
+import io.github.purplepalm.birdair.phone.ui.LocalBal
+import io.github.purplepalm.birdair.phone.ui.Metric
+import io.github.purplepalm.birdair.phone.ui.Msg
+import io.github.purplepalm.birdair.phone.ui.Panel
+import io.github.purplepalm.birdair.phone.ui.Tnum
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs

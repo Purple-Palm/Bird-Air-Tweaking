@@ -116,8 +116,13 @@ class GitHubApiTest {
 
     @Test fun responses() {
         val body = """{"content":{"name":"x","path":"logs/x","sha":"95b966ae","html_url":"https://github.com/o/r/blob/main/logs/x"},"commit":{"sha":"c0ffee"}}"""
-        assertEquals(GhPut("logs/x", "95b966ae", "https://github.com/o/r/blob/main/logs/x"), GitHubApi.parsePut("logs/x", body))
+        assertEquals(GhPut("logs/x", "95b966ae", "https://github.com/o/r/blob/main/logs/x", commitSha = "c0ffee"), GitHubApi.parsePut("logs/x", body))
         assertEquals(GhPut("p", null, null), GitHubApi.parsePut("p", "not json"))
+        // the commit, for «На GitHub · коммит 7c1e2a9» / «Открыть коммит»
+        val withCommit = """{"content":{"sha":"95b966ae","html_url":"https://github.com/o/r/blob/main/logs/x"},""" +
+            """"commit":{"sha":"7c1e2a9f00d","html_url":"https://github.com/o/r/commit/7c1e2a9f00d","message":"Лог"}}"""
+        assertEquals(GhPut("logs/x", "95b966ae", "https://github.com/o/r/blob/main/logs/x", "7c1e2a9f00d", "https://github.com/o/r/commit/7c1e2a9f00d"),
+            GitHubApi.parsePut("logs/x", withCommit))
         assertEquals(GhPut("p", null, null), GitHubApi.parsePut("p", null))
         assertEquals("Bad credentials", GitHubApi.message("""{"message":"Bad credentials","documentation_url":"x"}"""))
         assertEquals("", GitHubApi.message("<html>"))

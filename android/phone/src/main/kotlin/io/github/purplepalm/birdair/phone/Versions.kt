@@ -7,8 +7,14 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 
-/** version.json of the android-latest release: {"versionCode": int, "versionName": str, "sha": str}. */
-data class UpdateInfo(val versionCode: Int, val versionName: String, val sha: String) {
+/**
+ * version.json of the android-latest release: {"versionCode": int, "versionName": str, "sha": str}, and from CI also the
+ * phone APK's [phoneSize] (bytes) and [phoneSha256] (the download is checked against them) and [notes] (the commit's subject).
+ */
+data class UpdateInfo(
+    val versionCode: Int, val versionName: String, val sha: String,
+    val phoneSize: Long? = null, val phoneSha256: String? = null, val notes: String? = null,
+) {
     /** «v42 (0.42, 1a2b3c4)» */
     fun label(): String = "v$versionCode" + listOfNotNull(versionName.ifEmpty { null }, sha.take(7).ifEmpty { null }).joinToString(", ").let { if (it.isEmpty()) "" else " ($it)" }
 }
@@ -34,7 +40,8 @@ object Versions {
         val o = obj(text) ?: return null
         val code = num(o["versionCode"]) ?: return null
         if (code <= 0) return null
-        return UpdateInfo(code, str(o["versionName"]) ?: "", str(o["sha"]) ?: "")
+        val sha256 = str(o["phoneSha256"])?.lowercase()?.takeIf { Regex("[0-9a-f]{64}").matches(it) }
+        return UpdateInfo(code, str(o["versionName"]) ?: "", str(o["sha"]) ?: "", lng(o["phoneSize"]), sha256, str(o["notes"]))
     }
 
     /** Newer than what is installed: by versionCode only (names are free text, «dev» for local builds). */
@@ -100,6 +107,8 @@ object Versions {
         val p = e as? JsonPrimitive ?: return null
         return p.intOrNull ?: p.longOrNull?.takeIf { it in 1..Int.MAX_VALUE }?.toInt() ?: p.contentOrNull?.trim()?.toIntOrNull()
     }
+
+    private fun lng(e: Any?): Long? = (e as? JsonPrimitive)?.let { it.longOrNull ?: it.contentOrNull?.trim()?.toLongOrNull() }?.takeIf { it > 0 }
 
     private fun str(e: Any?): String? = (e as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
 }

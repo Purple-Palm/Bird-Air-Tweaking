@@ -51,6 +51,23 @@ object TestLogs {
         return if (out.size > limit) out.subList(0, limit) else out
     }
 
+    private fun json(path: String): JsonObject {
+        val raw = File(root, path).readBytes()
+        val text = if (raw[0] == 0x1f.toByte()) GZIPInputStream(raw.inputStream()).readBytes().toString(Charsets.UTF_8) else raw.toString(Charsets.UTF_8)
+        return Json.parseToJsonElement(text).jsonObject
+    }
+
+    /** The owner's own markers of a log ("mk": t, label), in time order. */
+    fun marks(path: String): List<Pair<Long, String>> = json(path)["entries"]!!.jsonArray.mapNotNull { el ->
+        val e = el as? JsonObject ?: return@mapNotNull null
+        if (e["k"]?.jsonPrimitive?.contentOrNull != "mk") return@mapNotNull null
+        val t = e["t"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        t to (e["n"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null)
+    }.sortedBy { it.first }
+
+    /** The log's "startedAt" (epoch ms). */
+    fun startedAt(path: String): Long = java.time.Instant.parse(json(path)["startedAt"]!!.jsonPrimitive.content).toEpochMilli()
+
     /**
      * [path] through the phone's pipeline as the app runs it: link CONNECTED, a publish after every notification and
      * every 250 ms without one, a new connection at each «Найдено сервисов» (the tracker's restartStreams, then

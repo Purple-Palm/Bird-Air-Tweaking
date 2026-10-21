@@ -33,6 +33,8 @@ object LogStore {
 
     private val saveLock = Mutex()
     private val ghLock = Mutex()
+    /** The last PUT that went through: «Отправить все» shows its commit. */
+    @Volatile private var lastPut: GhPut? = null
 
     fun dir(ctx: Context): File = File(ctx.filesDir, "logs").apply { mkdirs() }
 
@@ -175,6 +177,7 @@ object LogStore {
                     }
                 }
                 val put: GhPut = got
+                lastPut = put
                 p.gh = put; p.ghDest = cfg.dest; p.ghPushed = mark; p.ghNote = note; p.ghAt = System.currentTimeMillis()
                 ScooterRepo.prefs.setSent(file.name, SentLog(put.path, put.sha, cfg.dest, size, mtime, put.htmlUrl))
                 ScooterRepo.refreshUnsent(ctx)
@@ -230,6 +233,7 @@ object LogStore {
                 if (!GitHubApi.isStaleSha(e.status)) throw e
                 GitHubApi.parsePut(path, GitHubHttp.call(GitHubApi.put(cfg, token, path, bytes, msg, currentSha(cfg, token, path)), cfg).body)
             }
+            lastPut = put
             ScooterRepo.prefs.setSent(f.name, SentLog(put.path, put.sha, cfg.dest, size, mtime, put.htmlUrl))
             null
         }
@@ -246,7 +250,8 @@ object LogStore {
         if (s != null) saveAll(ctx, s)
         val list = ScooterRepo.refreshUnsent(ctx).asReversed()
         if (list.isEmpty()) { say("Неотправленных логов нет."); return@withContext true }
-        ScooterRepo.log.update { it.copy(bulkBusy = true) }
+        lastPut = null
+        ScooterRepo.log.update { it.copy(bulkBusy = true, bulkDone = 0, bulkTotal = list.size, bulkCommit = null, bulkUrl = null, bulkAt = 0) }
         var ok = 0
         var failed: String? = null
         try {
@@ -257,10 +262,14 @@ object LogStore {
                     if (part != null) { if (upload(ctx, s, part, auto = false)) null else ScooterRepo.log.value.ghMessage }
                     else uploadDisk(ctx, f)
                 } catch (e: GhError) { e.message ?: "ошибка GitHub" } catch (e: IOException) { e.message ?: "ошибка чтения" }
-                if (err == null) ok++ else { failed = "${f.name}: $err"; break }
+                if (err == null) { ok++; ScooterRepo.log.update { it.copy(bulkDone = ok) } } else { failed = "${f.name}: $err"; break }
             }
         } finally {
-            ScooterRepo.log.update { it.copy(bulkBusy = false) }
+            val put = lastPut
+            ScooterRepo.log.update {
+                it.copy(bulkBusy = false, bulkDone = ok, bulkCommit = put?.commitSha?.take(7), bulkUrl = put?.commitUrl ?: put?.htmlUrl,
+                    bulkAt = if (failed == null && ok > 0) System.currentTimeMillis() else 0)
+            }
             ScooterRepo.refreshUnsent(ctx)
         }
         if (failed != null) say("Отправлено $ok из ${list.size}. Не ушло — $failed", true) else say("Отправлено: $ok из ${list.size}.")

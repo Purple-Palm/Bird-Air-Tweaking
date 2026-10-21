@@ -49,6 +49,24 @@ class LogsTest {
         assertFalse(s.mark("   "))
     }
 
+    @Test fun relabelAcrossParts() {
+        var now = 0L
+        val s = Session(start, { now }, maxEntries = 10)
+        for (i in 0 until 5) { now = i * 100L; s.recorder.rx("ffe0", "ffe1", byteArrayOf(i.toByte()), now) }
+        now = 600
+        s.mark("Метка 1")
+        for (i in 7 until 11) { now = i * 100L; s.recorder.rx("ffe0", "ffe1", byteArrayOf(i.toByte()), now) }
+        assertTrue(s.rotateIfNeeded() != null)
+        now = 1_500
+        s.mark("Метка 2")
+        assertTrue("in the finished part", s.relabel(600, "Метка 1", "Стоп"))
+        assertTrue("in the part being written", s.relabel(1_500, "Метка 2", "Газ"))
+        assertFalse(s.relabel(600, "Метка 1", "Газ"))
+        assertTrue(s.parts[0].recorder.toJson().contains("\"n\":\"Стоп\""))
+        assertTrue(s.parts[1].recorder.toJson().contains("\"n\":\"Газ\""))
+        assertTrue("dirty for the next save", s.parts[0].dirtyLocal)
+    }
+
     @Test fun nameFollowsTheNoteUntilTheFirstUpload() {
         val s = Session(start, { 0L })
         s.device("BirdAir-123456789", null)

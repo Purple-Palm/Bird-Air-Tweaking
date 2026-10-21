@@ -23,6 +23,8 @@ data class Bal(
     val goodInk: Color, val warnInk: Color, val critInk: Color,
     val modeTake: Color, val modeGlide: Color, val modeFly: Color,
     val btn: Color, val btnInk: Color, val focus: Color,
+    /** Behind a sheet; the snackbar's inverse surface, its text and its action. */
+    val scrim: Color, val inv: Color, val invInk: Color, val invAct: Color,
 )
 
 val DarkBal = Bal(
@@ -34,6 +36,7 @@ val DarkBal = Bal(
     goodInk = Color(0xFF3FC93F), warnInk = Color(0xFFFAB219), critInk = Color(0xFFF07A7A),
     modeTake = Color(0xFF9AA5A1), modeGlide = Color(0xFFF0BF2A), modeFly = Color(0xFFEF5A5A),
     btn = Color(0xFFE8EEEC), btnInk = Color(0xFF0C100F), focus = Color(0xFF6AA8F0),
+    scrim = Color(0x99000000), inv = Color(0xFFE8EEEC), invInk = Color(0xFF0C100F), invAct = Color(0xFF2A78D6),
 )
 
 val LightBal = Bal(
@@ -45,6 +48,7 @@ val LightBal = Bal(
     goodInk = Color(0xFF0B6B0B), warnInk = Color(0xFF855600), critInk = Color(0xFFB42323),
     modeTake = Color(0xFF7A8582), modeGlide = Color(0xFFE0A800), modeFly = Color(0xFFD63A3A),
     btn = Color(0xFF101614), btnInk = Color(0xFFFBFCFC), focus = Color(0xFF2A78D6),
+    scrim = Color(0x6B101614), inv = Color(0xFF1C2321), invInk = Color(0xFFE8EEEC), invAct = Color(0xFF6AA8F0),
 )
 
 val LocalBal = staticCompositionLocalOf { DarkBal }
