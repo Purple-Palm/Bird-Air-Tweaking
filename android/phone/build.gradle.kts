@@ -25,6 +25,14 @@ val decoderAsset = tasks.register<DecoderAsset>("decoderAsset") {
     source.set(rootProject.layout.projectDirectory.file("../decoders/current.json"))
 }
 
+// -Pshots: also render the main screen to PNG with Robolectric (src/shots, see Shots.kt)
+val shots = providers.gradleProperty("shots").isPresent
+
+// CI: -PversionCode=<run number> -PversionName=<…> -PgitSha=<commit>; the in-app update compares versionCode
+val appVersionCode = providers.gradleProperty("versionCode").orNull?.trim()?.toIntOrNull() ?: 1
+val appVersionName = providers.gradleProperty("versionName").orNull?.trim()?.takeIf { it.isNotEmpty() } ?: "dev"
+val appGitSha = providers.gradleProperty("gitSha").orNull?.trim()?.filter { it.isLetterOrDigit() }?.take(40) ?: ""
+
 android {
     namespace = "io.github.purplepalm.birdair.phone"
     compileSdk = 35
@@ -33,8 +41,9 @@ android {
         applicationId = "io.github.purplepalm.birdair"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = appVersionCode
+        versionName = appVersionName
+        buildConfigField("String", "GIT_SHA", "\"$appGitSha\"")
     }
     signingConfigs {
         getByName("debug") {
@@ -47,8 +56,12 @@ android {
     buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     testOptions { unitTests.all { it.systemProperty("repoRoot", rootDir.parentFile.absolutePath) } }
+    if (shots) {
+        sourceSets.getByName("test").kotlin.srcDir("src/shots/kotlin")
+        testOptions { unitTests { isIncludeAndroidResources = true } }
+    }
 }
 
 androidComponents {
@@ -72,4 +85,9 @@ dependencies {
     implementation("androidx.fragment:fragment:1.8.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation(kotlin("test"))
+    if (shots) {
+        testImplementation("org.robolectric:robolectric:4.14.1")
+        testImplementation("androidx.compose.ui:ui-test-junit4")
+        debugImplementation("androidx.compose.ui:ui-test-manifest")
+    }
 }

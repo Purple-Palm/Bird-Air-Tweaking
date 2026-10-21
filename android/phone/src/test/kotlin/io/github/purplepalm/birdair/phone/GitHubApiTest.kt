@@ -75,15 +75,21 @@ class GitHubApiTest {
             ScooterRepo.gh.value = GhConfig(auto = true)
             ScooterRepo.hasToken.value = true
             val now = 10_000_000L
-            val s = Session(now - 600_000, 0).apply { rx.set(5) }
-            assertTrue(LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
-            s.ghTryAt = now - 30_000
-            assertFalse("a flapping link: not again within a minute", LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
-            assertTrue("«Отключить» sends anyway", LogStore.autoDue(s, force = true, nowMs = now))
-            s.ghTryAt = now - LogStore.DROP_EVERY_MS
-            assertTrue(LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            val s = Session(now - 600_000, { 0L }).apply { rx.set(5) }
+            val p = s.part
+            assertFalse("an empty part has nothing to send", LogStore.autoDue(s, p, force = true, nowMs = now))
+            s.recorder.sys("Подключено", 0)
+            assertTrue(LogStore.autoDue(s, p, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            p.ghTryAt = now - 30_000
+            assertFalse("a flapping link: not again within a minute", LogStore.autoDue(s, p, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            assertTrue("«Отключить» sends anyway", LogStore.autoDue(s, p, force = true, nowMs = now))
+            p.ghTryAt = now - LogStore.DROP_EVERY_MS
+            assertTrue(LogStore.autoDue(s, p, force = true, minGapMs = LogStore.DROP_EVERY_MS, nowMs = now))
+            // on schedule: 5 min after the part started, then 5 min after the last upload
+            assertTrue(LogStore.autoDue(s, p, force = false, nowMs = now))
+            assertFalse(LogStore.autoDue(s, p, force = false, nowMs = now - 400_000))
             ScooterRepo.gh.value = GhConfig(auto = false)
-            assertFalse(LogStore.autoDue(s, force = true, nowMs = now))
+            assertFalse(LogStore.autoDue(s, p, force = true, nowMs = now))
         } finally {
             ScooterRepo.gh.value = was.first
             ScooterRepo.hasToken.value = was.second

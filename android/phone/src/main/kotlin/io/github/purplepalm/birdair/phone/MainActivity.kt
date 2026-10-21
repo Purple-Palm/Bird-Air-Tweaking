@@ -29,6 +29,7 @@ import io.github.purplepalm.birdair.phone.ui.BirdTheme
 import io.github.purplepalm.birdair.phone.ui.MainScreen
 import io.github.purplepalm.birdair.phone.ui.SystemState
 import io.github.purplepalm.birdair.phone.ui.UiActions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -37,6 +38,8 @@ class MainActivity : ComponentActivity(), UiActions {
     private var asked = false
     /** The tap that needed permissions: repeated once they came back granted (never re-asks by itself). */
     private var afterPerms: Pair<List<String>, () -> Unit>? = null
+    /** A downloaded update waiting for «Установка неизвестных приложений». */
+    private var pendingInstall: java.io.File? = null
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
@@ -75,6 +78,10 @@ class MainActivity : ComponentActivity(), UiActions {
     override fun onResume() {
         super.onResume()
         refresh()
+        ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) }
+        // back from «Установка неизвестных приложений»: go on with the install
+        val f = pendingInstall
+        if (f != null && Updater.canInstall(this)) { pendingInstall = null; Updater.install(this, f) }
     }
 
     private val btState = object : BroadcastReceiver() {
@@ -156,23 +163,52 @@ class MainActivity : ComponentActivity(), UiActions {
     override fun saveLog() {
         val s = ScooterRepo.session
         if (s == null || s.recorder.size == 0) { ScooterRepo.log.update { it.copy(message = "Лог пуст — подключись к самокату.", err = true) }; return }
-        lifecycleScope.launch { LogStore.save(applicationContext, s, force = true) }
+        lifecycleScope.launch { LogStore.save(applicationContext, s, s.part, force = true); LogStore.saveAll(applicationContext, s) }
     }
 
     override fun shareLog() {
         lifecycleScope.launch {
             val s = ScooterRepo.session
-            val f = (if (s != null && s.recorder.size > 0) LogStore.save(applicationContext, s) else null) ?: LogStore.latest(applicationContext)
+            val f = (if (s != null && s.recorder.size > 0) LogStore.save(applicationContext, s, s.part) else null) ?: LogStore.latest(applicationContext)
             if (f == null) { ScooterRepo.log.update { it.copy(message = "Сохранённых логов пока нет.", err = true) }; return@launch }
             startSafely(LogStore.shareIntent(this@MainActivity, f))
         }
     }
 
+    /** «Отправить в GitHub»: every part of this recording that GitHub does not have yet (the one being written last). */
     override fun sendLog() {
         val s = ScooterRepo.session
         if (s == null || s.recorder.size == 0) { ScooterRepo.log.update { it.copy(ghMessage = "Лог пуст — нечего отправлять.", ghErr = true) }; return }
-        ScooterRepo.scope.launch { LogStore.upload(applicationContext, s, auto = false) }
+        val app = applicationContext
+        ScooterRepo.scope.launch {
+            val dest = ScooterRepo.gh.value.dest
+            for (p in s.parts) if (p !== s.part && p.dirtyGh(dest) && !LogStore.upload(app, s, p, auto = false)) return@launch
+            LogStore.upload(app, s, s.part, auto = false)
+        }
     }
+
+    override fun sendAll() { ScooterRepo.scope.launch { LogStore.uploadAll(applicationContext) } }
+
+    override fun shareFile(f: LocalLog) {
+        val file = java.io.File(LogStore.dir(this), f.name)
+        if (!file.isFile) { ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) }; return }
+        startSafely(LogStore.shareIntent(this, file))
+    }
+
+    override fun refreshLogs() { ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) } }
+
+    override fun checkUpdates() { ScooterRepo.scope.launch { Updater.check(applicationContext, manual = true) } }
+
+    /** «Обновить»: download (or take the cached APK) and open the system installer. */
+    override fun startUpdate() {
+        lifecycleScope.launch {
+            val f = Updater.download(applicationContext) ?: return@launch
+            pendingInstall = f
+            if (Updater.install(this@MainActivity, f)) pendingInstall = null
+        }
+    }
+
+    override fun allowInstall() = startSafely(Updater.allowIntent(this))
 
     override fun openOnWatch() = Watch.open(applicationContext, lifecycleScope)
 

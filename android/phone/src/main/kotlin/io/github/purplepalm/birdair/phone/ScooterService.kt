@@ -32,9 +32,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Foreground service (connectedDevice) that owns the scooter link, so it keeps running with the screen off:
- * a partial wake lock while the link is wanted (connected or reconnecting), START_STICKY, a snapshot every
- * 250 ms for the screen and the watch, the ongoing notification about once a second, the log saved every
- * 5 min and on disconnect, GitHub auto-send every 5 min while connected and after a drop (at most once a minute).
+ * a partial wake lock while the link is wanted (connected or reconnecting), START_STICKY, every new value to the
+ * screen and the watch as it comes ([LivePipeline], at least once a second), the ongoing notification about once a
+ * second, the log saved every 5 min and on disconnect (in parts of [Session.MAX_ENTRIES] entries), GitHub auto-send
+ * every 5 min while connected and after a drop (at most once a minute).
  */
 class ScooterService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -122,17 +123,19 @@ class ScooterService : Service() {
         if (was) ScooterRepo.sys("Отключено")
         ScooterRepo.setLink(Link.IDLE, "Отключено")
         val last = ScooterRepo.telemetry.value.copy(link = Link.IDLE, streaming = false)
-        ScooterRepo.telemetry.value = last
+        ScooterRepo.pipeline.halt(last)
         ScooterRepo.status.update { it.copy(running = false) }
-        watch.offer(last)
+        watch.offer(ScooterRepo.forWatch(last))
+        ScooterRepo.saveOdometer(true)
+        Notifications.cancelWarning(this)
         val s = ScooterRepo.session
         val app = applicationContext
         // in the process scope: a destroyed service does not cut the save or the upload short
         stopJob = ScooterRepo.scope.launch {
             withTimeoutOrNull(FINISH_TIMEOUT_MS) {
                 if (s != null && was) {
-                    LogStore.save(app, s)
-                    if (LogStore.autoDue(s, force = true)) LogStore.upload(app, s, auto = true)
+                    LogStore.saveAll(app, s)
+                    LogStore.autoUpload(app, s, force = true)
                 }
             }
             withContext(Dispatchers.Main) { finishStop() }
@@ -162,7 +165,8 @@ class ScooterService : Service() {
             ScooterRepo.setLink(Link.IDLE, "Фоновая работа остановлена системой", true)
             val s = ScooterRepo.session
             val app = applicationContext
-            if (s != null) ScooterRepo.scope.launch { LogStore.save(app, s) }
+            ScooterRepo.saveOdometer(true)
+            if (s != null) ScooterRepo.scope.launch { LogStore.saveAll(app, s) }
         }
         releaseWake()
         scope.cancel()
@@ -199,31 +203,28 @@ class ScooterService : Service() {
         if (loops?.isActive == true) return
         watch.start()
         loops = scope.launch {
-            launch { ticker() }
+            // the screen and the watch: every new value at once, off the main and the BLE threads
+            launch(Dispatchers.Default) { ScooterRepo.pipeline.run() }
+            launch { notifier() }
             launch { periodic() }
         }
     }
 
-    private suspend fun ticker() {
-        var n = 0L
+    /** The ongoing notification and the entry count, about once a second (only when the text changed). */
+    private suspend fun notifier() {
         while (scope.isActive) {
-            val t = ScooterRepo.snapshotNow()
-            ScooterRepo.telemetry.value = t
-            watch.offer(t)
-            if (n % 4 == 0L) {
-                notify(t)
-                ScooterRepo.session?.let { s -> ScooterRepo.log.update { it.copy(entries = s.recorder.size) } }
-            }
-            n++
-            delay(TICK_MS)
+            notify(ScooterRepo.telemetry.value)
+            ScooterRepo.session?.let { s -> ScooterRepo.log.update { it.copy(entries = s.recorder.size, part = s.part.number) } }
+            delay(NOTIFY_MS)
         }
     }
 
     private fun notify(t: Telemetry) {
-        val key = StatusText.title(t) + "|" + StatusText.notification(t)
+        val fast = ScooterRepo.settings.value.fastPower
+        val key = StatusText.title(t) + "|" + StatusText.notification(t, fast)
         if (key == shown) return
         shown = key
-        Notifications.show(this, Notifications.build(this, t))
+        Notifications.show(this, Notifications.build(this, t, fast))
     }
 
     private suspend fun periodic() {
@@ -235,10 +236,10 @@ class ScooterService : Service() {
             val s = ScooterRepo.session ?: continue
             if (System.currentTimeMillis() - savedAt >= LogStore.AUTO_EVERY_MS) {
                 savedAt = System.currentTimeMillis()
-                ScooterRepo.scope.launch { LogStore.save(app, s) }
+                ScooterRepo.scope.launch { LogStore.saveAll(app, s) }
             }
-            if (ScooterRepo.status.value.link == Link.CONNECTED && LogStore.autoDue(s, force = false)) {
-                ScooterRepo.scope.launch { LogStore.upload(app, s, auto = true) }
+            if (ScooterRepo.status.value.link == Link.CONNECTED) {
+                ScooterRepo.scope.launch { LogStore.autoUpload(app, s, force = false) }
             }
         }
     }
@@ -260,7 +261,8 @@ class ScooterService : Service() {
             val t = s.now()
             s.recorder.rx(service, char, bytes, t)
             s.rx.incrementAndGet()
-            ScooterRepo.tracker.onNotification(service, char, bytes, t)
+            // decode under the tracker's lock and wake the publisher; the snapshot is taken on its thread
+            ScooterRepo.pipeline.onRx(service, char, bytes, t)
         }
 
         override fun tx(service: String, char: String, bytes: ByteArray) {
@@ -285,9 +287,10 @@ class ScooterService : Service() {
         override fun lost() {
             val s = ScooterRepo.session ?: return
             val app = applicationContext
+            ScooterRepo.saveOdometer(true)
             ScooterRepo.scope.launch {
-                LogStore.save(app, s)
-                if (LogStore.autoDue(s, force = true, minGapMs = LogStore.DROP_EVERY_MS)) LogStore.upload(app, s, auto = true)
+                LogStore.saveAll(app, s)
+                LogStore.autoUpload(app, s, force = true, minGapMs = LogStore.DROP_EVERY_MS)
             }
         }
 
@@ -314,7 +317,8 @@ class ScooterService : Service() {
         const val ACTION_STOP = "io.github.purplepalm.birdair.STOP"
         const val EXTRA_ADDRESS = "address"
         const val EXTRA_NAME = "name"
-        const val TICK_MS = 250L
+        /** The ongoing notification: about once a second (the screen and the watch get every value, see [LivePipeline]). */
+        const val NOTIFY_MS = 1000L
         const val PERIODIC_MS = 30_000L
         /** Renewed every [PERIODIC_MS] while the link is wanted; the timeout only guards against a leak. */
         const val WAKE_MS = 15 * 60 * 1000L

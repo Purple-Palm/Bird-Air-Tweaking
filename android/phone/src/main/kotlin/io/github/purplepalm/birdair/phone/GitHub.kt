@@ -50,7 +50,13 @@ object GitHubApi {
         return if (f.isEmpty()) name else "$f/$name"
     }
 
-    fun commitMessage(base: String, entries: Int): String = "Лог $base: $entries записей (приложение)"
+    /**
+     * «Лог <base>: N записей (приложение)», «…, часть 2» for [part] ≥ 1 of a recording in several parts, and the
+     * owner's description (already without the device name) as the message body.
+     */
+    fun commitMessage(base: String, entries: Int, note: String? = null, part: Int = 0): String =
+        "Лог $base: $entries записей" + (if (part >= 1) ", часть $part" else "") + " (приложение)" +
+            (note?.trim()?.takeIf { it.isNotEmpty() }?.let { "\n\n$it" } ?: "")
 
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 

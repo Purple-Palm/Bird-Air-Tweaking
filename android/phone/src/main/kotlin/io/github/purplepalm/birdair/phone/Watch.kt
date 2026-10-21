@@ -70,8 +70,10 @@ object Watch {
 }
 
 /**
- * While the service runs: the latest snapshot to every connected node, at most as often as it is offered
- * (every 250 ms). Nodes are refreshed every 10 s and after a failed send.
+ * While the service runs: every published snapshot to every connected node at once. A snapshot that comes while a
+ * send is in flight waits, and only the newest one goes next (conflated StateFlow); sends are at least
+ * [MIN_GAP_MS] apart (≤ 25 a second). The pipeline publishes at least once a second, so an idle link still gets a
+ * 1 s heartbeat. Nodes are refreshed every 10 s and after a failed send.
  */
 class WatchLink(private val ctx: Context, private val scope: CoroutineScope) {
     private val messages = Wearable.getMessageClient(ctx)
@@ -82,7 +84,14 @@ class WatchLink(private val ctx: Context, private val scope: CoroutineScope) {
 
     fun start() {
         if (jobs.isNotEmpty()) return
-        jobs += scope.launch(Dispatchers.IO) { latest.filterNotNull().collect { send(it) } }
+        jobs += scope.launch(Dispatchers.IO) {
+            latest.filterNotNull().collect {
+                val at = SystemClock.elapsedRealtime()
+                send(it)
+                val left = MIN_GAP_MS - (SystemClock.elapsedRealtime() - at)
+                if (left > 0) delay(left)
+            }
+        }
         jobs += scope.launch(Dispatchers.IO) {
             while (isActive) { refresh(); delay(NODES_EVERY_MS) }
         }
@@ -113,19 +122,24 @@ class WatchLink(private val ctx: Context, private val scope: CoroutineScope) {
 
     companion object {
         const val NODES_EVERY_MS = 10_000L
+        /** At most 25 messages a second. */
+        const val MIN_GAP_MS = 40L
     }
 }
 
-/** Answers the watch app's «hello» at once with the current snapshot, whether the service runs or not. */
+/**
+ * Answers the watch app's «hello» at once with the current snapshot, whether the service runs or not. The hello may
+ * carry the watch app's version ([Versions.watch]); an empty one is a watch build from before that.
+ */
 class WatchListenerService : WearableListenerService() {
     override fun onMessageReceived(e: MessageEvent) {
         if (e.path != Wire.HELLO) return
         ScooterRepo.init(applicationContext)
-        ScooterRepo.watchHello()
+        ScooterRepo.watchHello(Versions.watch(e.data))
         ScooterRepo.watchLink?.hello()
-        val t = ScooterRepo.snapshotNow()
+        val t = ScooterRepo.forWatch(ScooterRepo.snapshotNow())
         try {
             Tasks.await(Wearable.getMessageClient(this).sendMessage(e.sourceNodeId, Wire.PATH, Wire.encode(t)), 5, TimeUnit.SECONDS)
-        } catch (x: Exception) { /* the next 250 ms tick will try again while the service runs */ }
+        } catch (x: Exception) { /* the next publish (at least once a second) will try again while the service runs */ }
     }
 }
