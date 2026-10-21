@@ -26,6 +26,7 @@ import androidx.wear.compose.material.InlineSlider
 import androidx.wear.compose.material.InlineSliderDefaults
 import androidx.wear.compose.material.ListHeader
 import androidx.wear.compose.material.PositionIndicator
+import androidx.wear.compose.material.RadioButton
 import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Switch
 import androidx.wear.compose.material.Text
@@ -39,6 +40,7 @@ import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
 import io.github.purplepalm.birdair.core.TellTales
+import io.github.purplepalm.birdair.dial.*
 
 /** One value of the details page. */
 data class Cell(val label: String, val value: String)
@@ -123,12 +125,17 @@ fun overspeedChipIndex(s: Screen): Int = tapChipIndex(s) + 3
 /** Index of «Вибрация ламп», under the overspeed threshold. */
 fun lampBuzzChipIndex(s: Screen): Int = overspeedChipIndex(s) + 2
 
-/** [list]: by default starts with the first values in the middle, the header and state above them. */
+/** Index of the «Циферблат» header; the five faces follow it. */
+fun faceChipIndex(s: Screen): Int = lampBuzzChipIndex(s) + 1
+
+/** [list]: by default starts with the first values in the middle, the header and state above them. [onFace]: a face
+ *  picked in «Циферблат» (the app: [FaceSync.pick]); without it, [onPrefs]. */
 @Composable
 fun DetailsScreen(
     s: Screen,
     prefs: WatchPrefs,
     list: ScalingLazyListState = rememberScalingLazyListState(initialCenterItemIndex = 2),
+    onFace: ((DialFace) -> Unit)? = null,
     onPrefs: (WatchPrefs) -> Unit,
 ) {
     Scaffold(timeText = { TimeText() }, positionIndicator = { PositionIndicator(list) }) {
@@ -218,6 +225,19 @@ fun DetailsScreen(
                     secondaryLabel = { Text("оранжевые и красные", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     toggleControl = { Switch(checked = prefs.lampBuzz) },
                     colors = ToggleChipDefaults.toggleChipColors(checkedEndBackgroundColor = argb(Palette.LAMP_AMBER).copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            // the dial's theme, as on the phone («Циферблат часов»): the newest pick of the two wins (FaceSync)
+            item { ListHeader { Text("Циферблат", color = argb(Palette.INK2)) } }
+            for (f in DialFace.entries) item {
+                ToggleChip(
+                    checked = prefs.face == f,
+                    onCheckedChange = { if (prefs.face != f) onFace?.invoke(f) ?: onPrefs(prefs.copy(face = f, faceAtMs = System.currentTimeMillis())) },
+                    label = { Text(f.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    secondaryLabel = { Text(f.about, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    toggleControl = { RadioButton(selected = prefs.face == f) },
+                    colors = ToggleChipDefaults.toggleChipColors(checkedEndBackgroundColor = argb(Palette.FLOW).copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

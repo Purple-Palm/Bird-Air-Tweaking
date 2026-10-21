@@ -318,7 +318,7 @@ class TellTalesTest {
         for (name in NAMES) assertEquals(name == CUTOFF_HOT, replay(name).any(::code), name)
         val sn = replay(CUTOFF_HOT).filter(::code)
         assertTrue(sn.all { it.t in 112_000..138_000 && it.streaming }, sn.joinToString { "${it.t}" })
-        assertEquals(Lamp(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0), sn.first().lamps.getValue(TellTales.LINK))
+        assertEquals(TellTales.lamp(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0), sn.first().lamps.getValue(TellTales.LINK))
     }
 
     /** 20.10, the BMS's under-voltage cutoff: «BMS отключает батарею» from its flag (b5 0x02, 1810.0–1812.4 s), then the
@@ -341,6 +341,73 @@ class TellTalesTest {
     /** Every text fits the dial's line (≈ 24 characters at its font). */
     @Test fun textsFit() {
         for (name in NAMES) for (s in replay(name)) for (l in s.lamps.values) assertTrue(l.text.length <= 25, "$name ${s.t} «${l.text}»")
+    }
+
+    /**
+     * The display fields of every lamp lit on every log: a title that fits a dial's big line (no number in it), the value
+     * with its unit after a no-break space, a short detail; an older phone's lamp (text and value only) gets the same.
+     */
+    @Test fun displayFieldsOnTheLogs() {
+        val value = Regex("^(−?\\d+(,\\d+)? (°C|В|А|%|Вт|Ом|Вт·ч/км|км/ч)|0x[0-9A-F]{2})$")
+        val seen = HashSet<String>()
+        for (name in NAMES) for (s in replay(name)) for (l in s.lamps.values) {
+            val at = "$name ${s.t} «${l.text}»"
+            assertTrue(l.title.isNotBlank() && l.title.length <= TellTales.TITLE_MAX && l.title.none { it.isDigit() }, "$at: «${l.title}»")
+            l.valueText?.let { assertTrue(value.matches(it), "$at: «$it»") }
+            l.detail?.let { assertTrue(it.isNotBlank() && it.length <= TellTales.DETAIL_MAX, "$at: «$it»") }
+            // the lamp's own number, rounded once: «31,249» is «31,2 В»
+            if (l.value != null && l.id != TellTales.LINK && l.id != TellTales.OVERSPEED) assertTrue(l.valueText != null, at)
+            assertEquals(l, TellTales.display(l.copy(title = "", valueText = null, detail = null)), at)
+            seen += l.id + ":" + l.title
+        }
+        // what the rides lit, by title
+        for (k in listOf("temp:Батарея горячая", "temp:Перегрев", "battery:Сейчас отключится", "battery:BMS отключает", "battery:Нет связи с BMS",
+            "traction:Мало тяги", "overvolt:Полная", "eco:ECO", "service:Ёмкость батареи", "link:Связь", "charging:Ждёт остывания"))
+            assertTrue(k in seen, "$k not in $seen")
+    }
+
+    /** Each text's display fields, in km/h and mph. */
+    @Test fun displayFields() {
+        val nb = TellTales.NBSP
+        fun f(id: String, level: LampLevel, text: String, v: Double?, rising: Boolean = false, units: String = TellTales.KMH) =
+            TellTales.lamp(id, level, text, v, rising, units).let { Triple(it.title, it.valueText, it.detail) }
+        assertEquals(Triple("Перегрев", "56${nb}°C", "сбавь газ"), f(TellTales.TEMP, LampLevel.RED, TellTales.T_OVERHEAT, 56.2))
+        assertEquals(Triple("Батарея горячая", "49${nb}°C", "быстро греется"), f(TellTales.TEMP, LampLevel.AMBER, TellTales.T_HOT_RISING, 49.0, true))
+        assertEquals(Triple("Батарея тёплая", "42${nb}°C", null), f(TellTales.TEMP, LampLevel.YELLOW, TellTales.T_WARM, 42.0))
+        assertEquals(Triple("Быстро греется", "38${nb}°C", null), f(TellTales.TEMP, LampLevel.YELLOW, TellTales.T_RISING, 38.0, true))
+        assertEquals(Triple("Батарея холодная", "−3${nb}°C", "ёмкость и тяга меньше"), f(TellTales.COLD, LampLevel.BLUE, TellTales.T_COLD, -3.0))
+        assertEquals(Triple("BMS отключает", "31,2${nb}В", "низкое напряжение"), f(TellTales.BATTERY, LampLevel.RED, TellTales.T_BMS_CUT, 31.249))
+        assertEquals(Triple("Нет связи с BMS", null, "код 0x26"), f(TellTales.BATTERY, LampLevel.RED, TellTales.T_NO_BMS, null))
+        assertEquals(Triple("Сейчас отключится", "31,5${nb}В", "под нагрузкой"), f(TellTales.BATTERY, LampLevel.RED, TellTales.T_CUTTING, 31.5))
+        assertEquals(Triple("Заряд на исходе", "31,9${nb}В", "под нагрузкой"), f(TellTales.BATTERY, LampLevel.AMBER, TellTales.T_LOW, 31.9))
+        assertEquals(Triple("Заряд", "8,7${nb}%", null), f(TellTales.BATTERY, LampLevel.AMBER, "Заряд 8,7 %", 8.7))
+        assertEquals(Triple("Мало тяги", "15,8${nb}А", "предел тока"), f(TellTales.TRACTION, LampLevel.AMBER, TellTales.T_LIMIT, 15.8))
+        assertEquals(Triple("Мало тяги", "31,7${nb}В", "просадка"), f(TellTales.TRACTION, LampLevel.AMBER, TellTales.T_SAG, 31.7))
+        assertEquals(Triple("Полная", "42,2${nb}В", "тормози мягко"), f(TellTales.OVERVOLT, LampLevel.AMBER, TellTales.T_FULL, 42.23))
+        assertEquals(Triple("Перенапряжение", "42,5${nb}В", "мотор не тормозит"), f(TellTales.OVERVOLT, LampLevel.RED, TellTales.T_OV_CUT, 42.52))
+        assertEquals(Triple("Перенапряжение", "42,4${nb}В", null), f(TellTales.OVERVOLT, LampLevel.AMBER, "Перенапряжение 42,4 В", 42.36))
+        assertEquals(Triple("ECO", "180${nb}Вт", "едешь мягко"), f(TellTales.ECO, LampLevel.GREEN, "ECO", 180.4))
+        assertEquals(Triple("Выше предела", "29,1${nb}км/ч", "18,1${nb}mph"), f(TellTales.OVERSPEED, LampLevel.BLUE, TellTales.T_OVERSPEED, 29.1))
+        assertEquals(Triple("Выше предела", "18,1${nb}mph", "29,1${nb}км/ч"), f(TellTales.OVERSPEED, LampLevel.BLUE, TellTales.T_OVERSPEED, 29.1, units = TellTales.MPH))
+        assertEquals(Triple("Зарядка", "1,7${nb}А", "ток в батарею"), f(TellTales.CHARGING, LampLevel.GREEN, "Зарядка 1,7 А", 1.7))
+        assertEquals(Triple("Ждёт остывания", "45${nb}°C", "зарядка подключена"), f(TellTales.CHARGING, LampLevel.AMBER, TellTales.T_CHARGE_WAIT, 45.0))
+        assertEquals(Triple("Высокий расход", "21${nb}Вт·ч/км", "за 2${nb}км"), f(TellTales.CONSUMPTION, LampLevel.AMBER, "Расход 21 Вт·ч/км", 21.4))
+        assertEquals(Triple("Высокий расход", "34${nb}Вт·ч/mi", "за 1,2${nb}mi"), f(TellTales.CONSUMPTION, LampLevel.AMBER, "Расход 21 Вт·ч/км", 21.4, units = TellTales.MPH))
+        assertEquals(Triple("Батарея устала", "0,38${nb}Ом", "сопротивление"), f(TellTales.WEAK, LampLevel.YELLOW, "Батарея устала: 0,38 Ом", 0.38))
+        assertEquals(Triple("Ёмкость батареи", "75${nb}%", "от паспорта"), f(TellTales.SERVICE, LampLevel.AMBER, "Ёмкость 75 % от паспорта", 75.0))
+        assertEquals(Triple("Связь", null, "рвётся"), f(TellTales.LINK, LampLevel.AMBER, TellTales.T_LINK_LOST, null))
+        assertEquals(Triple("Связь", null, "руль молчит"), f(TellTales.LINK, LampLevel.AMBER, TellTales.T_SILENT, null))
+        assertEquals(Triple("BMS молчит", null, "руль на связи"), f(TellTales.LINK, LampLevel.AMBER, TellTales.T_DASH_NO_BMS, null))
+        assertEquals(Triple("Код контроллера", "0x21", null), f(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0))
+        // what came with its fields is kept; an id this build does not know: its text without the number
+        val own = Lamp(TellTales.TEMP, LampLevel.AMBER, "x", 1.0, title = "Своё", valueText = "1 °C")
+        assertEquals(own, TellTales.display(own))
+        assertEquals(Triple("Давление", null, "2,1 бар"), TellTales.display(Lamp("tyre", LampLevel.AMBER, "Давление: 2,1 бар", 2.1)).let { Triple(it.title, it.valueText, it.detail) })
+        // every title of a lamp without one of its own fits
+        for (l in TellTales.bulbCheck()) assertTrue(l.title.length <= TellTales.TITLE_MAX, l.title)
+        // the live tracker: the phone's units in the lamps
+        val tr = TelemetryTracker(Repo.decoder()).apply { units = TellTales.MPH }
+        assertEquals(TellTales.MPH, tr.snapshot(0).units)
     }
 
     @Test fun neverLitInTheLogs() {
@@ -373,7 +440,7 @@ class TellTalesTest {
         val tt2 = TellTales()
         for (k in 0..400) tt2.onBms(k * 300L, BmsFrame(38.0, 5.0, true, 30, (30 + k * 300 * 1.5 / 60_000).toInt(), 2000, 3931, 50), null, null, 0)
         val l = tt2.lamps(120_000, null, emptyList(), Link.CONNECTED, true).single { it.id == TellTales.TEMP }
-        assertEquals(Lamp(TellTales.TEMP, LampLevel.YELLOW, "Батарея быстро греется", 33.0, true), l)
+        assertEquals(TellTales.lamp(TellTales.TEMP, LampLevel.YELLOW, "Батарея быстро греется", 33.0, true), l)
         // the link: silent for over 3 s once connected; reconnecting at once
         val tt3 = TellTales()
         assertNull(tt3.lamps(0, null, emptyList(), Link.CONNECTED, false).firstOrNull { it.id == TellTales.LINK })
@@ -385,7 +452,7 @@ class TellTalesTest {
         tt.onBms(t + 300, BmsFrame(36.0, 0.1, false, 30, 30, 900, 3931, 22), null, null, 0)
         assertEquals("Заряд 22,8 %", tt.lamps(t + 300, null, emptyList(), Link.CONNECTED, true).single { it.id == TellTales.BATTERY }.text)
         val crit = BatteryWarning(BatteryAdvisor.LOW, WarningLevel.CRITICAL, "", 31.5)
-        assertEquals(Lamp(TellTales.BATTERY, LampLevel.RED, "Сейчас отключится", 31.5), tt.lamps(t + 300, null, listOf(crit), Link.CONNECTED, true).single { it.id == TellTales.BATTERY })
+        assertEquals(TellTales.lamp(TellTales.BATTERY, LampLevel.RED, "Сейчас отключится", 31.5), tt.lamps(t + 300, null, listOf(crit), Link.CONNECTED, true).single { it.id == TellTales.BATTERY })
         // consumption from the advisor's recent range only
         val r = RangeEstimate(1.0, 0.6, 20.0, 21.4, "recent")
         assertEquals("Расход 21 Вт·ч/км", tt.lamps(t + 300, r, emptyList(), Link.CONNECTED, true).single { it.id == TellTales.CONSUMPTION }.text)
@@ -404,19 +471,19 @@ class TellTalesTest {
         motion(t); bms(t)
         // under-voltage beats the advisor, held 5 s after the last flagged frame
         bms(300, b5 = 0x22, v = 31.25, i = 7.7)
-        assertEquals(Lamp(TellTales.BATTERY, LampLevel.RED, "BMS отключает батарею", 31.25), tt.lamps(300, null, crit, Link.CONNECTED, true).single { it.id == TellTales.BATTERY })
+        assertEquals(TellTales.lamp(TellTales.BATTERY, LampLevel.RED, "BMS отключает батарею", 31.25), tt.lamps(300, null, crit, Link.CONNECTED, true).single { it.id == TellTales.BATTERY })
         assertEquals("BMS отключает батарею", lamp(5300, TellTales.BATTERY, streaming = false)?.text)
         assertEquals("Сейчас отключится", tt.lamps(5301, null, crit, Link.CONNECTED, false).single { it.id == TellTales.BATTERY }.text)
         // the controller's 0x26: the BMS gone, kept while no 3A 17 says otherwise, and 5 s after the last 0x26
         motion(6000, code = 0x26, kmh = 12.5)
-        assertEquals(Lamp(TellTales.BATTERY, LampLevel.RED, "Нет связи с BMS"), lamp(600_000, TellTales.BATTERY, streaming = false))
+        assertEquals(TellTales.lamp(TellTales.BATTERY, LampLevel.RED, "Нет связи с BMS"), lamp(600_000, TellTales.BATTERY, streaming = false))
         motion(600_000, code = 0x26); motion(600_100)
         assertEquals("Нет связи с BMS", lamp(605_000, TellTales.BATTERY)?.text)
         assertNull(lamp(605_001, TellTales.BATTERY))
         // any other code: the link lamp while frames stream, held 5 s
         t = 700_000
         motion(t, code = 0x21)
-        assertEquals(Lamp(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0), lamp(t, TellTales.LINK))
+        assertEquals(TellTales.lamp(TellTales.LINK, LampLevel.AMBER, "Код контроллера 0x21", 33.0), lamp(t, TellTales.LINK))
         motion(t + 300)
         assertEquals("Код контроллера 0x21", lamp(t + 5000, TellTales.LINK)?.text)
         assertNull(lamp(t + 5001, TellTales.LINK))
@@ -424,9 +491,9 @@ class TellTalesTest {
         // over-voltage: warning AMBER, protection RED, the peak voltage; regen above 42.3 V without the flags
         t = 800_000
         bms(t, b5 = 0x08, v = 42.23, i = -1.4)
-        assertEquals(Lamp(TellTales.OVERVOLT, LampLevel.AMBER, "Полная — тормози мягко", 42.23), lamp(t, TellTales.OVERVOLT))
+        assertEquals(TellTales.lamp(TellTales.OVERVOLT, LampLevel.AMBER, "Полная — тормози мягко", 42.23), lamp(t, TellTales.OVERVOLT))
         bms(t + 300, b5 = 0x04, v = 42.52, i = -1.9)
-        assertEquals(Lamp(TellTales.OVERVOLT, LampLevel.RED, "Защита от перенапряжения", 42.52), lamp(t + 300, TellTales.OVERVOLT))
+        assertEquals(TellTales.lamp(TellTales.OVERVOLT, LampLevel.RED, "Защита от перенапряжения", 42.52), lamp(t + 300, TellTales.OVERVOLT))
         bms(t + 600, v = 41.0, i = 1.3)
         assertEquals(LampLevel.RED, lamp(t + 5300, TellTales.OVERVOLT)?.level)
         assertNull(lamp(t + 5301, TellTales.OVERVOLT))
@@ -439,7 +506,7 @@ class TellTalesTest {
         // charger in, hot-charge latch, no current, still: «ждёт остывания» after 3 s; the current flowing is «Зарядка»
         t = 900_000
         for (k in 0..10) bms(t + k * 300L, b4 = 0x41, b6 = 0x04, i = 0.057, temp = 45)
-        assertEquals(Lamp(TellTales.CHARGING, LampLevel.AMBER, "Зарядка ждёт остывания", 45.0), lamp(t + 3000, TellTales.CHARGING))
+        assertEquals(TellTales.lamp(TellTales.CHARGING, LampLevel.AMBER, "Зарядка ждёт остывания", 45.0), lamp(t + 3000, TellTales.CHARGING))
         // the dash answering again and again with no frame for 5 s: «Руль на связи, BMS молчит»
         val td = TellTales()
         td.onMotion(0, MotionFrame(0.0, 0.0, 3, 0.0, 1460.0))

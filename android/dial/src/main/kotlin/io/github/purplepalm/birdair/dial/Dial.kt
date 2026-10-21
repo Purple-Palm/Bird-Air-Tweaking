@@ -1,4 +1,4 @@
-package io.github.purplepalm.birdair.wear
+package io.github.purplepalm.birdair.dial
 
 import io.github.purplepalm.birdair.core.BatteryAdvisor
 import io.github.purplepalm.birdair.core.Lamp
@@ -319,9 +319,12 @@ object Cluster {
 
 /**
  * One stroke or fill of a lamp icon on a 24-unit box (SVG path data from mock3.html). [width]: the stroke, in
- * icon units; ambient draws [fill] parts as outlines too.
+ * icon units; ambient draws [fill] parts as outlines too; [knock]: drawn in the background's colour (a cut-out).
  */
-data class Glyph(val d: String, val fill: Boolean = false, val width: Float = 2f, val roundCap: Boolean = false, val roundJoin: Boolean = false)
+data class Glyph(
+    val d: String, val fill: Boolean = false, val width: Float = 2f, val roundCap: Boolean = false, val roundJoin: Boolean = false,
+    val knock: Boolean = false,
+)
 
 object Glyphs {
     const val BOX = 24f
@@ -365,6 +368,24 @@ object Glyphs {
         ),
         TellTales.CHARGING to listOf(Glyph("M8 3v5M16 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4", roundCap = true)),
         TellTales.COLD to listOf(Glyph("M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7", roundCap = true)),
+    )
+
+    private const val BAT_BODY = "M5 7h13a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"
+    private const val BAT_NUB = "M20.5 11a1 1 0 0 1 2 0v2a1 1 0 0 1-2 0z"
+
+    /** «BMS отключает батарею» / «Нет связи с BMS»: the battery struck through (the galleries; [FaceKit.icon]). */
+    val BATTERY_CUT: List<Glyph> = listOf(Glyph(BAT_BODY), Glyph(BAT_NUB, fill = true), Glyph("M3.5 3.5L19.5 20.5", width = 2.3f, roundCap = true))
+
+    /** «Сейчас отключится»: the battery with its last division only (grow). */
+    val BATTERY_LOW: List<Glyph> = listOf(Glyph(BAT_BODY), Glyph(BAT_NUB, fill = true), Glyph("M5.5 9.5h3v5h-3z", fill = true))
+
+    /** «Мало тяги» as grow draws it: a turtle (its shell's seams knocked out). */
+    val TURTLE: List<Glyph> = listOf(
+        Glyph("M3.5 15.5C3.5 10 7 7 11.5 7S19.5 10 19.5 15.5z", fill = true),
+        Glyph(circle(21f, 12.6f, 1.9f), fill = true),
+        Glyph("M5.5 15.5h3v3.2h-3zM14.5 15.5h3v3.2h-3z", fill = true),
+        Glyph("M3.6 15.5l-1.8 1.6", width = 1.6f, roundCap = true),
+        Glyph("M6.5 12.5h10M11.5 7.5v5", width = 1.3f, knock = true),
     )
 
     /** The ▲ «быстро греется» right of the temperature lamp, as offsets on the grid from the lamp's centre. */

@@ -10,6 +10,7 @@ import com.google.android.gms.wearable.Wearable
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.Wire
+import io.github.purplepalm.birdair.dial.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -66,7 +67,8 @@ data class Feed(
  * registered while at least one of them exists (so it keeps updating in ambient, and with the activity gone
  * while the ride service runs), and [Wire.HELLO] (with [HelloInfo]) to every connected node on the first [acquire],
  * then as [Hello] says. The phone's lamps vibrate here, once per [LampAlarm] event, whichever of the
- * two is alive, unless «Вибрация ламп» is off ([WatchPrefs.lampBuzz]). Main thread only.
+ * two is alive, unless «Вибрация ламп» is off ([WatchPrefs.lampBuzz]); the dial face's DataItems are followed meanwhile
+ * ([FaceSync]). Main thread only.
  */
 object WatchFeed {
     private val state = MutableStateFlow(Feed())
@@ -92,7 +94,7 @@ object WatchFeed {
         // an older phone sends no lamps: its battery warnings stand in (Cluster.lamps); switched off, the alarm still
         // follows the lamps, so switching it on again does not buzz what is already lit
         val buzz = alarm.onMessage(Cluster.lamps(f.t), f.live, now, f.t.speedKmh)
-        if (buzz != null && Settings.prefs.value.lampBuzz) buzzer?.play(buzz)
+        if (buzz != null && Settings.prefs.value.lampBuzz) { buzzer?.play(buzz); Cues.buzz(now, buzz.level) }
     }
 
     @MainThread
@@ -105,6 +107,7 @@ object WatchFeed {
         buzzer = Buzzer(ctx.applicationContext)
         lastHelloMs = null
         mc.addListener(listener)
+        FaceSync.start(ctx)
         job = scope.launch {
             while (isActive) {
                 val now = SystemClock.elapsedRealtime()
@@ -120,6 +123,7 @@ object WatchFeed {
         job?.cancel()
         job = null
         messages?.removeListener(listener)
+        FaceSync.stop()
         messages = null
         nodes = null
         buzzer = null

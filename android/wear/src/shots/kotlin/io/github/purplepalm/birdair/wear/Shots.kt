@@ -16,6 +16,7 @@ import io.github.purplepalm.birdair.core.Lamp
 import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
+import io.github.purplepalm.birdair.dial.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,11 +48,12 @@ class Shots {
         File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    /** v108's dial, [DialFace.CLASSIC] (the other faces: FaceShots). */
     @Composable
     private fun gauge(
         t: Telemetry, h: Health = Health.LIVE, ambient: AmbientState? = null, flags: PhoneFlags = PhoneFlags(),
         bulb: Boolean = false, overspeed: Boolean = false,
-    ) = WatchApp(Screen(t, h, flags, bulb = bulb, overspeed = overspeed), ambient)
+    ) = WatchApp(Screen(t, h, flags, bulb = bulb, overspeed = overspeed), ambient, WatchPrefs(face = DialFace.CLASSIC))
 
     @Composable
     private fun details(t: Telemetry, h: Health = Health.LIVE, prefs: WatchPrefs = WatchPrefs(), flags: PhoneFlags = PhoneFlags()) =
@@ -134,6 +136,11 @@ class Shots {
     @Test fun detailsLampBuzz() = shot("details-lamp-buzz") {
         val s = Screen(Samples.riding, Health.LIVE)
         WatchTheme { DetailsScreen(s, WatchPrefs(lampBuzz = false), rememberScalingLazyListState(lampBuzzChipIndex(s))) {} }
+    }
+    // the dial's theme, the same five as on the phone
+    @Test fun detailsFace() = shot("details-face") {
+        val s = Screen(Samples.riding, Health.LIVE)
+        WatchTheme { DetailsScreen(s, WatchPrefs(face = DialFace.STACK), rememberScalingLazyListState(faceChipIndex(s) + 2)) {} }
     }
 
     // the watch's own update (WatchUpdater): offered, downloading through the phone, ready to install

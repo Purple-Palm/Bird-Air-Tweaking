@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.wear.ongoing.OngoingActivity
 import androidx.wear.ongoing.Status
+import io.github.purplepalm.birdair.dial.*
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -152,7 +153,7 @@ class RideService : Service() {
                 val live = Health.of(f.t, f.rxAtMs, now).live && OverspeedAlarm.fresh(f.freshAtMs, now)
                 val out = cues.update(p, f.t, live, f.freshAtMs, now)
                 act(out.rumble)
-                if (out.tap) buzzer?.tap()
+                if (out.tap) { buzzer?.tap(); Cues.tap(now) }
                 if (!cues.rumble.on) return@collectLatest
                 val untilStale = (f.freshAtMs ?: now) + OverspeedAlarm.FRESH_MS + 1 - now
                 delay(minOf(cues.rumble.rearmMs, untilStale).coerceAtLeast(1))
@@ -167,6 +168,7 @@ class RideService : Service() {
             OverspeedAlarm.Action.NONE -> Unit
         }
         overspeeding.value = cues.rumble.on
+        Cues.rumble(cues.rumble.on, SystemClock.elapsedRealtime())
     }
 
     private fun statusNow(): String {

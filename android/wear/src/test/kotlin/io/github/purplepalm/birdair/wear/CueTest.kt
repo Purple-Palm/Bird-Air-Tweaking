@@ -2,6 +2,7 @@ package io.github.purplepalm.birdair.wear
 
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
+import io.github.purplepalm.birdair.dial.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -415,9 +416,23 @@ class PrefsMigrationTest {
         assertEquals(17.5, PrefsMigration.overspeedMph(0, Double.NaN), 0.0)
         // once migrated, a 16 chosen later stays 16
         assertEquals(16.0, PrefsMigration.overspeedMph(PrefsMigration.VERSION, 16.0), 0.0)
-        assertEquals(2, PrefsMigration.VERSION)
+        assertEquals(3, PrefsMigration.VERSION)
         // a stored float: 16f reads back as exactly 16.0
         assertEquals(17.5, PrefsMigration.overspeedMph(1, 16.0f.toDouble()), 0.0)
         assertEquals(25.0, PrefsMigration.overspeedMph(2, 40.0), 0.0)
+    }
+
+    @Test fun v108sClassicDialBecomesTheBigLampsOnce() {
+        // v108 and before had the classic dial only (nothing saved): «Крупные лампы»
+        assertEquals(DialFace.STACK, PrefsMigration.face(0, null))
+        assertEquals(DialFace.STACK, PrefsMigration.face(2, null))
+        assertEquals(DialFace.STACK, PrefsMigration.face(2, "classic"))
+        // picked after that: it stays, the classic one too
+        assertEquals(DialFace.CLASSIC, PrefsMigration.face(3, "classic"))
+        assertEquals(DialFace.RING, PrefsMigration.face(3, "ring"))
+        assertEquals(DialFace.STACK, PrefsMigration.face(3, null))
+        assertEquals(DialFace.STACK, PrefsMigration.face(3, "a-newer-face"))
+        assertEquals(DialFace.STACK, WatchPrefs().face)
+        assertEquals(FaceChoice(DialFace.STACK, 0, FaceChoice.WATCH), WatchPrefs().faceChoice)
     }
 }

@@ -75,7 +75,7 @@ jobs:
         run: >-
           ./gradlew --no-daemon
           -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" -PgitSha="$GITHUB_SHA"
-          :core:test :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug
+          :core:test :dial:testDebugUnitTest :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug
 
       - name: Rename APKs, version.json
         run: |

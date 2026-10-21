@@ -8,6 +8,8 @@ import io.github.purplepalm.birdair.core.Decoder
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TelemetryTracker
+import io.github.purplepalm.birdair.dial.DialFace
+import io.github.purplepalm.birdair.dial.FaceChoice
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +66,16 @@ data class WatchStatus(
 
 data class ControlState(val allow: Boolean = false, val message: String = "", val err: Boolean = false)
 
+/**
+ * «Циферблат часов»: [phone] the pick made here, [watch] what the watch says it draws (its DataItem, [FaceChoice.WATCH]);
+ * [selected] the newest of the two — a pick on the watch shows here as well; nothing yet: the default.
+ */
+data class WatchFaceState(val phone: FaceChoice? = null, val watch: FaceChoice? = null) {
+    val selected: DialFace get() = FaceChoice.newest(phone, watch)?.face ?: DialFace.DEFAULT
+    /** The watch already draws [selected] (its report is not older than this phone's pick). */
+    val applied: Boolean get() = watch != null && watch.face == selected
+}
+
 data class DecoderInfo(val version: Int = 0, val source: String = "", val note: String = "")
 
 /** A sys line for the screen. */
@@ -119,6 +131,8 @@ object ScooterRepo {
     val hasToken = MutableStateFlow(false)
     val events = MutableStateFlow<List<Event>>(emptyList())
     val update = MutableStateFlow(UpdateState())
+    /** «Циферблат часов» ([WatchFaces]). */
+    val face = MutableStateFlow(WatchFaceState())
     /** «Описание лога» as typed. */
     val note = MutableStateFlow("")
     /** «Неотправленные логи». */
@@ -154,6 +168,7 @@ object ScooterRepo {
         tracker.odometerState = prefs.odometer
         odoSaved = tracker.odometerState
         update.value = UpdateState(latest = Versions.parse(prefs.updateJson), checkedAt = prefs.updateCheckedAt)
+        face.value = WatchFaceState(phone = prefs.watchFace)
         pipeline.onPublish = ::published
         // «под нагрузкой» for battery_low and its lamp (screen, notification, watch): one sample per BMS frame
         pipeline.decorate = { t, _ -> sag.decorate(t) }
@@ -388,6 +403,17 @@ object ScooterRepo {
     }
 
     fun watchHello(v: WatchVersion?) = watch.update { it.copy(helloAt = SystemClock.elapsedRealtime(), version = v) }
+
+    /** «Циферблат часов»: [f] picked now; the watch gets it through the Data Layer, now or when it next starts. */
+    fun pickFace(f: DialFace) {
+        val c = FaceChoice(f, System.currentTimeMillis(), FaceChoice.PHONE)
+        prefs.watchFace = c
+        face.update { it.copy(phone = c) }
+        WatchFaces.put(app, c)
+    }
+
+    /** The watch's report of its face (its DataItem). */
+    fun watchFace(c: FaceChoice) = face.update { it.copy(watch = c) }
 
     /** File names of the running recording's parts. */
     fun currentFiles(): Set<String> {

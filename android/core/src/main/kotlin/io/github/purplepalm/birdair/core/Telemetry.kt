@@ -197,7 +197,7 @@ class TelemetryTracker(decoder: Decoder) {
             warnings = warns,
             range = range,
             appOdometerKm = odometer.totalKm,
-            lamps = tells.lamps(nowMs, range, warns, link, streaming),
+            lamps = tells.lamps(nowMs, range, warns, link, streaming, units),
             batteryPctFine = tells.batteryPctFine,
             powerState = flow.state,
         )

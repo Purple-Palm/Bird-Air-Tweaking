@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import io.github.purplepalm.birdair.core.AppOdometer
+import io.github.purplepalm.birdair.dial.FaceChoice
 import kotlinx.serialization.json.Json
 
 /** Screen settings the owner changes. «Разрешить команды» is deliberately not here: it starts off every time. */
@@ -62,6 +63,11 @@ class Prefs(ctx: Context) {
     var odometer: AppOdometer.State?
         get() = try { main.getString("odometer", null)?.let { JSON.decodeFromString(AppOdometer.State.serializer(), it) } } catch (e: Exception) { null }
         set(v) = main.edit { if (v == null) remove("odometer") else putString("odometer", JSON.encodeToString(AppOdometer.State.serializer(), v)) }
+
+    /** «Циферблат часов» as picked on this phone ([FaceChoice.PHONE]); null: never picked here. */
+    var watchFace: FaceChoice?
+        get() = FaceChoice.of(main.getString("watchFace", null), main.getLong("watchFaceAt", 0L), FaceChoice.PHONE)
+        set(v) = main.edit { if (v == null) { remove("watchFace"); remove("watchFaceAt") } else { putString("watchFace", v.face.key); putLong("watchFaceAt", v.atMs) } }
 
     /** «Описание лога»: carried over to the next recording until changed. */
     var logNote: String

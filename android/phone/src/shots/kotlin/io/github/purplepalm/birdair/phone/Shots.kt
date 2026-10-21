@@ -3,11 +3,21 @@ package io.github.purplepalm.birdair.phone
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.dial.DialFace
+import io.github.purplepalm.birdair.dial.FaceChoice
+import io.github.purplepalm.birdair.phone.ui.LocalBal
+import io.github.purplepalm.birdair.phone.ui.WatchFaceCard
 import io.github.purplepalm.birdair.phone.ui.BirdTheme
 import io.github.purplepalm.birdair.phone.ui.MainScreen
 import io.github.purplepalm.birdair.phone.ui.SystemState
@@ -124,6 +134,27 @@ class Shots {
     @Test fun bmsCut() = shot("cluster-bms-cut", 1_813_500L, ChartWindow.ALL, tapLamp = "Заряд", log = TestLogs.TO_ZERO)
     /** 20.10, 1826 s: the controller's 0x26 («Нет связи с BMS») and the dash answering with no frames, the link lamp tapped. */
     @Test fun bmsSilent() = shot("cluster-bms-silent", 1_826_000L, "300", tapLamp = "Связь", log = TestLogs.TO_ZERO)
+
+    /** «Циферблат часов» opened: the five faces as live previews, the watch still on the old one. Cropped to the card. */
+    @Test fun watchFaces() {
+        ScooterRepo.init(rule.activity.applicationContext)
+        ScooterRepo.face.value = WatchFaceState(
+            phone = FaceChoice(DialFace.STACK, 2_000, FaceChoice.PHONE), watch = FaceChoice(DialFace.CLASSIC, 1_000, FaceChoice.WATCH),
+        )
+        rule.setContent { BirdTheme(true) { Column(Modifier.background(LocalBal.current.bg).padding(16.dp)) { WatchFaceCard() } } }
+        rule.onNodeWithText("Выбрать").performClick()
+        settle()
+        val v = rule.activity.window.decorView
+        val bmp = Bitmap.createBitmap(v.width, v.height, Bitmap.Config.ARGB_8888)
+        v.draw(Canvas(bmp))
+        // down to the card's last row (the screen is 5600 dp tall)
+        val bg = bmp.getPixel(2, bmp.height - 2)
+        val row = IntArray(bmp.width)
+        var h = bmp.height
+        while (h > 1) { bmp.getPixels(row, 0, bmp.width, 0, h - 1, bmp.width, 1); if (row.any { it != bg }) break; h-- }
+        val dir = File(System.getProperty("shotDir") ?: "build/shots").apply { mkdirs() }
+        File(dir, "watch-faces.png").outputStream().use { Bitmap.createBitmap(bmp, 0, 0, bmp.width, minOf(bmp.height, h + 32)).compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 
     companion object {
         const val LOG = "logs/20261019-174739-log-app.json.gz"

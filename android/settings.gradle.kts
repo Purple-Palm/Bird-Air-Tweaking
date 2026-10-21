@@ -16,4 +16,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "bird-air-lab"
-include(":core", ":phone", ":wear")
+include(":core", ":dial", ":phone", ":wear")

@@ -1,5 +1,6 @@
 package io.github.purplepalm.birdair.wear
 
+import io.github.purplepalm.birdair.dial.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive

@@ -12,6 +12,7 @@ import io.github.purplepalm.birdair.core.RangeEstimate
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.core.WarningLevel
+import io.github.purplepalm.birdair.dial.*
 
 /** Android Studio's large round Wear OS device (454 px, close to the Ultra's 480 px). */
 private const val WATCH = "id:wearos_large_round"

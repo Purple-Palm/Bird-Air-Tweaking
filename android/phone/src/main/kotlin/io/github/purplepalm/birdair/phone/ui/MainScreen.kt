@@ -90,6 +90,7 @@ import io.github.purplepalm.birdair.phone.Updater
 import io.github.purplepalm.birdair.phone.Versions
 import io.github.purplepalm.birdair.phone.WarnText
 import io.github.purplepalm.birdair.phone.Watch
+import io.github.purplepalm.birdair.phone.WatchFaces
 import io.github.purplepalm.birdair.phone.WatchStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -145,13 +146,14 @@ fun MainScreen(ui: UiActions, sys: SystemState) {
         view.keepScreenOn = settings.keepScreenOn
         onDispose { view.keepScreenOn = false }
     }
-    // «Часы» status while the screen is visible (the service refreshes it itself while it runs)
+    // «Часы» status while the screen is visible (the service refreshes it itself while it runs), the watch's face report
     val ctx = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 if (!ScooterRepo.status.value.running) Watch.nodes(ctx)
+                WatchFaces.read(ctx)
                 delay(10_000)
             }
         }
@@ -176,6 +178,7 @@ fun MainScreen(ui: UiActions, sys: SystemState) {
         SpeedCard(t, settings.units)
         PowerCard(t, settings)
         ClusterCard(t, settings.units)
+        WatchFaceCard()
         ChartsCard(settings.units, settings.fastPower, settings.chartWindow)
         BatteryCard(t, settings.units)
         TripCard(t, settings.units)

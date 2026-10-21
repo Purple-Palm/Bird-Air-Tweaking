@@ -1,4 +1,4 @@
-package io.github.purplepalm.birdair.wear
+package io.github.purplepalm.birdair.dial
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
@@ -10,12 +10,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -49,24 +46,22 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.material.LocalTextStyle
-import androidx.wear.compose.material.Text
-import androidx.wear.compose.material.TimeTextDefaults
 import io.github.purplepalm.birdair.core.Lamp
 import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /*
- * The dial, like a car cluster (mock3.html, approved): the power arc along the edge, inside it the thin speed track
- * with the dot («ириска») and the mode's limit, the battery with its fine % in the centre, the range, «V · °C · MODE»,
- * the top lamp's line and the power under it; 12 tell-tales in two columns along the edges (TellTales.IDS: the right
- * column top to bottom, then the left). Laid out on the 240-unit grid of [Dial], scaled to the screen.
+ * DialFace.CLASSIC — v108's dial, moved here unchanged (it was the watch's Gauge.kt): like a car cluster (mock3.html,
+ * approved): the power arc along the edge, inside it the thin speed track with the dot («ириска») and the mode's limit,
+ * the battery with its fine % in the centre, the range, «V · °C · MODE», the top lamp's line and the power under it; 12
+ * tell-tales in two columns along the edges (TellTales.IDS: the right column top to bottom, then the left). Laid out on
+ * the 240-unit grid of [Dial], scaled to the screen. It reads the telemetry and the watch's state as v108's GaugeScreen
+ * did; [FaceText] stands for Wear's Text (the watch provides its theme's style, [LocalFaceTextStyle]).
  */
 
 /** Design units → dp / sp. Text sizes follow the screen, not the font scale: the dial is a fixed drawing. */
@@ -94,40 +89,6 @@ private fun Modifier.baselineAt(y: Float): Modifier = layout { m, c ->
 
 private val TNUM = TextStyle(fontFeatureSettings = "tnum")
 
-/**
- * [target] (a fraction of a scale) as it is drawn: with [smooth], eased towards each new value on every frame by a
- * critically damped [Spring] (no overshoot, 95 % in [Spring.SETTLE_MS]); without, it jumps. Read the State
- * inside a draw lambda: then only the canvas redraws per frame, nothing recomposes.
- */
-@Composable
-fun rememberSpring(target: Float, smooth: Boolean): State<Float> {
-    val spring = remember { Spring(x = target.toDouble()) }
-    val shown = remember { mutableFloatStateOf(target) }
-    val latest = rememberUpdatedState(target)
-    LaunchedEffect(smooth) {
-        if (!smooth) {
-            snapshotFlow { latest.value }.collect { spring.snap(it.toDouble()); shown.floatValue = it }
-            return@LaunchedEffect
-        }
-        while (true) {
-            if (spring.settled && spring.target == latest.value.toDouble()) {
-                snapshotFlow { latest.value }.first { it.toDouble() != spring.target }
-            }
-            var lastNs = -1L
-            do {
-                withFrameNanos { ns ->
-                    val dt = if (lastNs < 0) Spring.FIRST_FRAME_S else ((ns - lastNs) / 1e9).coerceAtMost(Spring.MAX_FRAME_S)
-                    lastNs = ns
-                    spring.target = latest.value.toDouble()
-                    spring.step(dt)
-                    shown.floatValue = spring.x.toFloat()
-                }
-            } while (!(spring.settled && spring.target == latest.value.toDouble()))
-        }
-    }
-    return shown
-}
-
 /** The red lamps' ~1 Hz ([Blink]): lit first, then dark and lit by turns while [enabled]; lit otherwise. */
 @Composable
 private fun rememberBlink(enabled: Boolean): State<Boolean> {
@@ -146,45 +107,51 @@ private fun rememberBlink(enabled: Boolean): State<Boolean> {
 }
 
 /**
- * [smooth]: the power arc and the speed dot ease (see [rememberSpring]); ambient always jumps (one update a second at
- * most), shows no glow and no blink, outlines only.
+ * The state's [DialState.smooth]: the power arc and the speed dot ease (see [rememberSpring]); ambient always jumps (one
+ * update a second at most), shows no glow and no blink, outlines only. [nowMs]: a fixed time (shots, previews), the
+ * springs jump and the red lamps blink by it; null: live, as v108.
  */
 @Composable
-fun GaugeScreen(s: Screen, ambient: AmbientState?, smooth: Boolean = true) {
-    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+fun FaceClassic(state: DialState, modifier: Modifier = Modifier, nowMs: Long? = null) {
+    BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val side = minOf(maxWidth, maxHeight)
         val g = Grid(side / Dial.GRID, LocalDensity.current)
-        val amb = ambient != null
-        val lowBit = ambient?.lowBit == true
-        val shift = if (ambient?.burnIn == true) BurnIn.offset(ambient.tick) else 0f to 0f
-        val t = s.t
-        val live = s.health.live
-        val watts = if (live) PowerView.watts(t, s.fast) else null
+        val amb = state.ambient
+        val lowBit = state.lowBit
+        val shift = state.burnInDp
+        val t = state.telemetry
+        val live = state.health.live
+        val watts = if (live) PowerView.watts(t, state.fast) else null
         // old power is not shown as power: the arc rests at zero unless the data is live (as on the phone)
-        val power = rememberSpring(if (live) Arc.fraction(watts, t.peakW) else 0f, smooth && !amb)
+        val power = rememberSpring(if (live) Arc.fraction(watts, t.peakW) else 0f, state.smooth && !amb && nowMs == null)
         val speedF = Dial.speedFraction(t.speedKmh, t.units)
-        val speed = rememberSpring(speedF ?: 0f, smooth && !amb)
+        val speed = rememberSpring(speedF ?: 0f, state.smooth && !amb && nowMs == null)
         val lamps = Cluster.lamps(t)
-        val bulb = s.bulb && !amb
+        val bulb = state.bulbOn && !amb
         val shown = if (bulb) TellTales.bulbCheck() else lamps
-        val blink = rememberBlink(!amb && !bulb && shown.any { Lamps.blinks(it.level) })
+        val blinks = !amb && !bulb && shown.any { Lamps.blinks(it.level) }
+        val blink = if (nowMs == null) rememberBlink(blinks) else rememberUpdatedState(!blinks || Blink.on(nowMs - redSince(state, nowMs)))
         val msg = Dial.message(lamps, bulb)
         Box(Modifier.size(side).offset(shift.first.dp, shift.second.dp)) {
-            Box(Modifier.fillMaxSize().alpha(s.health.alpha)) {
+            Box(Modifier.fillMaxSize().alpha(state.health.alpha)) {
                 Tracks(
                     TrackState(power, speed, speedF != null, Dial.dotLabel(t.speedKmh, t.units), Dial.limitFraction(t.mode, t.units),
-                        Dial.ticks(t.units), s.overspeed && live),
+                        Dial.ticks(t.units), state.cues.rumble && live),
                     amb, lowBit, Modifier.fillMaxSize(),
                 )
                 CentreBattery(t, lamps, amb, lowBit, Modifier.fillMaxSize())
-                Lines(t, watts, s.fast, live, msg, amb, g)
+                Lines(t, watts, state.fast, live, msg, amb, g)
             }
             // the check is the watch's own, at full strength even on old data
-            LampColumns(shown, blink, amb, lowBit, Modifier.fillMaxSize().alpha(if (bulb) 1f else s.health.alpha))
-            StatusLine(s.health, Cluster.statusLabel(s.health, lamps), amb, g)
+            LampColumns(shown, blink, amb, lowBit, Modifier.fillMaxSize().alpha(if (bulb) 1f else state.health.alpha))
+            StatusLine(state.health, Cluster.statusLabel(state.health, lamps), amb, g, state.clock)
         }
     }
 }
+
+/** When the first red lamp lit (its blink starts lit there), else [nowMs]. */
+private fun redSince(state: DialState, nowMs: Long): Long =
+    state.lamps.lit.filter { it.level == LampLevel.RED }.minOfOrNull { it.sinceMs } ?: nowMs
 
 private class TrackState(
     val power: State<Float>,
@@ -337,7 +304,7 @@ private fun DrawScope.pctLayout(measurer: TextMeasurer, text: String, u: Float):
 @Composable
 private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, msg: Dial.Message?, ambient: Boolean, g: Grid) {
     Dial.rangeText(t.range, t.units)?.let {
-        Text(
+        FaceText(
             it,
             Modifier.baselineAt(Dial.RANGE_Y).widthIn(max = g.dp(140f)),
             color = argb(if (ambient) Palette.AMB_INK else if (RangeText.rough(t.range)) Palette.MUTED else Palette.INK),
@@ -347,7 +314,7 @@ private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, ms
     }
     val details = Dial.detailsText(t)
     if (details.isNotEmpty()) {
-        Text(
+        FaceText(
             details,
             Modifier.baselineAt(Dial.DETAILS_Y).widthIn(max = g.dp(150f)),
             color = argb(if (ambient) Palette.AMB_DIM else Palette.MUTED),
@@ -361,13 +328,13 @@ private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, ms
         val weight = if (ambient) FontWeight.Normal else FontWeight.SemiBold
         val measurer = rememberTextMeasurer()
         val maxPx = with(LocalDensity.current) { g.dp(Dial.MSG_MAX_W).toPx() }
-        // measured in the style Text draws it with (the theme's font and spacing)
-        val base = LocalTextStyle.current
+        // measured in the style FaceText draws it with (the theme's font and spacing)
+        val base = LocalFaceTextStyle.current
         val font = remember(msg.text, weight, g.unit, maxPx, base) {
             val style = base.merge(TextStyle(fontSize = g.sp(Dial.MSG_FONT), fontWeight = weight))
             Dial.msgFont(measurer.measure(msg.text, style, softWrap = false, maxLines = 1).size.width.toFloat(), maxPx)
         }
-        Text(
+        FaceText(
             msg.text,
             Modifier.baselineAt(Dial.MSG_Y).widthIn(max = g.dp(Dial.MSG_MAX_W)),
             color = argb(if (ambient) Palette.AMB_INK else msg.argb),
@@ -379,7 +346,7 @@ private fun Lines(t: Telemetry, watts: Double?, fast: Boolean, live: Boolean, ms
         )
     }
     val flow = if (live) Flow.of(t, fast) else Flow.NONE
-    Text(
+    FaceText(
         Dial.powerText(watts, flow),
         Modifier.baselineAt(if (msg != null) Dial.POWER_Y else Dial.POWER_ALONE_Y),
         color = argb(if (ambient) Palette.AMB_INK else Dial.powerArgb(watts, flow)),
@@ -439,9 +406,9 @@ private fun LampColumns(lamps: List<Lamp>, blink: State<Boolean>, ambient: Boole
 /** Top line: what is wrong with the data ([label], see [Cluster.statusLabel]), or the time when all is live. Not
  *  dimmed with the values. */
 @Composable
-private fun StatusLine(h: Health, label: String?, ambient: Boolean, g: Grid) {
+private fun StatusLine(h: Health, label: String?, ambient: Boolean, g: Grid, time: String) {
     if (label != null) {
-        Text(
+        FaceText(
             label,
             Modifier.centreAt(Dial.STATUS_Y).widthIn(max = g.dp(Dial.STATUS_MAX_W)),
             color = argb(if (ambient) Palette.AMB_INK else h.tone),
@@ -452,8 +419,7 @@ private fun StatusLine(h: Health, label: String?, ambient: Boolean, g: Grid) {
             maxLines = 2,
         )
     } else {
-        val time = TimeTextDefaults.timeSource(TimeTextDefaults.timeFormat()).currentTime
-        Text(
+        FaceText(
             time,
             Modifier.baselineAt(Dial.CLOCK_Y),
             color = argb(if (ambient) Palette.AMB_DIM else Palette.MUTED),

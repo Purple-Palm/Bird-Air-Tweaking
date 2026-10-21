@@ -20,6 +20,7 @@ import androidx.wear.compose.material.ChipDefaults
 import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.CompactChip
 import androidx.wear.compose.material.Text
+import io.github.purplepalm.birdair.dial.*
 
 /** The watch's own update, one item of the details page: the chip, «Отменить» while downloading, the last message. */
 @Composable

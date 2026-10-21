@@ -10,6 +10,7 @@ import io.github.purplepalm.birdair.core.RangeEstimate
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.core.WarningLevel
+import io.github.purplepalm.birdair.dial.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull

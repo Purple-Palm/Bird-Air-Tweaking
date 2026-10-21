@@ -36,6 +36,8 @@ android {
         unitTests.all {
             val repo = rootDir.parentFile
             it.systemProperty("repoRoot", repo.absolutePath)
+            // -PshotFace=stack: FaceShots renders that face only
+            providers.gradleProperty("shotFace").orNull?.let { f -> it.systemProperty("shotFace", f) }
             it.inputs.dir(repo.resolve("logs")).withPropertyName("logs")
             it.inputs.file(repo.resolve("decoders/current.json")).withPropertyName("decoder")
             it.maxHeapSize = "1g"
@@ -48,6 +50,7 @@ android {
 }
 dependencies {
     implementation(project(":core"))
+    implementation(project(":dial"))
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.9.3")
     // play-services pulls fragment 1.2.4; the Activity Result API needs ≥ 1.3

@@ -67,7 +67,7 @@ class LoadSag(val windowMs: Long = 30_000, val loadA: Double = 5.0) {
         fun fixLamp(lamps: List<Lamp>, ws: List<BatteryWarning>): List<Lamp> {
             val low = ws.firstOrNull { it.id == BatteryAdvisor.LOW } ?: return lamps
             val v = TellTales.lampValue(low.value)
-            return lamps.map { if (it.id == TellTales.BATTERY && it.text == low.text) it.copy(value = v) else it }
+            return lamps.map { if (it.id == TellTales.BATTERY && it.text == low.text) it.copy(value = v, valueText = TellTales.volts(v)) else it }
         }
     }
 }

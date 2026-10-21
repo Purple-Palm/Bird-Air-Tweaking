@@ -1,6 +1,7 @@
 package io.github.purplepalm.birdair.wear
 
 import android.content.pm.PackageInstaller
+import io.github.purplepalm.birdair.dial.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull

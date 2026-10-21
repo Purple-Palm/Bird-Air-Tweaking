@@ -27,11 +27,13 @@ import androidx.wear.compose.material.HorizontalPageIndicator
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.PageIndicatorState
 import io.github.purplepalm.birdair.core.Telemetry
+import io.github.purplepalm.birdair.dial.*
 import kotlinx.coroutines.delay
 
 /**
  * What the screen shows: the phone's telemetry, what the watch makes of its freshness, and the phone's flags.
- * [bulb]: the «проверка ламп» is on ([BulbCheck]); [overspeed]: the overspeed vibration runs ([RideService.vibrating]).
+ * [bulb]: the «проверка ламп» is on ([BulbCheck]), since [bulbAtMs]; [overspeed]: the overspeed vibration runs
+ * ([RideService.vibrating]); [cues]: what the motor did, for the dial ([Cues]).
  */
 data class Screen(
     val t: Telemetry = Telemetry(),
@@ -39,6 +41,8 @@ data class Screen(
     val flags: PhoneFlags = PhoneFlags(),
     val bulb: Boolean = false,
     val overspeed: Boolean = false,
+    val cues: DialCues = DialCues(),
+    val bulbAtMs: Long? = null,
 ) {
     /** The arc and the watts use the fast estimate. */
     val fast: Boolean get() = PowerView.fast(flags)
@@ -70,10 +74,12 @@ fun WatchTheme(content: @Composable () -> Unit) = MaterialTheme(colors = WatchCo
 /** The details page goes back to the gauge after this long without a touch: the bar is what matters while riding. */
 const val DETAILS_TIMEOUT_MS = 20_000L
 
-/** Two pages: the gauge, and (swipe left) the details. Ambient always shows the gauge. */
+/** Two pages: the gauge (the chosen face, [WatchDial]), and (swipe left) the details. Ambient always shows the gauge. */
 @OptIn(ExperimentalWearFoundationApi::class) // HierarchicalFocusCoordinator: rotary input goes to the visible page
 @Composable
-fun WatchApp(screen: Screen, ambient: AmbientState?, prefs: WatchPrefs = WatchPrefs(), onPrefs: (WatchPrefs) -> Unit = {}) {
+fun WatchApp(
+    screen: Screen, ambient: AmbientState?, prefs: WatchPrefs = WatchPrefs(), onPrefs: (WatchPrefs) -> Unit = {}, onFace: (DialFace) -> Unit = {},
+) {
     WatchTheme {
         val pager = rememberPagerState { 2 }
         var touchedAt by remember { mutableLongStateOf(0L) }
@@ -99,8 +105,8 @@ fun WatchApp(screen: Screen, ambient: AmbientState?, prefs: WatchPrefs = WatchPr
         ) {
             HorizontalPager(state = pager, userScrollEnabled = ambient == null, modifier = Modifier.fillMaxSize()) { page ->
                 HierarchicalFocusCoordinator(requiresFocus = { pager.currentPage == page }) {
-                    if (page == 0) GaugeScreen(screen, ambient, smooth = prefs.smooth.resolve(screen.flags.smooth))
-                    else DetailsScreen(screen, prefs, onPrefs = onPrefs)
+                    if (page == 0) WatchDial(screen, ambient, prefs, smooth = prefs.smooth.resolve(screen.flags.smooth))
+                    else DetailsScreen(screen, prefs, onPrefs = onPrefs, onFace = onFace)
                 }
             }
             if (ambient == null) {

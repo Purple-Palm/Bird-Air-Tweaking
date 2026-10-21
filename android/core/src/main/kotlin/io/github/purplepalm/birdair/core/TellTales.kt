@@ -12,9 +12,23 @@ enum class LampLevel { OFF, GREEN, BLUE, YELLOW, AMBER, RED }
  * One lit tell-tale. [text]: a short line for the dial (≤ ~24 chars); [value]: what it is about (°C, V, A, Wh/km,
  * W, %, km/h, Ω — see [TellTales.HELP]), rounded once by [TellTales.lampValue]; [rising]: the temperature climbs fast (the ▲).
  * [level] has a default only so that a level an older watch does not know reads as OFF instead of breaking the message.
+ *
+ * What a dial writes big, so it does not take [text] apart: [title] (≤ [TellTales.TITLE_MAX] chars, no number:
+ * «Батарея горячая», «Сейчас отключится», «Мало тяги»), [valueText] the value with its unit after a no-break space in
+ * the phone's units («49 °C», «31,5 В», «18,1 mph»; null: none) and [detail] a short line under it («предел тока»,
+ * «под нагрузкой»; null: none). [TellTales.lamps] fills them; an older phone sends none ([TellTales.display] derives them).
  */
 @Serializable
-data class Lamp(val id: String, val level: LampLevel = LampLevel.OFF, val text: String = "", val value: Double? = null, val rising: Boolean = false)
+data class Lamp(
+    val id: String,
+    val level: LampLevel = LampLevel.OFF,
+    val text: String = "",
+    val value: Double? = null,
+    val rising: Boolean = false,
+    val title: String = "",
+    val valueText: String? = null,
+    val detail: String? = null,
+)
 
 /** A lamp that changed level between two snapshots; [lamp] is the new one (null: it went off). */
 data class LampChange(val id: String, val from: LampLevel, val to: LampLevel, val lamp: Lamp?)
@@ -311,43 +325,43 @@ class TellTales(val params: Params = Params()) {
     }
 
     /** The lit lamps now, in [IDS] order. [range] gives the recent consumption, [warnings] the advisor's battery_low,
-     *  [link] / [streaming] the phone's link to the scooter (as in the snapshot). */
-    fun lamps(nowMs: Long, range: RangeEstimate?, warnings: List<BatteryWarning>, link: Link, streaming: Boolean): List<Lamp> {
+     *  [link] / [streaming] the phone's link to the scooter (as in the snapshot); [units] the phone's, for [Lamp.valueText]. */
+    fun lamps(nowMs: Long, range: RangeEstimate?, warnings: List<BatteryWarning>, link: Link, streaming: Boolean, units: String = KMH): List<Lamp> {
         val on = HashMap<String, Lamp>()
         fun lit(id: String, level: LampLevel, text: String, value: Double? = null, rising: Boolean = false) {
-            on[id] = Lamp(id, level, text, lampValue(value), rising)
+            on[id] = lamp(id, level, text, value, rising, units)
         }
         val rising = rise.on(nowMs) && nowMs - (lastBmsT ?: Long.MIN_VALUE / 2) <= p.riseHoldMs
         tempC?.let { t ->
             when {
-                tempLvl == 3 -> lit(TEMP, LampLevel.RED, "Перегрев — сбавь газ", t, rising)
-                tempLvl == 2 -> lit(TEMP, LampLevel.AMBER, if (rising) "Горячая, быстро греется" else "Батарея горячая", t, rising)
-                tempLvl == 1 -> lit(TEMP, LampLevel.YELLOW, if (rising) "Тёплая, быстро греется" else "Батарея тёплая", t, rising)
-                rising -> lit(TEMP, LampLevel.YELLOW, "Батарея быстро греется", t, true)
+                tempLvl == 3 -> lit(TEMP, LampLevel.RED, T_OVERHEAT, t, rising)
+                tempLvl == 2 -> lit(TEMP, LampLevel.AMBER, if (rising) T_HOT_RISING else T_HOT, t, rising)
+                tempLvl == 1 -> lit(TEMP, LampLevel.YELLOW, if (rising) T_WARM_RISING else T_WARM, t, rising)
+                rising -> lit(TEMP, LampLevel.YELLOW, T_RISING, t, true)
             }
-            if (cold) lit(COLD, LampLevel.BLUE, "Батарея холодная", t)
+            if (cold) lit(COLD, LampLevel.BLUE, T_COLD, t)
         }
         val low = warnings.firstOrNull { it.id == BatteryAdvisor.LOW }
         when {
             // the controller's 0x26 is news after the BMS's own flag: kept until a 3A 17 says otherwise
-            code == MotionFrame.CODE_NO_BMS || recent(noBmsT, nowMs) -> lit(BATTERY, LampLevel.RED, "Нет связи с BMS")
-            recent(uvT, nowMs) -> lit(BATTERY, LampLevel.RED, "BMS отключает батарею", uvV)
-            low?.level == WarningLevel.CRITICAL -> lit(BATTERY, LampLevel.RED, "Сейчас отключится", low.value)
-            low != null -> lit(BATTERY, LampLevel.AMBER, "Заряд на исходе", low.value)
+            code == MotionFrame.CODE_NO_BMS || recent(noBmsT, nowMs) -> lit(BATTERY, LampLevel.RED, T_NO_BMS)
+            recent(uvT, nowMs) -> lit(BATTERY, LampLevel.RED, T_BMS_CUT, uvV)
+            low?.level == WarningLevel.CRITICAL -> lit(BATTERY, LampLevel.RED, T_CUTTING, low.value)
+            low != null -> lit(BATTERY, LampLevel.AMBER, T_LOW, low.value)
             lowPct -> batteryPctFine?.let { lit(BATTERY, LampLevel.AMBER, "Заряд " + fmt1(it) + " %", it) }
         }
         if (streaming) {
-            if (limit.on(nowMs)) lit(TRACTION, LampLevel.AMBER, "Мало тяги: предел тока", lastI)
-            else if (sag.on(nowMs)) lit(TRACTION, LampLevel.AMBER, "Мало тяги: просадка", sagShownV)
+            if (limit.on(nowMs)) lit(TRACTION, LampLevel.AMBER, T_LIMIT, lastI)
+            else if (sag.on(nowMs)) lit(TRACTION, LampLevel.AMBER, T_SAG, sagShownV)
             when {
-                recent(ovCutT, nowMs) -> lit(OVERVOLT, LampLevel.RED, "Защита от перенапряжения", overPeakV)
-                recent(ovWarnT, nowMs) -> lit(OVERVOLT, LampLevel.AMBER, "Полная — тормози мягко", overPeakV)
+                recent(ovCutT, nowMs) -> lit(OVERVOLT, LampLevel.RED, T_OV_CUT, overPeakV)
+                recent(ovWarnT, nowMs) -> lit(OVERVOLT, LampLevel.AMBER, T_FULL, overPeakV)
                 overvolt.on(nowMs) -> lit(OVERVOLT, LampLevel.AMBER, "Перенапряжение " + fmt1(overPeakV) + " В", overPeakV)
             }
             if (eco.on(nowMs) && TRACTION !in on) lit(ECO, LampLevel.GREEN, "ECO", ecoShownW)
-            if (overspeed.on(nowMs)) lit(OVERSPEED, LampLevel.BLUE, "Быстрее ограничителя", speed)
+            if (overspeed.on(nowMs)) lit(OVERSPEED, LampLevel.BLUE, T_OVERSPEED, speed)
             if (charge.on(nowMs)) lit(CHARGING, LampLevel.GREEN, "Зарядка " + fmt1(chargeShownA) + " А", chargeShownA)
-            else if (chargeWait.on(nowMs)) lit(CHARGING, LampLevel.AMBER, "Зарядка ждёт остывания", tempC)
+            else if (chargeWait.on(nowMs)) lit(CHARGING, LampLevel.AMBER, T_CHARGE_WAIT, tempC)
         }
         val wh = range?.takeIf { it.basis == "recent" }?.whPerKm
         high = wh != null && wh > (if (high) p.highWhKmOff else p.highWhKm)
@@ -369,7 +383,7 @@ class TellTales(val params: Params = Params()) {
         val dash = d0 != null && d1 != null && nowMs - d1 <= p.dashMs && d1 - d0 >= p.dashRepeatMs &&
             frameT?.let { nowMs - it > p.framesQuietMs } != false
         if (this.link.on(nowMs) && (link == Link.CONNECTED || link == Link.RECONNECTING))
-            lit(LINK, LampLevel.AMBER, if (link == Link.RECONNECTING) "Связь рвётся" else if (dash) "Руль на связи, BMS молчит" else "Руль молчит")
+            lit(LINK, LampLevel.AMBER, if (link == Link.RECONNECTING) T_LINK_LOST else if (dash) T_DASH_NO_BMS else T_SILENT)
         else if (streaming && ((code != 0 && code != MotionFrame.CODE_NO_BMS) || recent(codeT, nowMs)))
             lit(LINK, LampLevel.AMBER, "Код контроллера 0x" + String.format(java.util.Locale.ROOT, "%02X", codeShown), codeShown.toDouble())
         return IDS.mapNotNull { on[it] }
@@ -421,11 +435,128 @@ class TellTales(val params: Params = Params()) {
             COLD to "батарея холоднее 5 °C: ёмкость и тяга меньше.",
         )
 
+        /** Short names, a dial's title for a lamp without one of its own (the bulb check, an older phone's lamp). */
+        val TITLES = mapOf(
+            TEMP to "Температура", BATTERY to "Заряд", TRACTION to "Мало тяги", CONSUMPTION to "Высокий расход",
+            WEAK to "Слабая батарея", OVERVOLT to "Перенапряжение", ECO to "ECO", SERVICE to "Сервис", LINK to "Связь",
+            OVERSPEED to "Выше предела", CHARGING to "Зарядка", COLD to "Холодная батарея",
+        )
+
+        /** [Lamp.title] is at most this long («Сейчас отключится»), [Lamp.detail] at most [DETAIL_MAX]. */
+        const val TITLE_MAX = 17
+        const val DETAIL_MAX = 24
+
+        // the texts [lamps] writes (the phone's journal and marks, the watch's Cluster tell some of them apart)
+        const val T_OVERHEAT = "Перегрев — сбавь газ"
+        const val T_HOT = "Батарея горячая"
+        const val T_HOT_RISING = "Горячая, быстро греется"
+        const val T_WARM = "Батарея тёплая"
+        const val T_WARM_RISING = "Тёплая, быстро греется"
+        const val T_RISING = "Батарея быстро греется"
+        const val T_COLD = "Батарея холодная"
+        const val T_NO_BMS = "Нет связи с BMS"
+        const val T_BMS_CUT = "BMS отключает батарею"
+        const val T_CUTTING = "Сейчас отключится"
+        const val T_LOW = "Заряд на исходе"
+        const val T_LIMIT = "Мало тяги: предел тока"
+        const val T_SAG = "Мало тяги: просадка"
+        const val T_OV_CUT = "Защита от перенапряжения"
+        const val T_FULL = "Полная — тормози мягко"
+        const val T_OVERSPEED = "Быстрее ограничителя"
+        const val T_CHARGE_WAIT = "Зарядка ждёт остывания"
+        const val T_LINK_LOST = "Связь рвётся"
+        const val T_DASH_NO_BMS = "Руль на связи, BMS молчит"
+        const val T_SILENT = "Руль молчит"
+
+        const val KMH = "kmh"
+        const val MPH = "mph"
+        /** Between a number and its unit. */
+        const val NBSP = ' '
+
+        /** A lit lamp as [lamps] makes it: [value] rounded once ([lampValue]), the display fields for [text] in [units]. */
+        fun lamp(id: String, level: LampLevel, text: String, value: Double? = null, rising: Boolean = false, units: String = KMH): Lamp {
+            val v = lampValue(value)
+            return describe(Lamp(id, level, text, v, rising), units)
+        }
+
+        /** [l] with its display fields: as they came, or (none: an older phone, a hand-made lamp) derived from its text. */
+        fun display(l: Lamp, units: String = KMH): Lamp = if (l.title.isNotBlank()) l else describe(l, units)
+
+        /** «31,2 В»: [v] with one decimal and the volt, as the charge and over-voltage lamps show it; null without [v]. */
+        fun volts(v: Double?): String? = withUnit(v, 1, "В")
+
+        /** «49 °C», «31,5 В», «−3 °C»: [v] to [digits] decimals (comma, true minus), NBSP, [unit]; null without [v]. */
+        fun withUnit(v: Double?, digits: Int, unit: String): String? =
+            v?.takeIf { it.isFinite() }?.let { num(it, digits) + NBSP + unit }
+
+        private fun num(v: Double, digits: Int): String {
+            val s = fmt(kotlin.math.abs(v), digits)
+            return if (v < 0 && s.any { it in '1'..'9' }) "−$s" else s
+        }
+
+        /** The display fields of [l]'s text (the same rules for [lamps] and for [display]). */
+        private fun describe(l: Lamp, units: String): Lamp {
+            val v = l.value
+            val mph = units == MPH
+            val deg = withUnit(v, 0, "°C")
+            fun d(title: String, valueText: String?, detail: String? = null) = l.copy(title = title, valueText = valueText, detail = detail)
+            val t = l.text
+            return when (l.id) {
+                TEMP -> when {
+                    t.startsWith("Перегрев") -> d("Перегрев", deg, "сбавь газ")
+                    t == T_RISING -> d("Быстро греется", deg)
+                    l.level == LampLevel.AMBER || t.startsWith("Горячая") -> d(T_HOT, deg, if (l.rising) RISING else null)
+                    else -> d(T_WARM, deg, if (l.rising) RISING else null)
+                }
+                COLD -> d(T_COLD, deg, "ёмкость и тяга меньше")
+                BATTERY -> when {
+                    t == T_NO_BMS -> d(T_NO_BMS, null, "код 0x26")
+                    t == T_BMS_CUT -> d("BMS отключает", volts(v), "низкое напряжение")
+                    t == T_CUTTING -> d(T_CUTTING, volts(v), UNDER_LOAD)
+                    t == T_LOW -> d(T_LOW, volts(v), UNDER_LOAD)
+                    else -> d("Заряд", withUnit(v, 1, "%"))
+                }
+                TRACTION -> if (t.endsWith("просадка")) d("Мало тяги", volts(v), "просадка") else d("Мало тяги", withUnit(v, 1, "А"), "предел тока")
+                OVERVOLT -> when (t) {
+                    T_OV_CUT -> d("Перенапряжение", volts(v), "мотор не тормозит")
+                    T_FULL -> d("Полная", volts(v), "тормози мягко")
+                    else -> d("Перенапряжение", volts(v))
+                }
+                ECO -> d("ECO", withUnit(v, 0, "Вт"), "едешь мягко")
+                OVERSPEED -> {
+                    // the value is km/h; the phone's unit big, the other one under it
+                    val kmh = withUnit(v, 1, "км/ч")
+                    val mi = withUnit(v?.div(BatteryAdvisor.MILE_KM), 1, "mph")
+                    d("Выше предела", if (mph) mi else kmh, if (mph) kmh else mi)
+                }
+                CHARGING -> if (l.level == LampLevel.AMBER) d("Ждёт остывания", deg, "зарядка подключена") else d("Зарядка", withUnit(v, 1, "А"), "ток в батарею")
+                CONSUMPTION -> if (mph) d("Высокий расход", withUnit(v?.times(BatteryAdvisor.MILE_KM), 0, "Вт·ч/mi"), "за 1,2" + NBSP + "mi")
+                    else d("Высокий расход", withUnit(v, 0, "Вт·ч/км"), "за 2" + NBSP + "км")
+                WEAK -> d("Батарея устала", withUnit(v, 2, "Ом"), "сопротивление")
+                SERVICE -> d("Ёмкость батареи", withUnit(v, 0, "%"), "от паспорта")
+                LINK -> when {
+                    t == T_DASH_NO_BMS -> d("BMS молчит", null, "руль на связи")
+                    t == T_SILENT -> d("Связь", null, "руль молчит")
+                    t == T_LINK_LOST -> d("Связь", null, "рвётся")
+                    t.startsWith("Код") -> d("Код контроллера", t.substringAfterLast(' ').takeIf { it.startsWith("0x") })
+                    else -> d(TITLES.getValue(LINK), null, t.ifBlank { null })
+                }
+                else -> {
+                    // an id this build does not know: the text up to its first «:», « — » or «,», without numbers
+                    val head = t.split(": ", " — ", ", ").first().replace(Regex("\\s*[−-]?\\d[\\d,.]*\\s*\\S*$"), "").trim()
+                    d(head.ifEmpty { l.id }, null, t.removePrefix(head).trimStart(':', ' ', '—', ',').ifBlank { null })
+                }
+            }
+        }
+
+        private const val UNDER_LOAD = "под нагрузкой"
+        private const val RISING = "быстро греется"
+
         /** The bulb check at start and on each (re)connection lasts this long. */
         const val BULB_CHECK_MS = 1500L
 
         /** Every lamp in its strongest colour, steady: the bulb check. */
-        fun bulbCheck(): List<Lamp> = IDS.map { Lamp(it, BULB.getValue(it), NAMES.getValue(it)) }
+        fun bulbCheck(): List<Lamp> = IDS.map { Lamp(it, BULB.getValue(it), NAMES.getValue(it), title = TITLES.getValue(it)) }
         private val BULB = mapOf(
             TEMP to LampLevel.RED, BATTERY to LampLevel.RED, TRACTION to LampLevel.AMBER, CONSUMPTION to LampLevel.AMBER,
             WEAK to LampLevel.YELLOW, OVERVOLT to LampLevel.AMBER, ECO to LampLevel.GREEN, SERVICE to LampLevel.AMBER,

@@ -3,6 +3,7 @@ package io.github.purplepalm.birdair.wear
 import io.github.purplepalm.birdair.core.Lamp
 import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.TellTales
+import io.github.purplepalm.birdair.dial.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

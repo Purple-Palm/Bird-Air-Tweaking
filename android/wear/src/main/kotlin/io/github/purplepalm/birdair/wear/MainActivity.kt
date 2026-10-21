@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.wear.ambient.AmbientLifecycleObserver
+import io.github.purplepalm.birdair.dial.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -40,7 +41,8 @@ class MainActivity : ComponentActivity() {
     @Volatile private var openedAtMs = 0L
     private var serviceTriedAtMs: Long? = null
     private val bulbs = BulbCheck()
-    private val bulbOn = MutableStateFlow(false)
+    /** When the running «проверка ламп» started; null: none runs. */
+    private val bulbOn = MutableStateFlow<Long?>(null)
     private var bulbJob: Job? = null
 
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -77,7 +79,7 @@ class MainActivity : ComponentActivity() {
             val s by screen.collectAsState()
             val a by ambient.collectAsState()
             val p by Settings.prefs.collectAsState()
-            WatchApp(s, a, p, onPrefs = Settings::set)
+            WatchApp(s, a, p, onPrefs = Settings::set, onFace = FaceSync::pick)
         }
     }
 
@@ -103,12 +105,13 @@ class MainActivity : ComponentActivity() {
 
     /** All lamps lit for [BulbCheck.durationMs]; a new check restarts the time. */
     private fun bulbCheck() {
-        bulbs.start(SystemClock.elapsedRealtime())
+        val now = SystemClock.elapsedRealtime()
+        bulbs.start(now)
         bulbJob?.cancel()
-        bulbOn.value = true
+        bulbOn.value = now
         bulbJob = lifecycleScope.launch {
             delay(bulbs.durationMs)
-            bulbOn.value = false
+            bulbOn.value = null
         }
     }
 
@@ -118,8 +121,8 @@ class MainActivity : ComponentActivity() {
      */
     private suspend fun present() {
         var shownAt = Long.MIN_VALUE / 2
-        combine(WatchFeed.feed, ticker(TICK_MS), bulbOn, RideService.vibrating) { f, now, bulb, over ->
-            Screen(f.t, Health.of(f.t, f.rxAtMs, now), f.flags, bulb = bulb, overspeed = over)
+        combine(WatchFeed.feed, ticker(TICK_MS), bulbOn, RideService.vibrating, Cues.flow) { f, now, bulbAt, over, cues ->
+            Screen(f.t, Health.of(f.t, f.rxAtMs, now), f.flags, bulb = bulbAt != null, overspeed = over, cues = cues, bulbAtMs = bulbAt)
         }
             .distinctUntilChanged()
             .collectLatest { s ->

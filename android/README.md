@@ -25,6 +25,14 @@
 
 ## Что нового (после v0.1)
 
+- **Циферблаты — темы, как watch faces внутри приложения.** Пять: «Крупные лампы» (по умолчанию, и для тех, у кого был
+  прежний циферблат — один раз), «Захват экрана», «Растущие лампы», «Кольцо» и «Классика» (циферблат v108). Выбор — на
+  телефоне, карточка «Циферблат часов» (живые превью всех пяти), или на часах — «Подробно» → «Циферблат»; действует
+  последний, часы получают его и после выключения (Wear Data Layer) и сообщают телефону, что показывают. Пока новые
+  четыре — заготовки и рисуют «Классику»; модуль `:dial`, [`dial/README.md`](dial/README.md).
+- **У ламп — заголовок, число и подпись** отдельными полями (`Lamp.title` / `valueText` / `detail`: «Мало тяги» · «15,8 А» ·
+  «предел тока»), в единицах телефона; циферблаты пишут крупно их, а не разбирают текст.
+
 - **Без задержки.** Таймера 250 мс больше нет: каждое уведомление BLE сразу разбирается и уходит на экран
   телефона (меньше 1 мс) и на часы (сразу, не чаще 25 раз в секунду, без данных — раз в секунду).
 - **Быстрая мощность** (настройка, по умолчанию вкл): ток и мощность по просадке напряжения, свежие в
@@ -278,7 +286,7 @@ Bugjaeger. Карточка «Часы» на телефоне подскаже�
 ```sh
 cd android
 ANDROID_HOME=/path/to/android-sdk ./gradlew --no-daemon \
-  :core:test :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug :phone:lintDebug :wear:lintDebug
+  :core:test :dial:testDebugUnitTest :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug :phone:lintDebug :wear:lintDebug
 ```
 
 Версия сборки — `-PversionCode=<целое> -PversionName=<строка>` (телефону ещё `-PgitSha=<коммит>`); без них
@@ -286,12 +294,14 @@ ANDROID_HOME=/path/to/android-sdk ./gradlew --no-daemon \
 
 Нужны JDK 17+ и Android SDK (platform 35, build-tools 35). APK: `phone/build/outputs/apk/debug/phone-debug.apk`,
 `wear/build/outputs/apk/debug/wear-debug.apk`. `./gradlew :wear:testDebugUnitTest -Pshots` дополнительно
-рисует экраны часов в PNG (Robolectric, `wear/build/shots/`), `./gradlew :phone:testDebugUnitTest -Pshots` —
+рисует экраны часов в PNG (Robolectric, `wear/build/shots/`; все темы циферблата × 11 сценариев — `wear/build/shots/faces/`,
+одна тема — `-PshotFace=stack`, сводный лист — `python3 wear/shots_sheet.py`), `./gradlew :phone:testDebugUnitTest -Pshots` —
 главный экран телефона (`phone/build/shots/`).
 
 | Модуль | Что там |
 | --- | --- |
 | `core/` | чистый Kotlin: кадры UART (`3A … 0D 0A`), декодер `birdair-lab-decoder`, телеметрия и энергия, быстрый ток по просадке напряжения (`FastPower`), предупреждения о батарее и запас хода (`BatteryAdvisor`), 12 ламп приборки (`TellTales`), свой одометр (`AppOdometer`), лог `birdair-lab-log` v1 с описанием и разбиением на части (`LogRecorder`), белый список команд, обмен с часами (`Wire`). `FastPower`, `BatteryAdvisor` и `AppOdometer` — порты `tools/fast_power.py`, `tools/battery_advisor.py`, `tools/app_odometer.py`; тесты сверяют их с Python на всех логах |
+| `dial/` | темы циферблата часов (`DialFace`, `DialState`, общие примитивы `FaceKit`, демо-сценарии) — Android-библиотека на Compose без Wear: рисуют часы, превью — телефон; [`dial/README.md`](dial/README.md) |
 | `phone/` | приложение для телефона, подробности — [`phone/README.md`](phone/README.md) |
 | `wear/` | приложение для часов, подробности — [`wear/README.md`](wear/README.md) |
 
@@ -310,6 +320,11 @@ ANDROID_HOME=/path/to/android-sdk ./gradlew --no-daemon \
   его предупреждениям). Пока приложение на часах активно (hello с версией не старше 45 с), уведомление
   «Предупреждения» остаётся только на телефоне; иначе Wear OS показывает его на часах — так вибрация на
   запястье одна.
+
+- циферблат — `DataClient`, путь `Wire.FACE` (`/birdair/face`): у каждого узла свой DataItem `{face, at, by}`
+  (ключ темы, время выбора, `phone` / `wear`); выбор телефона часы читают при запуске и слушают, пока работают, и
+  применяют, если он новее их собственного; свой (выбор на часах или принятый) часы пишут в свой DataItem — по нему
+  телефон показывает, что на часах.
 
 «Открыть на часах» — `birdair://open` (VIEW + BROWSABLE) через `RemoteActivityHelper`. Оба APK — один
 applicationId `io.github.purplepalm.birdair` и один ключ подписи: без этого Data Layer их не соединит.
