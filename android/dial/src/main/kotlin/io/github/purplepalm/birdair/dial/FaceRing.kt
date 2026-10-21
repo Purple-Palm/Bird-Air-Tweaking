@@ -58,7 +58,7 @@ import kotlin.math.tan
  * speed track (r 148) and the power arc (r 230, 14 px):
  *  - off: a hairline 1,5 px at r 192 and the place's icon 18 px in #2c3532 (ambient: nothing);
  *  - quiet (TellTales.QUIET: service, weak, ECO): only the icon, 20 px in its colour (service 40 %), never the centre;
- *  - lit: the hairline swells inward from r 213 into a tile with rounded corners (amber 28° × 42 px solid at 74 %, red
+ *  - lit: the hairline swells inward from r 213 into a tile with rounded corners (amber 28° × 42 px solid at NIGHT_FILL, red
  *    34° × 48 px, the brightest, breathing 1 Hz; yellow / blue / green «к сведению»: tinted with a 3-px edge, never
  *    solid), its icon 34 px (red 40) black on solid, in its colour on the others; two neighbours share the 27,5° between
  *    them; solid tiles glow inward and sideways (two fills, ≤ 9 px, none toward the power arc), brighter as they light;

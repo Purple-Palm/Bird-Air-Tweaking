@@ -28,6 +28,9 @@ on:
       - 'logs/20261016-190042-log-app.json.gz'
       - 'logs/20261016-205717-log-app.json.gz'
       - 'logs/20261019-174739-log-app.json.gz'
+      # the watch's ride replays (RideReplay, the faces' replay tests)
+      - 'logs/20261019-210801-log-app.json.gz'
+      - 'logs/20261020-214221-do-otsechki-do-nulya-app.json.gz'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 

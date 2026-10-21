@@ -28,7 +28,8 @@ def scan(root):
     out = {}
     for face in sorted(os.listdir(root)) if os.path.isdir(root) else []:
         d = os.path.join(root, face)
-        if not os.path.isdir(d):
+        # <face>-replay/: the faces' own ride shots (TakeoverReplayShots …), not scenarios
+        if not os.path.isdir(d) or face.endswith('-replay'):
             continue
         for name in os.listdir(d):
             m = SHOT.match(name)

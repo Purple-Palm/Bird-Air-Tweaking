@@ -11,7 +11,10 @@
 | `RING` «Кольцо» | `FaceRing.kt` | `gallery/ring.html` |
 | `CLASSIC` «Классика» — циферблат v108 без изменений | `FaceClassic.kt` | `mock3.html` |
 
-Пока четыре новые темы — заглушки: рисуют «Классику».
+Все пять нарисованы по своим макетам (размеры, цвета и движение — из галереи, общие правила судьи — ниже, «Как
+портировать тему», п. 3); отличия от макетов — тексты ламп из ядра (`Lamp.title` / `valueText` / `detail`, а не слова
+макета) и заливка не ярче `NIGHT_FILL`. Что делает каждая тема на часах — [`../wear/README.md`](../wear/README.md),
+«Темы циферблата».
 
 ## Что где
 
@@ -29,6 +32,16 @@
   `overspeed`, `bulb`, `ambient`, `charging`) как цепочки `DialState` в mph, лампы — тексты `TellTales.lamp`.
 - `FacePreview.kt` — тема, проигрывающая сценарии (превью на телефоне).
 - `Dial.kt`, `Display.kt`, `Power.kt`, `Motion.kt`, `PhoneFlags.kt` — чистая логика циферблата, перенесённая из `:wear`.
+- Темы, кроме самого рисования, держат раскладку кадра чистой функцией времени (её проверяют JVM-тесты, любой кадр —
+  точный, смена темы посреди движения картинку не сбивает):
+  - «Крупные лампы» — `StackScene.kt` (`Stack` — тайминги stack2, `StackTimeline` — что тема показала и когда,
+    `StackScene.build` — кадр) и `StackCheck.kt` (проверки раскладки для тестов `:dial` и `:wear`); `Stack.LAND_MS`
+    (470 мс) — на столько часы откладывают вибрацию лампы с этой темой, чтобы мотор шёл, когда фишка садится;
+  - «Захват экрана» — `TakeoverLayout` в `FaceTakeover.kt`;
+  - «Растущие лампы» — `FaceGrowLayout.kt` (раскладка макета, сверена с его selftest до 0,01 px) и `FaceGrowMotion.kt`
+    (`GrowScene` / `GrowMotion`: движение в замкнутой форме);
+  - «Кольцо» — `RingLayout` / `RingPen` / `RingPick` в `FaceRing.kt` (касание экрана часов показывает следующую горящую
+    лампу на 6 с; считается только касание, которое никто не забрал: свайп пейджера и выбор превью на телефоне — нет).
 
 ## Как портировать тему
 
@@ -50,6 +63,15 @@
 4. Свои тесты — новым файлом в `dial/src/test` или `wear/src/test` (`DialReplay` прогоняет настоящий лог в цепочку
    `DialState`, с тапами, вибрацией и вибрацией ламп, как на часах).
 
+## Тесты
+
+`./gradlew :dial:testDebugUnitTest` — `DialStateTest` (сборка состояния, история ламп, сценарии, кривые, выбор темы), по файлу на тему:
+`FaceStackTest`, `FaceTakeoverTest`, `FaceGrowLayoutTest` + `FaceGrowMotionTest` (с `grow-golden.json` — выборка
+раскладок макета; `GROW_GOLDEN=<дамп>` сверяет все 1032), `FaceRingTest`. Каждый гоняет все 11 сценариев кадр за кадром
+и случайные наборы ламп: ничего не выходит за круг и не перекрывается, главная лампа — `TellTales.top`, без движения
+кадров нет, ambient статичен. Поездки из логов (20.10 «до нуля», 15.10 с перегревом, 16.10 вдвоём) — в `:wear`:
+`StackReplayTest`, `TakeoverReplayTest`, `FaceGrowReplayTest`, `RingReplayTest`.
+
 ## Снимки
 
 ```sh
@@ -60,4 +82,7 @@ python3 wear/shots_sheet.py --by scenario                # все темы ря�
 ```
 
 Каждая тема × 11 сценариев × кадры 0, 150, 350, 600, 1200 мс после смены — `wear/build/shots/faces/<тема>/<сценарий>-<мс>.png`
-(480×480, как на Ultra). Без `-PshotFace` — все пять; одна связка — `--tests '*FaceShots*stack-amber*'`.
+(480×480, как на Ultra). Без `-PshotFace` — все пять; одна связка — `--tests '*FaceShots*stack-amber*'`. Свои снимки тем
+(тоже с `-Pshots`): `StackShots` — шкалы stack2 (повышение уровня, прокрутка числа, повтор красной, ✓) и поездки,
+`wear/build/shots/stack/`; `TakeoverReplayShots`, `FaceGrowReplayShots`, `RingShots` — поездки из логов и касания,
+`wear/build/shots/faces/<тема>-replay/`.
