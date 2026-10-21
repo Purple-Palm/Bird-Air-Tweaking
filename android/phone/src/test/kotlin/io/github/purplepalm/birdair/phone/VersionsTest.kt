@@ -59,6 +59,23 @@ class VersionsTest {
         assertNull("a local phone build compares with nothing", Versions.watchHint(null, true, 1))
     }
 
+    @Test fun theWatchAppsOwnHello() {
+        // what wear/Flags.kt HelloInfo.encode() sends (a CI build: -PversionName=<run>-<sha>)
+        val v = Versions.watch("""{"app":"wear","versionCode":112,"versionName":"12-abc1234"}""".toByteArray(Charsets.UTF_8))
+        assertEquals(WatchVersion(112, "12-abc1234"), v)
+        assertNull(Versions.watchHint(v, true, 112))
+        assertTrue(Versions.watchHint(v, true, 113)!!.contains("v112"))
+    }
+
+    @Test fun warningsStayOnThePhoneWhileTheWatchAppBuzzes() {
+        val now = 1_000_000L
+        val v = WatchVersion(112, "12-abc1234")
+        assertTrue("hello 30 s ago, with a version", Versions.watchBuzzes(WatchStatus(helloAt = now - 30_000, version = v), now))
+        assertFalse("an old watch build (empty hello) does not buzz", Versions.watchBuzzes(WatchStatus(helloAt = now - 1_000, version = null), now))
+        assertFalse("watch app closed: no hello for a minute", Versions.watchBuzzes(WatchStatus(helloAt = now - 60_000, version = v), now))
+        assertFalse("never said hello", Versions.watchBuzzes(WatchStatus(), now))
+    }
+
     @Test fun displayFlagsGoToTheWatch() {
         val was = ScooterRepo.settings.value
         try {

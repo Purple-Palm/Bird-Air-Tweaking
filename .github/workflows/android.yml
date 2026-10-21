@@ -1,7 +1,10 @@
 name: Android
 
 # Собирает приложения для телефона и часов (android/), гоняет их тесты и после
-# каждого пуша выкладывает оба APK в пре-релиз android-latest (один, перезаписывается).
+# каждого пуша выкладывает оба APK и version.json в пре-релиз android-latest (один,
+# перезаписывается). Версия сборки: versionCode = VERSION_OFFSET + номер запуска (растёт с
+# каждым запуском; у ручных сборок и старой v0.1 — 1), versionName = <номер запуска>-<коммит>.
+# По version.json приложение на телефоне находит обновление само.
 
 on:
   push:
@@ -13,13 +16,27 @@ on:
       # the Kotlin tests compare against these
       - 'tools/uart_frames.py'
       - 'tools/birdlog.py'
+      - 'tools/bird_frames.py'
+      - 'tools/fast_power.py'
+      - 'tools/battery_advisor.py'
+      - 'tools/app_odometer.py'
       - 'logs/20261014-174148-log.json'
       - 'logs/20261014-185422-log.json.gz'
+      - 'logs/20261015-155523-log-app.json.gz'
+      - 'logs/20261016-135138-log-app.json.gz'
+      - 'logs/20261016-182924-log.json.gz'
+      - 'logs/20261016-190042-log-app.json.gz'
+      - 'logs/20261016-205717-log-app.json.gz'
+      - 'logs/20261019-174739-log-app.json.gz'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  # versionCode = VERSION_OFFSET + github.run_number: always above 1 (local builds and v0.1)
+  VERSION_OFFSET: 100
 
 jobs:
   build:
@@ -46,20 +63,36 @@ jobs:
         working-directory: .
         run: python3 tools/check_secrets.py
 
-      - name: Tests and debug APKs
-        run: ./gradlew --no-daemon :core:test :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug
+      - name: Version
+        run: |
+          code=$(( VERSION_OFFSET + GITHUB_RUN_NUMBER ))
+          name="$GITHUB_RUN_NUMBER-${GITHUB_SHA::7}"
+          echo "VERSION_CODE=$code" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "versionCode $code, versionName $name"
 
-      - name: Rename APKs
+      - name: Tests and debug APKs
+        run: >-
+          ./gradlew --no-daemon
+          -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" -PgitSha="$GITHUB_SHA"
+          :core:test :phone:testDebugUnitTest :wear:testDebugUnitTest assembleDebug
+
+      - name: Rename APKs, version.json
         run: |
           mkdir -p out
           cp phone/build/outputs/apk/debug/phone-debug.apk out/bird-air-phone.apk
           cp wear/build/outputs/apk/debug/wear-debug.apk out/bird-air-watch.apk
+          printf '{"versionCode": %d, "versionName": "%s", "sha": "%s"}\n' \
+            "$VERSION_CODE" "$VERSION_NAME" "$GITHUB_SHA" > out/version.json
+          cat out/version.json
           ls -l out
 
       - uses: actions/upload-artifact@v4
         with:
           name: bird-air-apk
-          path: android/out/*.apk
+          path: |
+            android/out/*.apk
+            android/out/version.json
           if-no-files-found: error
           retention-days: 30
 
@@ -95,18 +128,23 @@ jobs:
         run: |
           short=${GITHUB_SHA::7}
           url="$GITHUB_SERVER_URL/$GH_REPO"
+          code=$(jq -r .versionCode out/version.json)
+          name=$(jq -r .versionName out/version.json)
           gh release delete "$TAG" --cleanup-tag --yes || true
           # a tag left behind without a release
           gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$TAG" >/dev/null 2>&1 || true
           cat > notes.md <<EOF
           Свежая сборка приложений Bird Air для телефона и часов.
 
-          - Коммит: [$short]($url/commit/$GITHUB_SHA), ветка $GITHUB_REF_NAME.
+          - Версия **v$code** ($name). Коммит: [$short]($url/commit/$GITHUB_SHA), ветка $GITHUB_REF_NAME.
           - **bird-air-phone.apk** — телефон (Android 10+): держит связь с самокатом в фоне и шлёт данные на часы.
           - **bird-air-watch.apk** — часы Wear OS (Galaxy Watch): полоса тяги и рекуперации, скорость, заряд.
+          - **version.json** — номер этой сборки: по нему приложение на телефоне само предлагает обновиться.
 
           **Телефон.** Открой эту страницу в Chrome, скачай bird-air-phone.apk, открой файл и разреши Chrome
           «Установку неизвестных приложений». Обновление — так же, поверх старой версии: подпись та же, настройки остаются.
+          Сборки с номером версии (v101 и новее) находят обновление сами: «Есть обновление → Обновить» в приложении.
+          Старую v0.1 обнови вручную один раз, как здесь.
 
           **Часы.** На часах включи «Параметры разработчика» → «Отладка ADB» и «Отладка по Wi-Fi», затем с ПК
           adb pair и adb connect IP:ПОРТ, потом adb install -r bird-air-watch.apk (или с телефона через «Bugjaeger»
@@ -117,7 +155,8 @@ jobs:
 
           Отладочные сборки (debug), подписаны ключом android/debug.keystore из репозитория.
           EOF
-          gh release create "$TAG" out/bird-air-phone.apk out/bird-air-watch.apk \
+          # gh keeps the release a draft until all three are uploaded: version.json never shows without its APK
+          gh release create "$TAG" out/bird-air-phone.apk out/bird-air-watch.apk out/version.json \
             --target "$GITHUB_SHA" --prerelease \
-            --title "Bird Air для телефона и часов ($short)" \
+            --title "Bird Air для телефона и часов (v$code, $short)" \
             --notes-file notes.md

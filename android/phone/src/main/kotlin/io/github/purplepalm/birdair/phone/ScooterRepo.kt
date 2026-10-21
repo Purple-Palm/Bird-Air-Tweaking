@@ -219,9 +219,11 @@ object ScooterRepo {
         if (chartPending && (t.t - chartAt >= CHART_EVERY_MS || !fresh)) { chartAt = t.t; chartPending = false; chartRev.update { it + 1 } }
         watchLink?.offer(forWatch(t))
         val d = alerts.update(t.warnings, System.currentTimeMillis())
+        // the watch app vibrates for them itself while it is active: then the notification is not mirrored there
+        val phoneOnly = d.action != WarningAlerts.Action.NONE && Versions.watchBuzzes(watch.value, SystemClock.elapsedRealtime())
         when (d.action) {
-            WarningAlerts.Action.ALERT -> Notifications.warning(app, d.warnings, loud = true)
-            WarningAlerts.Action.UPDATE -> Notifications.warning(app, d.warnings, loud = false)
+            WarningAlerts.Action.ALERT -> Notifications.warning(app, d.warnings, loud = true, localOnly = phoneOnly)
+            WarningAlerts.Action.UPDATE -> Notifications.warning(app, d.warnings, loud = false, localOnly = phoneOnly)
             WarningAlerts.Action.CANCEL -> Notifications.cancelWarning(app)
             WarningAlerts.Action.NONE -> {}
         }

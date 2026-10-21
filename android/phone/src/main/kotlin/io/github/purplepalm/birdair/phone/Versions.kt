@@ -67,6 +67,17 @@ object Versions {
         return if (code == null && name == null) null else WatchVersion(code, name)
     }
 
+    /**
+     * The watch app is open or riding along and vibrates for the warnings itself: its last hello told a version (the
+     * builds that send one also buzz, `wear/Alerts.kt` WarningAlarm) and is at most [WATCH_ACTIVE_MS] old (it says
+     * hello every 30 s while data flows, every 5 s while not). Then the phone's «Предупреждения» notification stays on
+     * the phone (local-only), so the wrist does not get two buzzes; otherwise Wear OS mirrors it to the watch.
+     */
+    fun watchBuzzes(w: WatchStatus, nowElapsedMs: Long): Boolean =
+        w.version != null && w.helloAt > 0 && nowElapsedMs >= w.helloAt && nowElapsedMs - w.helloAt <= WATCH_ACTIVE_MS
+
+    const val WATCH_ACTIVE_MS = 45_000L
+
     /** The watch hint: null when it is fine or unknown; the phone's own code 1 is a local build and compares with nothing. */
     fun watchHint(w: WatchVersion?, helloSeen: Boolean, phoneCode: Int): String? {
         val upd = "обнови часы: $WATCH_APK через Bugjaeger (android/README.md)"

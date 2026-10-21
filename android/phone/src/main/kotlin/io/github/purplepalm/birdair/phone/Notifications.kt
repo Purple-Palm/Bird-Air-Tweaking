@@ -18,7 +18,8 @@ import io.github.purplepalm.birdair.core.WarningLevel
 /**
  * The «Поездка» channel and the service's ongoing notification (phone only: setLocalOnly, the watch has its app),
  * and the «Предупреждения» channel: low battery and overheating, high priority with vibration ([WarningAlerts]
- * decides when it buzzes). Warnings are not local-only: on the wrist the buzz is what one feels while riding.
+ * decides when it buzzes). Warnings reach the watch: mirrored by Wear OS, unless the watch app is active and
+ * vibrates for them itself ([Versions.watchBuzzes]) — then they are local-only, one buzz on the wrist, not two.
  */
 object Notifications {
     const val CHANNEL = "ride"
@@ -44,7 +45,7 @@ object Notifications {
     }
 
     /** The active battery warnings, CRITICAL first; [loud]: buzz (new or stepped up), else the text changes silently. */
-    fun warning(ctx: Context, ws: List<BatteryWarning>, loud: Boolean) {
+    fun warning(ctx: Context, ws: List<BatteryWarning>, loud: Boolean, localOnly: Boolean = false) {
         if (ws.isEmpty()) { cancelWarning(ctx); return }
         val open = PendingIntent.getActivity(
             ctx, 3,
@@ -64,6 +65,7 @@ object Notifications {
             .setVibrate(VIBRATE)
             .setOnlyAlertOnce(!loud)
             .setSilent(!loud)
+            .setLocalOnly(localOnly)
             .setContentIntent(open)
             .build()
         show(ctx, n, WARN_ID)
