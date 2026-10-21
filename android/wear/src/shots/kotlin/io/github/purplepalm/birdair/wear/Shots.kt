@@ -3,7 +3,13 @@ package io.github.purplepalm.birdair.wear
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import io.github.purplepalm.birdair.core.Telemetry
@@ -91,4 +97,24 @@ class Shots {
         val s = Screen(Samples.riding, Health.LIVE)
         WatchTheme { DetailsScreen(s, WatchPrefs(overspeedMph = 17.5), rememberScalingLazyListState(overspeedChipIndex(s) + 1)) {} }
     }
+
+    // the watch's own update (WatchUpdater): offered, downloading through the phone, ready to install
+    private fun updates(name: String, vararg states: UpdateState) = shot(name) {
+        WatchTheme {
+            // about the details list's width at its middle
+            Column(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.Center) {
+                for (s in states) UpdateBlock(s, 105, onAction = {}, onCancel = {})
+            }
+        }
+    }
+    private val release = WatchRelease(106, "6-abc1234", watchSize = 25_722_553)
+    @Test fun updateOffered() = updates("update-offered", UpdateState(latest = release))
+    @Test fun updateDownloading() = updates(
+        "update-downloading",
+        UpdateState(latest = release, phase = UpdatePhase.DOWNLOADING, got = 6_430_638, total = release.watchSize, bytesPerS = 41_000.0, wifi = false),
+    )
+    @Test fun updateReady() = updates(
+        "update-ready",
+        UpdateState(latest = release, phase = UpdatePhase.READY, readyCode = 106, message = "Скачано и проверено (v106)."),
+    )
 }

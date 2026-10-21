@@ -169,7 +169,8 @@ fun DetailsScreen(
                 )
             }
             item { OverspeedSlider(prefs, s.t.units, onPrefs) }
-            // SLOT: watch self-update (Updater*.kt) — its chip («Обновить часы») goes here, above the version line
+            // the watch's own update («Обновить часы», WatchUpdater), above the version line
+            item { WatchUpdateItem() }
             item {
                 Text(
                     versionLine(HelloInfo.THIS.versionName, HelloInfo.THIS.versionCode),

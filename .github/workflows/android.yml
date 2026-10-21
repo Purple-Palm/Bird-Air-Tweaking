@@ -82,9 +82,22 @@ jobs:
           mkdir -p out
           cp phone/build/outputs/apk/debug/phone-debug.apk out/bird-air-phone.apk
           cp wear/build/outputs/apk/debug/wear-debug.apk out/bird-air-watch.apk
-          printf '{"versionCode": %d, "versionName": "%s", "sha": "%s"}\n' \
-            "$VERSION_CODE" "$VERSION_NAME" "$GITHUB_SHA" > out/version.json
+          # sizes and SHA-256 let the watch (WatchUpdater) check the APK it downloads; jq keeps it valid JSON
+          sha() { sha256sum "$1" | cut -d' ' -f1; }
+          size() { stat -c %s "$1"; }
+          jq -n \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg versionName "$VERSION_NAME" \
+            --arg sha "$GITHUB_SHA" \
+            --arg watchSha256 "$(sha out/bird-air-watch.apk)" \
+            --argjson watchSize "$(size out/bird-air-watch.apk)" \
+            --arg phoneSha256 "$(sha out/bird-air-phone.apk)" \
+            --argjson phoneSize "$(size out/bird-air-phone.apk)" \
+            '{$versionCode, $versionName, $sha, $watchSha256, $watchSize, $phoneSha256, $phoneSize}' \
+            > out/version.json
           cat out/version.json
+          jq -e '.versionCode > 0 and .watchSize > 0 and .phoneSize > 0
+            and (.watchSha256 | test("^[0-9a-f]{64}$")) and (.phoneSha256 | test("^[0-9a-f]{64}$"))' out/version.json
           ls -l out
 
       - uses: actions/upload-artifact@v4
@@ -138,17 +151,19 @@ jobs:
 
           - Версия **v$code** ($name). Коммит: [$short]($url/commit/$GITHUB_SHA), ветка $GITHUB_REF_NAME.
           - **bird-air-phone.apk** — телефон (Android 10+): держит связь с самокатом в фоне и шлёт данные на часы.
-          - **bird-air-watch.apk** — часы Wear OS (Galaxy Watch): полоса тяги и рекуперации, скорость, заряд.
-          - **version.json** — номер этой сборки: по нему приложение на телефоне само предлагает обновиться.
+          - **bird-air-watch.apk** — часы Wear OS (Galaxy Watch): приборка — полоса тяги и рекуперации, шкала скорости, заряд до десятой, 12 ламп.
+          - **version.json** — номер этой сборки, размеры и SHA-256 обоих APK: по нему телефон и часы сами предлагают обновиться.
 
           **Телефон.** Открой эту страницу в Chrome, скачай bird-air-phone.apk, открой файл и разреши Chrome
           «Установку неизвестных приложений». Обновление — так же, поверх старой версии: подпись та же, настройки остаются.
           Сборки с номером версии (v101 и новее) находят обновление сами: «Есть обновление → Обновить» в приложении.
           Старую v0.1 обнови вручную один раз, как здесь.
 
-          **Часы.** На часах включи «Параметры разработчика» → «Отладка ADB» и «Отладка по Wi-Fi», затем с ПК
-          adb pair и adb connect IP:ПОРТ, потом adb install -r bird-air-watch.apk (или с телефона через «Bugjaeger»
-          / «Wear Installer 2»). Подробно: [android/README.md]($url/blob/$GITHUB_SHA/android/README.md).
+          **Часы.** Сборки с кнопкой «Обновить часы» обновляются сами: на часах свайп влево → «Подробно» →
+          «Обновить часы» → «Установить» (один раз разреши приложению «Установку неизвестных приложений»).
+          Старую сборку без этой кнопки поставь вручную последний раз: на часах «Параметры разработчика» →
+          «Отладка ADB» и «Отладка по Wi-Fi», затем adb pair, adb connect IP:ПОРТ и adb install -r bird-air-watch.apk
+          (или с телефона через «Bugjaeger»). Подробно: [android/README.md]($url/blob/$GITHUB_SHA/android/README.md).
 
           В самокат приложение пишет только +SVGT=? (запрос версии, пульс живых данных), а по нажатию при
           включённом «Разрешить команды» — +MODE=1/2/3 и +HLGT=0/1. Никогда: KEY?, OTA/DFU, произвольные байты.

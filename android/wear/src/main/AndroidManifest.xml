@@ -10,6 +10,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- the phone's battery warnings («Заряд на исходе», «Сейчас отключится», перегрев) -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- self-update from the android-latest release (WatchUpdater): version.json, bird-air-watch.apk over Wi-Fi when
+         the watch can bring it up, then a PackageInstaller session the owner confirms -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -46,5 +52,10 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the scooter's live telemetry, received from the paired phone, on the watch face as an Ongoing Activity while riding." />
         </service>
+
+        <!-- the install session's status; only the system sends it, through WatchUpdater's PendingIntent -->
+        <receiver
+            android:name=".InstallReceiver"
+            android:exported="false" />
     </application>
 </manifest>

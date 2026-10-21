@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
         Settings.init(this)
         openedAtMs = SystemClock.elapsedRealtime()
         WatchFeed.acquire(this)
+        WatchUpdater.start(this)
         askForNotifications()
         // «проверка ламп» as the gauge opens, then on each (re)connection
         bulbCheck()
