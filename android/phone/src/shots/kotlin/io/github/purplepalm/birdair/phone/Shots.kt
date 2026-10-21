@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.phone.ui.BirdTheme
@@ -78,13 +79,17 @@ class Shots {
         }
     }
 
-    private fun shot(name: String, untilMs: Long, window: String, touchAt: Float? = null, extra: () -> Unit = {}) {
+    private fun shot(name: String, untilMs: Long, window: String, touchAt: Float? = null, tapLamp: String? = null, extra: () -> Unit = {}) {
         replay(untilMs, window)
         extra()
         rule.setContent { BirdTheme(true) { MainScreen(ui, SystemState()) } }
         settle()
         if (touchAt != null) {
             rule.onNodeWithContentDescription("График: Мощность, Вт").performTouchInput { down(percentOffset(touchAt, 0.5f)); up() }
+            settle()
+        }
+        if (tapLamp != null) {
+            rule.onNodeWithContentDescription("Лампа «$tapLamp»", substring = true).performClick()
             settle()
         }
         val v = rule.activity.window.decorView
@@ -104,6 +109,8 @@ class Shots {
     }
 
     @Test fun nearTheEnd() = shot("near-the-end", UNTIL_MS, ChartWindow.ALL)
+    /** «Приборка» with the temperature lamp tapped: what it says and when it lights. */
+    @Test fun clusterTapped() = shot("cluster-tapped", UNTIL_MS, ChartWindow.ALL, tapLamp = "Температура батареи")
     @Test fun lastFiveMinutes() = shot("five-minutes", UNTIL_MS, "300", touchAt = 0.62f)
     @Test fun midRide() = shot("mid-ride", 4_700_000L, "60", touchAt = 0.8f) {
         ScooterRepo.update.value = UpdateState(latest = UpdateInfo(57, "0.57", "1a2b3c4d5e6f"), checkedAt = System.currentTimeMillis())

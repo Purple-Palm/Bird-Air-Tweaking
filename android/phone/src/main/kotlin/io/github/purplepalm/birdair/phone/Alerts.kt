@@ -2,50 +2,11 @@ package io.github.purplepalm.birdair.phone
 
 import io.github.purplepalm.birdair.core.BatteryAdvisor
 import io.github.purplepalm.birdair.core.BatteryWarning
+import io.github.purplepalm.birdair.core.Lamp
 import io.github.purplepalm.birdair.core.RangeEstimate
+import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.core.WarningLevel
-
-/**
- * When the «Предупреждения» notification buzzes. The advisor's warnings already have hysteresis; on top of that:
- *  - it buzzes when a warning appears or steps up (WARNING → CRITICAL), but each (id, level) at most once per
- *    [cooldownMs] — a warning that clears and comes back within that time only updates the text silently;
- *  - stepping down (CRITICAL → WARNING) never buzzes;
- *  - when all warnings are gone, the notification goes too.
- * Pure logic (the clock is passed in); not thread-safe — the publisher is the one caller.
- */
-class WarningAlerts(val cooldownMs: Long = COOLDOWN_MS) {
-    enum class Action { NONE, ALERT, UPDATE, CANCEL }
-
-    class Decision(val action: Action, val warnings: List<BatteryWarning>)
-
-    private var prev: Map<String, WarningLevel> = emptyMap()
-    private val lastAt = HashMap<Pair<String, WarningLevel>, Long>()
-
-    fun update(ws: List<BatteryWarning>, nowMs: Long): Decision {
-        val cur = ws.associate { it.id to it.level }
-        if (cur == prev) return Decision(Action.NONE, ws)
-        val was = prev
-        prev = cur
-        if (cur.isEmpty()) return Decision(Action.CANCEL, ws)
-        var alert = false
-        for ((id, lvl) in cur) {
-            val before = was[id]
-            val up = before == null || lvl.ordinal > before.ordinal
-            if (!up) continue
-            val key = id to lvl
-            val last = lastAt[key]
-            if (last == null || nowMs - last >= cooldownMs) { alert = true; lastAt[key] = nowMs }
-        }
-        return Decision(if (alert) Action.ALERT else Action.UPDATE, ws)
-    }
-
-    /** A new recording: what is on now counts as new again, but the cooldown stays (a reconnect must not re-buzz). */
-    fun reset() { prev = emptyMap() }
-
-    companion object {
-        const val COOLDOWN_MS = 5 * 60_000L
-    }
-}
+import kotlin.math.roundToLong
 
 /**
  * The voltage under load shown with «Заряд на исходе» / «Сейчас отключится»: the lowest voltage of the last
@@ -74,6 +35,15 @@ class LoadSag(val windowMs: Long = 30_000, val loadA: Double = 5.0) {
         if (ws.none { it.id == BatteryAdvisor.LOW }) ws else ws.map { if (it.id == BatteryAdvisor.LOW) it.copy(value = minV(nowMs)) else it }
 
     fun reset() { t.clear(); v.clear() }
+
+    companion object {
+        /** The charge lamp shows battery_low's value when it is lit for it: the same voltage under load as the warning. */
+        fun fixLamp(lamps: List<Lamp>, ws: List<BatteryWarning>): List<Lamp> {
+            val low = ws.firstOrNull { it.id == BatteryAdvisor.LOW } ?: return lamps
+            val v = low.value?.let { (it * 100).roundToLong() / 100.0 }
+            return lamps.map { if (it.id == TellTales.BATTERY && it.text == low.text) it.copy(value = v) else it }
+        }
+    }
 }
 
 /** The warnings and the range in words. */
@@ -90,17 +60,12 @@ object WarnText {
 
     /** What to do about it. */
     fun hint(w: BatteryWarning): String = when (w.id to w.level) {
-        BatteryAdvisor.LOW to WarningLevel.CRITICAL -> "Под нагрузкой ниже 32 В: контроллер вот-вот отключит мотор. Сбавь газ, ищи где встать."
+        BatteryAdvisor.LOW to WarningLevel.CRITICAL -> "Под нагрузкой ниже 31,6 В: контроллер вот-вот отключит мотор (19.10 — на 31,45 В). Сбавь газ, ищи где встать."
         BatteryAdvisor.LOW to WarningLevel.WARNING -> "Под нагрузкой батарея проседает к отсечке (31,5–32 В), хотя BMS ещё показывает проценты."
         BatteryAdvisor.HOT to WarningLevel.CRITICAL -> "Дай батарее остыть: сбавь скорость или остановись. Перегретую батарею BMS может отключить."
         BatteryAdvisor.HOT to WarningLevel.WARNING -> "Батарея горячая. Если поднимется до 55 °C — остановись остыть."
         else -> ""
     }
-
-    /** The notification: title and text for all active warnings, CRITICAL first. */
-    fun title(ws: List<BatteryWarning>): String = ws.firstOrNull()?.text ?: ""
-
-    fun body(ws: List<BatteryWarning>): String = ws.joinToString("\n") { line(it) }
 
     /** «≈ 4,2 км / 2,6 mi до отключения», the chosen unit first. */
     fun range(r: RangeEstimate, units: String): String {

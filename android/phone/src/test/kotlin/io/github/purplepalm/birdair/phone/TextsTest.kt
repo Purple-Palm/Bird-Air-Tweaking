@@ -60,6 +60,9 @@ class TextsTest {
     @Test fun notificationText() {
         val base = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = 25.6, batteryPct = 75.0, voltage = 40.0, currentA = 8.0, powerW = 320.0)
         assertEquals("25,6 км/ч · 75 % · тяга 320 Вт", StatusText.notification(base))
+        assertEquals("from mAh, to 0,1 %", "25,6 км/ч · 56,3 % · тяга 320 Вт", StatusText.notification(base.copy(batteryPctFine = 56.3)))
+        assertEquals("56,3 %", StatusText.battery(base.copy(batteryPctFine = 56.3)))
+        assertNull(StatusText.battery(Telemetry()))
         assertEquals("20,0 км/ч · 74 % · рекуперация 150 Вт",
             StatusText.notification(base.copy(speedKmh = 20.0, batteryPct = 74.0, currentA = -3.75, powerW = -150.0)))
         assertEquals("0,0 км/ч · 75 % · стоит", StatusText.notification(base.copy(speedKmh = 0.0, currentA = 0.05, powerW = 2.0)))
@@ -96,7 +99,9 @@ class TextsTest {
         assertEquals(3, t.mode)
         assertEquals(320.0, t.powerW!!, 1e-6)
         assertEquals(true, t.motorOn)
-        assertEquals("25,6 км/ч · 75 % · тяга 320 Вт", StatusText.notification(t))
+        // 3287 / 4363 mAh = 75,34 %: the BMS says 75, the app 75,3
+        assertEquals(75.3, t.batteryPctFine!!, 1e-9)
+        assertEquals("25,6 км/ч · 75,3 % · тяга 320 Вт", StatusText.notification(t))
         assertEquals("Bird Air · FLY", StatusText.title(t))
         assertEquals(Flow.DRIVE, Flow.of(t))
         // 4 s later without frames: no longer live

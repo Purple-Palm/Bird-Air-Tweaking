@@ -175,6 +175,7 @@ fun MainScreen(ui: UiActions, sys: SystemState) {
         if (scan.shown) ScanCard(scan, ui)
         SpeedCard(t, settings.units)
         PowerCard(t, settings)
+        ClusterCard(t, settings.units)
         ChartsCard(settings.units, settings.fastPower, settings.chartWindow)
         BatteryCard(t, settings.units)
         TripCard(t, settings.units)
@@ -416,9 +417,11 @@ private fun PowerCard(t: Telemetry, s: UiSettings) {
 @Composable
 private fun BatteryCard(t: Telemetry, units: String) {
     val c = LocalBal.current
+    // to 0.1 % from mAh (the BMS's own percent floors to 1 %)
+    val pct = t.batteryPctFine ?: t.batteryPct
     Panel("Батарея") {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(Fmt.n(t.batteryPct), color = c.ink, fontSize = 48.sp, lineHeight = 48.sp, fontWeight = FontWeight.SemiBold, style = Big)
+            Text(Fmt.n(pct, if (t.batteryPctFine != null) 1 else 0), color = c.ink, fontSize = 48.sp, lineHeight = 48.sp, fontWeight = FontWeight.SemiBold, style = Big)
             Text(" %", color = c.ink2, fontSize = 18.sp, modifier = Modifier.padding(bottom = 6.dp))
             Spacer(Modifier.weight(1f))
             Column(horizontalAlignment = Alignment.End) {
@@ -426,7 +429,7 @@ private fun BatteryCard(t: Telemetry, units: String) {
                 Text(Fmt.n(t.remainingMah) + " / " + Fmt.n(t.fullMah) + " мА·ч", color = c.ink2, fontSize = 13.sp, style = Tnum)
             }
         }
-        LevelBar(t.batteryPct)
+        LevelBar(pct)
         val r = t.range
         if (r != null) {
             Text(WarnText.range(r, units), color = c.ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, style = Tnum)

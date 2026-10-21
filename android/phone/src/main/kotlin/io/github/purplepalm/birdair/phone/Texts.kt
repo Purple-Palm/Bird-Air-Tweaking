@@ -108,7 +108,7 @@ enum class Mode(val n: Int, val title: String, val limitMph: Double) {
 
 /** The ongoing notification and the connection pill. */
 object StatusText {
-    /** «25,6 км/ч · 75 % · тяга 320 Вт», «нет связи — переподключаюсь»…; [fast]: the fast power, like the bar. */
+    /** «25,6 км/ч · 75,3 % · тяга 320 Вт», «нет связи — переподключаюсь»…; [fast]: the fast power, like the bar. */
     fun notification(t: Telemetry, fast: Boolean = false): String = when (t.link) {
         Link.IDLE -> "не подключено"
         Link.SCANNING -> "ищу самокат…"
@@ -117,7 +117,7 @@ object StatusText {
         Link.CONNECTED -> if (!t.streaming) "подключено — жду данные от руля" else {
             val parts = ArrayList<String>()
             Units.speed(t.speedKmh, t.units)?.let { parts.add(Fmt.n(it, 1) + " " + Units.speedLabel(t.units)) }
-            t.batteryPct?.let { parts.add(Fmt.n(it) + " %") }
+            battery(t)?.let { parts.add(it) }
             val p = Power.watts(t, fast)
             when (Flow.of(t, fast)) {
                 Flow.DRIVE -> parts.add("тяга " + Fmt.watts(p?.let { abs(it) } ?: 0.0))
@@ -129,6 +129,9 @@ object StatusText {
             if (parts.isEmpty()) "подключено — данные идут" else parts.joinToString(" · ")
         }
     }
+
+    /** «56,3 %» from mAh ([Telemetry.batteryPctFine]), else the BMS's own «56 %»; null: not known yet. */
+    fun battery(t: Telemetry): String? = t.batteryPctFine?.let { Fmt.n(it, 1) + " %" } ?: t.batteryPct?.let { Fmt.n(it) + " %" }
 
     fun title(t: Telemetry): String = Mode.of(t.mode)?.let { "Bird Air · " + it.title } ?: "Bird Air"
 

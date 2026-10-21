@@ -128,10 +128,12 @@ object ScooterRepo {
     val samples = SampleRing()
     val chartRev = MutableStateFlow(0L)
     val markers = MutableStateFlow<List<Marker>>(emptyList())
+    /** «Приборка»: the lamp transitions of this recording, newest first. */
+    val journal = MutableStateFlow<List<LampEvent>>(emptyList())
     private var chartAt = -CHART_EVERY_MS
     private var chartPending = false
 
-    private val alerts = WarningAlerts()
+    private val cluster = ClusterWatch()
     private val sag = LoadSag()
     private var odoSaved: AppOdometer.State? = null
     private var odoSavedAt = 0L
@@ -186,7 +188,8 @@ object ScooterRepo {
         markers.value = emptyList()
         chartAt = -CHART_EVERY_MS
         chartRev.update { it + 1 }
-        alerts.reset()
+        cluster.reset()
+        journal.value = emptyList()
         sag.reset()
         session = s
         log.value = LogStatus()
@@ -205,10 +208,12 @@ object ScooterRepo {
         return t.copy(extras = t.extras + mapOf(EXTRA_FAST to if (s.fastPower) 1.0 else 0.0, EXTRA_SMOOTH to if (s.smooth) 1.0 else 0.0))
     }
 
-    /** Before each publish: «под нагрузкой» for battery_low from the phone's [LoadSag] (screen, notification and watch). */
+    /** Before each publish: «под нагрузкой» for battery_low and its lamp from the phone's [LoadSag] (screen, notification and watch). */
     private fun decorate(t: Telemetry, fresh: Boolean): Telemetry {
         if (fresh) sag.add(t.t, t.voltage, t.currentFastA ?: t.currentA)
-        return if (t.warnings.isEmpty()) t else t.copy(warnings = sag.fix(t.warnings, t.t))
+        if (t.warnings.isEmpty()) return t
+        val ws = sag.fix(t.warnings, t.t)
+        return t.copy(warnings = ws, lamps = LoadSag.fixLamp(t.lamps, ws))
     }
 
     /** The pipeline's consumer, after each publish (Dispatchers.Default; never the BLE thread). */
@@ -219,17 +224,24 @@ object ScooterRepo {
         if (fresh) { samples.add(t.t, t); chartPending = true }
         if (chartPending && (t.t - chartAt >= CHART_EVERY_MS || !fresh)) { chartAt = t.t; chartPending = false; chartRev.update { it + 1 } }
         watchLink?.offer(forWatch(t))
-        val d = alerts.update(t.warnings, System.currentTimeMillis())
+        lamps(s, t)
+        val d = cluster.alerts.update(t.lamps, t.warnings, System.currentTimeMillis(), t.units)
         // the watch app vibrates for them itself while it is active: then the notification is not mirrored there
-        val phoneOnly = d.action != WarningAlerts.Action.NONE && Versions.watchBuzzes(watch.value, SystemClock.elapsedRealtime())
+        val phoneOnly = d.action != RideAlerts.Action.NONE && Versions.watchBuzzes(watch.value, SystemClock.elapsedRealtime())
         when (d.action) {
-            WarningAlerts.Action.ALERT -> Notifications.warning(app, d.warnings, loud = true, localOnly = phoneOnly)
-            WarningAlerts.Action.UPDATE -> Notifications.warning(app, d.warnings, loud = false, localOnly = phoneOnly)
-            WarningAlerts.Action.CANCEL -> Notifications.cancelWarning(app)
-            WarningAlerts.Action.NONE -> {}
+            RideAlerts.Action.ALERT -> Notifications.warning(app, d.items, loud = true, localOnly = phoneOnly)
+            RideAlerts.Action.UPDATE -> Notifications.warning(app, d.items, loud = false, localOnly = phoneOnly)
+            RideAlerts.Action.CANCEL -> Notifications.cancelWarning(app)
+            RideAlerts.Action.NONE -> {}
         }
         saveOdometer(false)
         s.rotateIfNeeded()?.let { done -> rotated(s, done) }
+    }
+
+    /** The lamps of a published snapshot: the journal (every level change) and the log marks (rate-limited, [LampMarks]). */
+    private fun lamps(s: Session, t: Telemetry) {
+        if (cluster.changes(t.lamps, s.startedAtMs + t.t).isNotEmpty()) journal.value = cluster.journal.list()
+        for (m in cluster.marks.update(t.lamps, t.t)) s.recorder.mk(m.text, t.t)
     }
 
     /** A part reached [Session.MAX_ENTRIES]: it is saved (and sent, with auto-send) as a log of its own. */

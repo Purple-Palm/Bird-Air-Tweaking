@@ -53,8 +53,11 @@ class VersionsTest {
         assertNull(Versions.watch("hello".toByteArray()))
         // the hint
         assertNull(Versions.watchHint(WatchVersion(42, null), true, 42))
-        assertTrue(Versions.watchHint(WatchVersion(40, null), true, 42)!!.contains("bird-air-watch.apk через Bugjaeger"))
-        assertTrue(Versions.watchHint(null, true, 42)!!.contains("старая сборка"))
+        val older = Versions.watchHint(WatchVersion(40, null), true, 42)!!
+        assertTrue(older, older.startsWith("На часах v40, на телефоне v42 — на часах: Подробно → Обновить часы"))
+        assertFalse("no extra apps", older.contains("Bugjaeger"))
+        val unknown = Versions.watchHint(null, true, 42)!!
+        assertTrue(unknown.contains("старая сборка") && unknown.contains("вручную") && unknown.contains(Versions.WATCH_UPDATE))
         assertNull("no hello yet: nothing to say", Versions.watchHint(null, false, 42))
         assertNull("a local phone build compares with nothing", Versions.watchHint(null, true, 1))
     }
