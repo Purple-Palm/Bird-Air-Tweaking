@@ -167,7 +167,7 @@ fun MainScreen(ui: UiActions, sys: SystemState) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Header(t, st, scan)
-        if (Versions.isNewer(upd.latest, Updater.code)) UpdateCard(upd, ui)
+        if (Versions.isNewer(upd.latest, Updater.code)) UpdateCard(upd, ui, st.running)
         if (t.warnings.isNotEmpty()) Warnings(t.warnings)
         if (sys.missingPerms.isNotEmpty()) PermissionCard(sys, ui)
         if (!sys.bluetoothOn) BluetoothCard(ui)
@@ -233,7 +233,7 @@ private fun Warnings(ws: List<BatteryWarning>) {
 }
 
 @Composable
-private fun UpdateCard(u: UpdateState, ui: UiActions) {
+private fun UpdateCard(u: UpdateState, ui: UiActions, riding: Boolean) {
     val c = LocalBal.current
     val latest = u.latest ?: return
     Panel {
@@ -250,6 +250,8 @@ private fun UpdateCard(u: UpdateState, ui: UiActions) {
             else LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = c.flow, trackColor = c.well)
         }
         Msg(u.message, u.err)
+        // installing replaces the running app: the link ends (the log and the odometer are saved first)
+        if (riding) Msg("Идёт запись: установка закроет приложение и оборвёт связь с самокатом. Лог и одометр сохранятся перед установкой, но лучше обнови после поездки.")
         if (u.needsPermission) {
             OutlinedButton(onClick = ui::allowInstall, modifier = Modifier.fillMaxWidth()) { Text("Разрешить установку из Bird Air") }
             Msg("Настройки → «Установка неизвестных приложений» → Bird Air → включи. Вернёшься — установка продолжится. Настройки, адрес самоката и логи сохранятся.")
@@ -440,7 +442,8 @@ private fun BatteryCard(t: Telemetry, units: String) {
 private fun TripCard(t: Telemetry, units: String) {
     val d = Units.distLabel(units)
     val wh = t.whOut - t.whIn
-    val perKm = Trip.whPerKm(t.whOut, t.whIn, ScooterRepo.session?.odoStartKm, t.odometerKm)
+    // the app odometer: the handlebar's loses progress at a power-off (15.10: 1439.6 → 1434.2 in one recording)
+    val perKm = Trip.whPerKm(t.whOut, t.whIn, ScooterRepo.session?.appOdoStartKm, t.appOdometerKm)
     val perUnit = perKm?.let { if (units == Units.MPH) it * Units.MILE else it }
     val c = LocalBal.current
     Panel("Поездка") {

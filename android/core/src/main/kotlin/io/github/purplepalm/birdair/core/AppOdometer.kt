@@ -20,6 +20,8 @@ import kotlin.math.floor
  *  - otherwise a new power-on (trip reset, or the odometer jumped, backwards too): + the whole trip, even what
  *    was ridden without the app;
  *  - an increase is at most maxKmh·Δt + slack when both clocks are known.
+ * [lastAddedKm]: what the last [update] added (0 for the seed and for an ignored frame), for consumers that need the
+ * distance ridden frame by frame rather than the total (BatteryAdvisor: a correction of the total is not a ride).
  * The app keeps [state] (e.g. as JSON) and passes it back in next time. Not thread-safe.
  */
 class AppOdometer(state: State? = null, val params: Params = Params()) {
@@ -34,6 +36,10 @@ class AppOdometer(state: State? = null, val params: Params = Params()) {
     private var base = 0L
     private var trip = 0L
     private var wall: Long? = null
+
+    /** km the last [update] added to [totalKm]; 0 for the seed and for an ignored frame. */
+    var lastAddedKm: Double = 0.0
+        private set
 
     init {
         if (state != null) {
@@ -57,6 +63,7 @@ class AppOdometer(state: State? = null, val params: Params = Params()) {
 
     /** A 3A 17 frame's trip counter and odometer (km), [wallMs] the phone's clock (epoch ms). Returns [totalKm]. */
     fun update(tripKm: Double, odometerKm: Double, wallMs: Long? = null): Double? {
+        lastAddedKm = 0.0
         val tr = tenths(tripKm)
         val odo = tenths(odometerKm)
         if (tr < 0 || odo < 0) return totalKm
@@ -78,6 +85,7 @@ class AppOdometer(state: State? = null, val params: Params = Params()) {
         }
         if (cap != null && delta > cap) delta = cap
         total = tot + delta
+        lastAddedKm = delta / 10.0
         base = b; trip = tr
         if (wallMs != null) wall = wallMs
         return totalKm

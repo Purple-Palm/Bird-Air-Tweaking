@@ -23,6 +23,8 @@ update(trip_km, odo_km, wall_ms):
   4. Иначе новое включение (trip сбросился или base другой — одометр прыгнул, в том числе назад):
      + trip целиком — всё, что проехано с включения, даже без приложения.
   5. Приращение не больше max_kmh·Δt + slack_km, если оба времени известны и идут вперёд.
+last_added_km — сколько добавил последний update (0 — засев или пропущенный кадр): путь по кадрам, а не
+итог, для battery_advisor (исправление итога вручную — не поездка).
 
 Kotlin: android/core AppOdometer.kt — то же по шагам. Только чтение логов.
 """
@@ -57,6 +59,7 @@ class AppOdometer:
         self.p = dict(PARAMS, **params)
         self.total = self.base = self.trip = None
         self.wall = None
+        self.last_added_km = 0.0
         if state:
             self.total = tenths(state['total_km'])
             self.base = tenths(state['base_km'])
@@ -81,6 +84,7 @@ class AppOdometer:
 
     def update(self, trip_km, odo_km, wall_ms=None):
         """Кадр 3A 17: поездка и одометр самоката (км). Возвращает свой одометр, км."""
+        self.last_added_km = 0.0
         trip, odo = tenths(trip_km), tenths(odo_km)
         if trip < 0 or odo < 0:
             return self.total_km
@@ -100,6 +104,7 @@ class AppOdometer:
         if cap is not None and delta > cap:
             delta = cap
         self.total += delta
+        self.last_added_km = delta / 10
         self.base, self.trip = base, trip
         if wall_ms is not None:
             self.wall = wall_ms

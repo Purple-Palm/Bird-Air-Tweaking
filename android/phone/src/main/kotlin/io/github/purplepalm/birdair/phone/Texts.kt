@@ -144,7 +144,7 @@ object StatusText {
     }
 }
 
-/** Session energy per distance: net Wh (out − regen) over the odometer since the session started. */
+/** Session energy per distance: net Wh (out − regen) over the (app) odometer since the session started. */
 object Trip {
     fun whPerKm(whOut: Double, whIn: Double, odoStartKm: Double?, odoNowKm: Double?): Double? {
         if (odoStartKm == null || odoNowKm == null) return null

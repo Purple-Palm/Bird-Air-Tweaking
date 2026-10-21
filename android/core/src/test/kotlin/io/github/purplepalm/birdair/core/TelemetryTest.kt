@@ -117,6 +117,31 @@ class TelemetryTest {
         assertEquals(1433.3, tr2.snapshot(1).appOdometerKm!!, 1e-9)
     }
 
+    /** «Задать» / «Взять с руля» mid-ride through the tracker: the app odometer moves, the range does not. */
+    @Test fun odometerCorrectionLeavesTheRange() {
+        fun ranges(by: Double?): Pair<List<RangeEstimate?>, Double?> {
+            val tr = TelemetryTracker(Repo.decoder())
+            tr.link = Link.CONNECTED
+            val es = Repo.log(Repo.RIDE).entries
+            val out = ArrayList<RangeEstimate?>()
+            for ((k, e) in es.withIndex()) {
+                if (by != null && k == es.size / 3) tr.odometerState = tr.odometerState!!.let { it.copy(totalKm = it.totalKm + by) }
+                if (e.k == "sys" && e.n?.startsWith(LogRecorder.SYS_FOUND) == true) tr.restartStreams()
+                if (e.k != "rx" || e.b == null) continue
+                tr.onNotification(e.s!!, e.u!!, e.b, e.t)
+                out.add(tr.snapshot(e.t).range)
+            }
+            return out to tr.snapshot(0).appOdometerKm
+        }
+        val (base, odo) = ranges(null)
+        assertEquals(1433.3, odo!!, 1e-9)
+        for (by in listOf(8.3, -8.3)) {
+            val (fixed, odo2) = ranges(by)
+            assertEquals(1433.3 + by, odo2!!, 1e-9)
+            assertEquals(base, fixed, "$by")
+        }
+    }
+
     /** logs/20261014-174148-log.json: standing still after +MODE=3. */
     @Test fun standstillLog() {
         val modes = ArrayList<Int>()

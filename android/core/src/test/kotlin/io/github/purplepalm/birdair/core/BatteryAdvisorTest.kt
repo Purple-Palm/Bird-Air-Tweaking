@@ -17,13 +17,19 @@ class BatteryAdvisorTest {
     class Step(val t: Long, val km: Double?, val ws: List<BatteryWarning>, val range: RangeEstimate?, val f: BmsFrame)
 
     /** A log through AppOdometer and BatteryAdvisor, a step per BMS frame (tools/battery_advisor.py replay()). */
-    private fun replay(path: String): List<Step> {
+    private fun replay(path: String, correct: Pair<Long, Double>? = null): List<Step> {
         val ride = RideLogs.ride(path)
         val adv = BatteryAdvisor()
-        val od = AppOdometer()
+        var od = AppOdometer()
+        var fix = correct
         val out = ArrayList<Step>()
         for (e in ride.events) when (e) {
-            is ScooterEvent.Motion -> adv.onDistance(e.t, od.update(e.f.tripKm, e.f.odometerKm, ride.startedAtMs + e.t))
+            is ScooterEvent.Motion -> {
+                // «Задать» mid-ride: the app odometer moves by [correct].second at [correct].first
+                fix?.let { (at, by) -> if (e.t >= at && od.state != null) { od = AppOdometer(od.state!!.copy(totalKm = od.totalKm!! + by)); fix = null } }
+                od.update(e.f.tripKm, e.f.odometerKm, ride.startedAtMs + e.t)
+                adv.onDistance(e.t, od.lastAddedKm)
+            }
             is ScooterEvent.Bms -> {
                 val b = e.f
                 adv.onBms(e.t, b.voltage, b.currentA, b.temp1C.toDouble(), b.temp2C.toDouble(), b.remainingMah.toDouble(), b.fullMah.toDouble())
@@ -64,6 +70,47 @@ class BatteryAdvisorTest {
             n += mine.size
         }
         assertTrue(n > 60_000, "$n")
+    }
+
+    /** A correction of the app odometer mid-ride (+8.3 km: the handlebar's 1451.1 → the logs' 1459.4; −8.3; 0.1) leaves
+     *  the range exactly as it was (it used to read the jump as distance ridden, or a drop as no distance for a while). */
+    @Test fun odometerCorrectionIsNotDistance() {
+        val base = replay(RideLogs.CUTOFF)
+        val at = base[base.size / 4].t
+        for (by in listOf(8.3, -8.3, 0.1)) {
+            val fixed = replay(RideLogs.CUTOFF, at to by)
+            assertEquals(base.size, fixed.size)
+            for (k in base.indices) {
+                assertEquals(base[k].km, fixed[k].km, "$by #$k")
+                assertEquals(base[k].range, fixed[k].range, "$by #$k")
+            }
+        }
+    }
+
+    /** What the app odometer adds over a gap (a reconnect, a new power-on) has no energy behind it: not counted. */
+    @Test fun distanceOverAGapIsNotCounted() {
+        val a = BatteryAdvisor()
+        var t = 0L
+        a.onBms(t, 36.0, 20.0, null, null, 2000.0, 4000.0)
+        a.onDistance(t, 0.0)
+        assertEquals(0.0, a.km)
+        repeat(300) { k ->                          // 20 Wh/km: 720 W, 0.1 km every 9.9 s
+            t += 300
+            a.onBms(t, 36.0, 20.0, null, null, 2000.0, 4000.0)
+            a.onDistance(t, if (k % 33 == 32) 0.1 else 0.0)
+        }
+        val km = a.km!!
+        val before = a.range()!!
+        assertEquals("session", before.basis)
+        assertEquals(19.8, before.whPerKm, 0.3)
+        t += 30_000                                    // 30 s without frames, then the trip counter is 0.5 km on
+        a.onDistance(t, 0.5)
+        a.onBms(t, 36.0, 20.0, null, null, 2000.0, 4000.0)
+        a.onDistance(t + 60, 0.0)
+        assertEquals(km, a.km!!, 1e-12)
+        assertEquals(before.whPerKm, a.range()!!.whPerKm, 1e-9)
+        a.onDistance(t + 120, 0.1)                     // continuous again
+        assertEquals(km + 0.1, a.km!!, 1e-12)
     }
 
     @Test fun warningsBeforeTheRealCutoffs() {

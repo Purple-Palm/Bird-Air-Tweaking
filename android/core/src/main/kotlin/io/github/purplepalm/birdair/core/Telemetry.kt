@@ -98,7 +98,8 @@ class TelemetryTracker(decoder: Decoder) {
     private var powerAt: Long? = null
     private var seqN = 0L
 
-    /** The app odometer's state, for the app to keep (null until the first frame) and to give back after a restart. */
+    /** The app odometer's state, for the app to keep (null until the first frame) and to give back after a restart.
+     *  Setting it mid-session (a correction) changes the total only: the range estimate goes on with its own distance. */
     var odometerState: AppOdometer.State?
         @Synchronized get() = odometer.state
         @Synchronized set(v) { odometer = AppOdometer(v) }
@@ -244,7 +245,9 @@ class TelemetryTracker(decoder: Decoder) {
             return true
         }
         val m = ScooterFrames.motion(f) ?: return false
-        advisor.onDistance(t, odometer.update(m.tripKm, m.odometerKm, epochOffsetMs?.let { it + t }))
+        odometer.update(m.tripKm, m.odometerKm, epochOffsetMs?.let { it + t })
+        // the distance ridden on this frame, not the total: «Задать» / «Взять с руля» ([odometerState]) is not a ride
+        advisor.onDistance(t, odometer.lastAddedKm)
         return true
     }
 

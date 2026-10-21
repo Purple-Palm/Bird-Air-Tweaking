@@ -7,7 +7,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'tools'))
 
+import app_odometer as ao  # noqa: E402
 import battery_advisor as ba  # noqa: E402
+import bird_frames as bf  # noqa: E402
 import ride_logs as rl  # noqa: E402
 
 LOW, HOT = 'battery_low', 'battery_hot'
@@ -60,6 +62,26 @@ class RealLogsTest(unittest.TestCase):
                 self.assertLess(max(abs(p - a) for a, p in e), 0.6, e)
         self.assertLess(sum(abs(x) for x in errs) / len(errs), 0.5)
         self.assertLess(abs(sum(errs) / len(errs)), 0.2)
+
+    def test_odometer_correction_is_not_distance(self):
+        # «Задать» mid-ride (+8.3 km: the handlebar's 1451.1 → the logs' 1459.4; −8.3; 0.1): the range is unchanged
+        lg, ev = rl.log(rl.CUTOFF), rl.events(rl.CUTOFF)
+        base = steps(rl.CUTOFF)
+        at = base[len(base) // 4][0]
+        t0 = bf.started_ms(lg)
+        for by in (8.3, -8.3, 0.1):
+            adv, od, fix, out = ba.BatteryAdvisor(), ao.AppOdometer(), True, []
+            for kind, t, x in ev:
+                if kind == 'motion':
+                    if fix and t >= at and od.state:
+                        od = ao.AppOdometer(dict(od.state, total_km=od.total_km + by))
+                        fix = False
+                    od.update(x.trip_km, x.odo_km, t0 + t)
+                    adv.on_distance(t, od.last_added_km)
+                elif kind == 'bms':
+                    adv.on_bms(t, x.v, x.i, x.temp1, x.temp2, x.rem_mah, x.full_mah)
+                    out.append((t, adv.km, adv.range()))
+            self.assertEqual(out, [(s[0], s[1], s[3]) for s in base], by)
 
     def test_range_units_and_basis(self):
         st = steps(rl.CUTOFF)
@@ -118,18 +140,27 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(r.basis, 'default')
         self.assertAlmostEqual(r.wh_left, (2000 - 120) * 0.031)
         self.assertAlmostEqual(r.km, r.wh_left / 15.0)
-        # 20 Wh/km: 720 W at 36 km/h, 100 m per 10 s
-        t, km = 0, 100.0
-        adv.on_distance(t, km)
+        # 20 Wh/km: 720 W at 36 km/h, 100 m per 9.9 s; a 3A 17 frame with each BMS frame
+        t = 0
+        adv.on_distance(t, 0.0)
+        self.assertEqual(adv.km, 0.0)
         for _ in range(30):
-            for _ in range(33):
+            for k in range(33):
                 t += 300
                 adv.on_bms(t, 36.0, 20.0, rem_mah=2000, full_mah=4000)
-            km = round(km + 0.1, 1)
-            adv.on_distance(t, km)
+                adv.on_distance(t, 0.1 if k == 32 else 0.0)
         r = adv.range()
         self.assertEqual(r.basis, 'recent')
         self.assertAlmostEqual(r.wh_per_km, 19.8, delta=0.3)
+        self.assertAlmostEqual(adv.km, 3.0, places=9)
+        # 30 s without frames, then the trip counter is 0.5 km on: ridden without the energy measured
+        t += 30000
+        adv.on_distance(t, 0.5)
+        adv.on_bms(t, 36.0, 20.0, rem_mah=2000, full_mah=4000)
+        self.assertAlmostEqual(adv.km, 3.0, places=9)
+        self.assertAlmostEqual(adv.range().wh_per_km, r.wh_per_km, places=9)
+        adv.on_distance(t + 60, 0.1)                              # continuous again
+        self.assertAlmostEqual(adv.km, 3.1, places=9)
         adv2 = ba.BatteryAdvisor()
         adv2.on_bms(0, 36.0, 20.0, rem_mah=100, full_mah=4000)
         self.assertEqual(adv2.range().km, 0.0)                    # below the reserve

@@ -33,10 +33,13 @@ data class RangeEstimate(val km: Double, val mi: Double, val whLeft: Double, val
  *  - battery_hot WARNING «Батарея греется» at max(temp1, temp2) ≥ [Params.hotC], CRITICAL «Батарея перегрета»
  *    at ≥ [Params.overheatC], each clearing [Params.hystC] lower.
  *  - range: (remaining − reservePct % of full, mAh) · whPerMah ÷ Wh/km over the last windowKm (≥ minWindowKm),
- *    else since the start (≥ minSessionKm), else defaultWhKm.
+ *    else since the start (≥ minSessionKm), else defaultWhKm. The distance is the advisor's own ([km]): the
+ *    increments of the stream only, with the previous 3A 17 and the last BMS frame within [Params.gapMs] — what the
+ *    app odometer adds over a gap (missed while disconnected, a new power-on) has no energy behind it.
  *
- * Feed [onBms] with every 3A 18 20 10 frame (the BMS current, + traction) and [onDistance] with the app's
- * odometer ([AppOdometer.totalKm]). Not thread-safe: one caller (TelemetryTracker holds its lock).
+ * Feed [onBms] with every 3A 18 20 10 frame (the BMS current, + traction) and [onDistance] with every 3A 17 00 0D
+ * frame and what the app odometer added on it ([AppOdometer.lastAddedKm]), not its total: a correction of the
+ * total («Задать», «Взять с руля») is not distance ridden. Not thread-safe: one caller (TelemetryTracker holds its lock).
  */
 class BatteryAdvisor(val params: Params = Params()) {
     data class Params(
@@ -80,9 +83,10 @@ class BatteryAdvisor(val params: Params = Params()) {
         private set
     private var rem: Double? = null
     private var full: Double? = null
-    /** The last distance, km. */
+    /** Distance ridden with the energy measured, km since the start (null until the first 3A 17 frame). */
     var km: Double? = null
         private set
+    private var distT: Long? = null
     private val cpKm = ArrayDeque<Double>()
     private val cpWh = ArrayDeque<Double>()
     private var firstKm = 0.0
@@ -95,7 +99,7 @@ class BatteryAdvisor(val params: Params = Params()) {
         lowSince = null; critSince = null; clearSince = null; chargedSince = null
         loadedV = null; tempMaxC = null
         lastT = null; lastP = 0.0; whNet = 0.0
-        rem = null; full = null; km = null
+        rem = null; full = null; km = null; distT = null
         cpKm.clear(); cpWh.clear(); hasFirst = false; firstKm = 0.0; firstWh = 0.0
     }
 
@@ -113,16 +117,29 @@ class BatteryAdvisor(val params: Params = Params()) {
         temperature(temp1C, temp2C)
     }
 
-    /** The app's odometer, km (grows; a lower value is ignored). */
-    fun onDistance(@Suppress("UNUSED_PARAMETER") tMs: Long, totalKm: Double?) {
-        if (totalKm == null) return
+    /**
+     * One 3A 17 00 0D frame; [addedKm] what the app odometer added on it ([AppOdometer.lastAddedKm]). The first frame
+     * starts the distance at 0; later ones count only while the stream is continuous (see the class doc).
+     */
+    fun onDistance(tMs: Long, addedKm: Double?) {
+        val p = params
+        val dt = distT
+        val bt = lastT
+        distT = tMs
         val k = km
-        if (k == null || totalKm > k) {
-            km = totalKm
-            if (!hasFirst) { hasFirst = true; firstKm = totalKm; firstWh = whNet }
-            cpKm.addLast(totalKm); cpWh.addLast(whNet)
-            while (cpKm.size > 1 && cpKm[1] <= totalKm - params.windowKm) { cpKm.removeFirst(); cpWh.removeFirst() }
+        if (k == null) {
+            km = 0.0
+            hasFirst = true; firstKm = 0.0; firstWh = whNet
+            cpKm.addLast(0.0); cpWh.addLast(whNet)
+            return
         }
+        if (addedKm == null || addedKm <= 0.0) return
+        if (dt == null || tMs < dt || tMs - dt > p.gapMs) return
+        if (bt == null || tMs < bt || tMs - bt > p.gapMs) return
+        val now = k + addedKm
+        km = now
+        cpKm.addLast(now); cpWh.addLast(whNet)
+        while (cpKm.size > 1 && cpKm[1] <= now - p.windowKm) { cpKm.removeFirst(); cpWh.removeFirst() }
     }
 
     private fun voltageRules(t: Long, v: Double, i: Double) {

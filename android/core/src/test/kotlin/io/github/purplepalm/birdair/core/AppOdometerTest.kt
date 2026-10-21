@@ -49,9 +49,13 @@ class AppOdometerTest {
         val od = AppOdometer()
         assertNull(od.state)
         assertEquals(100.0, od.update(0.0, 100.0, 0))
+        assertEquals(0.0, od.lastAddedKm)                              // the seed adds nothing
         assertEquals(101.2, od.update(1.2, 101.2, h / 10))
+        assertEquals(1.2, od.lastAddedKm)
         assertEquals(101.2, od.update(1.1, 101.1, h / 10 + 1000))     // a glitch 1 s later: ignored
+        assertEquals(0.0, od.lastAddedKm)
         assertEquals(101.3, od.update(0.1, 101.3, h / 10 + 31000))    // a real reset half a minute later
+        assertEquals(0.1, od.lastAddedKm)
         // the cutoff: the scooter forgets 5.4 km, then the app connects late into a power-on with 6 km on it
         val o2 = AppOdometer()
         o2.update(0.0, 1433.3, 0)

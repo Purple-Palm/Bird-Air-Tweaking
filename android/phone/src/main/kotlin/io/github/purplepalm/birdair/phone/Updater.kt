@@ -101,11 +101,13 @@ object Updater {
         return info.longVersionCode.toInt()
     }
 
-    /** The release's phone APK in the cache (kept when it is already there and newer). */
+    /** The release's phone APK in the cache (kept when it is already there, newer than this build and not older than
+     *  what version.json says now: a build cached before CI published a newer one is downloaded again). */
     suspend fun download(ctx: Context): File? = withContext(Dispatchers.IO) {
         lock.withLock {
             val f = apkFile(ctx)
-            apkCode(ctx, f)?.let { if (it > code) return@withLock f }
+            val want = state.value.latest?.versionCode ?: 0
+            apkCode(ctx, f)?.let { if (it > code && it >= want) return@withLock f }
             val tmp = File(f.path + ".part")
             state.update { it.copy(downloading = true, progress = 0f, message = "Скачиваю ${Versions.PHONE_APK}…", err = false) }
             try {

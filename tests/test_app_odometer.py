@@ -49,13 +49,18 @@ class UnitTest(unittest.TestCase):
         od = ao.AppOdometer()
         self.assertIsNone(od.state)
         self.assertEqual(od.update(0.0, 100.0, 0), 100.0)
+        self.assertEqual(od.last_added_km, 0.0)                           # the seed adds nothing
         self.assertEqual(od.update(1.2, 101.2, H // 10), 101.2)
+        self.assertEqual(od.last_added_km, 1.2)
         self.assertEqual(od.update(1.2, 101.2, H // 10 + 5000), 101.2)    # same frame again
+        self.assertEqual(od.last_added_km, 0.0)
         # the trip went back 1 s later: a new power-on cannot have 1.1 km on it yet — a glitch, ignored
         self.assertEqual(od.update(1.1, 101.1, H // 10 + 6000), 101.2)
+        self.assertEqual(od.last_added_km, 0.0)
         self.assertEqual(od.state['trip_km'], 1.2)
         # a real reset to 0.1 km half a minute later counts
         self.assertEqual(od.update(0.1, 101.3, H // 10 + 36000), 101.3)
+        self.assertEqual(od.last_added_km, 0.1)
 
     def test_power_cycle_and_lost_progress(self):
         od = ao.AppOdometer()

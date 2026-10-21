@@ -214,7 +214,8 @@ object ScooterRepo {
     /** The pipeline's consumer, after each publish (Dispatchers.Default; never the BLE thread). */
     private fun published(t: Telemetry, fresh: Boolean) {
         val s = session ?: return
-        if (s.odoStartKm == null && t.odometerKm != null) s.odoStartKm = t.odometerKm
+        // from the first 3A 17 of the session: what the app odometer added for a ride without the app is already in
+        if (s.appOdoStartKm == null && t.odometerKm != null && t.appOdometerKm != null) s.appOdoStartKm = t.appOdometerKm
         if (fresh) { samples.add(t.t, t); chartPending = true }
         if (chartPending && (t.t - chartAt >= CHART_EVERY_MS || !fresh)) { chartAt = t.t; chartPending = false; chartRev.update { it + 1 } }
         watchLink?.offer(forWatch(t))
@@ -254,18 +255,33 @@ object ScooterRepo {
         prefs.odometer = st
     }
 
-    /** «Исправить одометр»: the app odometer is [km] from now on; the scooter's power-on goes on where it was. */
+    /** «Исправить одометр»: the app odometer is [km] from now on; the scooter's power-on goes on where it was.
+     *  The session's «Расход» start moves with it: a correction is not distance ridden. */
     fun setOdometer(km: Double) {
         if (!km.isFinite() || km < 0) return
         val cur = tracker.odometerState
         val st = cur?.copy(totalKm = AppOdometer.tenths(km) / 10.0) ?: AppOdometer.State(AppOdometer.tenths(km) / 10.0, 0.0, 0.0, null)
         tracker.odometerState = st
+        session?.let { s -> val a = s.appOdoStartKm; if (a != null && cur != null) s.appOdoStartKm = a + (st.totalKm - cur.totalKm) }
         odoSaved = st
         odoSavedAt = System.currentTimeMillis()
         prefs.odometer = st
         sys("Одометр приложения: " + Fmt.n(st.totalKm, 1) + " км (исправлен вручную)")
         pipeline.set(telemetry.value.copy(appOdometerKm = st.totalKm))
         pipeline.signal()
+    }
+
+    /**
+     * Right before the system installer replaces this app: Android kills the process without onDestroy and does not
+     * restart the service, so the running recording (every changed part) and the app odometer are saved now.
+     */
+    suspend fun beforeInstall(ctx: Context) {
+        saveOdometer(true)
+        val s = session ?: return
+        if (status.value.running) {
+            sys("Обновление: сохраняю лог перед установкой, связь с самокатом прервётся")
+            LogStore.saveAll(ctx.applicationContext, s)
+        }
     }
 
     /** A service line: into the log and onto the screen. */

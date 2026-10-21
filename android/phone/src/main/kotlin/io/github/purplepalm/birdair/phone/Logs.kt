@@ -58,8 +58,8 @@ class Session(val startedAtMs: Long, private val clock: () -> Long, maxEntries: 
     val recorder: LogRecorder get() = part.recorder
 
     @Volatile var gatt: List<io.github.purplepalm.birdair.core.GattService> = emptyList()
-    /** Odometer at the first frame of the session: the distance for Wh/km. */
-    @Volatile var odoStartKm: Double? = null
+    /** The app odometer at the first 3A 17 frame of the session (moved along with a correction): the distance for Wh/km. */
+    @Volatile var appOdoStartKm: Double? = null
     val rx = java.util.concurrent.atomic.AtomicLong()
 
     fun now(): Long = clock()

@@ -81,7 +81,10 @@ class MainActivity : ComponentActivity(), UiActions {
         ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) }
         // back from «Установка неизвестных приложений»: go on with the install
         val f = pendingInstall
-        if (f != null && Updater.canInstall(this)) { pendingInstall = null; Updater.install(this, f) }
+        if (f != null && Updater.canInstall(this)) {
+            pendingInstall = null
+            lifecycleScope.launch { ScooterRepo.beforeInstall(applicationContext); Updater.install(this@MainActivity, f) }
+        }
     }
 
     private val btState = object : BroadcastReceiver() {
@@ -199,10 +202,11 @@ class MainActivity : ComponentActivity(), UiActions {
 
     override fun checkUpdates() { ScooterRepo.scope.launch { Updater.check(applicationContext, manual = true) } }
 
-    /** «Обновить»: download (or take the cached APK) and open the system installer. */
+    /** «Обновить»: download (or take the cached APK), save a running recording, open the system installer. */
     override fun startUpdate() {
         lifecycleScope.launch {
             val f = Updater.download(applicationContext) ?: return@launch
+            ScooterRepo.beforeInstall(applicationContext)
             pendingInstall = f
             if (Updater.install(this@MainActivity, f)) pendingInstall = null
         }

@@ -4,8 +4,9 @@
     python3 tools/battery_advisor.py logs/*.json.gz     # прогон логов: предупреждения и ошибки запаса хода
 
 Вход — кадры по порядку: on_bms(t, V, I, temp1, temp2, остаток мА·ч, полная мА·ч) на каждый
-3A 18 20 10 (I — ток BMS, А, плюс — тяга) и on_distance(t, км) — свой одометр приложения
-(app_odometer.py), растёт. Выход — warnings() (список BatteryWarning) и range() (Range или None).
+3A 18 20 10 (I — ток BMS, А, плюс — тяга) и on_distance(t, км) на каждый 3A 17 00 0D — сколько на нём
+добавил свой одометр приложения (app_odometer.py, last_added_km), а не его итог: исправление итога
+(«Задать», «Взять с руля») — не поездка. Выход — warnings() (список BatteryWarning) и range() (Range или None).
 
 1. «Заряд на исходе» / «Сейчас отключится» (id battery_low, уровни warning / critical).
    Под нагрузкой (I ≥ load_a) напряжение садится тем сильнее, чем пустее батарея, — так её и видно
@@ -26,14 +27,16 @@
      расход, Вт·ч/км — за последние window_km (не меньше min_window_km), иначе за весь заезд
      (не меньше min_session_km), иначе default_wh_km; рекуперация вычитается;
      км = энергия / расход, мили = км / 1,609344.
-   Энергия — V·I_bms по кадрам (левые прямоугольники), разрывы > gap_ms пропущены.
+   Энергия — V·I_bms по кадрам (левые прямоугольники), разрывы > gap_ms пропущены. Путь — свой, с 0:
+   приращения одометра приложения, только пока поток непрерывен (прошлый 3A 17 и последний кадр BMS не
+   дальше gap_ms) — то, что одометр добавляет за разрыв (пропущено без связи, новое включение), без энергии.
 
 Проверено на логах (CLI): «Заряд на исходе» / «Сейчас отключится» за 5,4 / 1,2 мин до отсечки 15.10
 (31,9 В при 10 А, BMS 11 %, 61 °C) и за 7,8 / 6,8 мин до отсечки 19.10 (31,45 В при 8,6 А, BMS 1 %);
 в разрядах до конца без отсечки — за 8,7 / 8,3 мин (16.10, вдвоём) и 15,1 / 14,9 мин (14.10, один:
 батарея холоднее, R больше, просадка раньше). Ни разу при BMS ≥ 40 % и ни разу вдвоём на 100 → 54 %
 при упоре 16 А. «Батарея перегрета» — за 18,6 и 5,5 мин до отсечек. Запас хода на четырёх разрядах
-до конца (отметки 5, 4, 3, 2, 1,5, 1, 0,5 км до конца): ошибка в среднем 0,39 км, смещение −0,02 км;
+до конца (отметки 5, 4, 3, 2, 1,5, 1, 0,5 км до конца): ошибка в среднем 0,39 км, смещение −0,03 км;
 до отсечки 19.10 — не больше 0,57 км на всех отметках, до отсечки 15.10 — оптимистичен до +1,2 км
 (она на 11,9 %).
 
@@ -106,7 +109,8 @@ class BatteryAdvisor:
         self.last_p = None
         self.e_wh = 0.0              # энергия из батареи с начала, Вт·ч (рекуперация вычтена)
         self.rem = self.full = None
-        self.km = None
+        self.km = None               # свой путь с энергией, км с начала (None — ещё не было 3A 17)
+        self.dist_t = None           # t прошлого 3A 17
         self.cps = collections.deque()   # (км, Вт·ч) на каждом приросте км, окно window_km
         self.first = None
 
@@ -126,18 +130,28 @@ class BatteryAdvisor:
         self._voltage(t, v, i)
         self._temperature(temp1, temp2)
 
-    def on_distance(self, t, km):  # noqa: ARG002 — t: same signature as on_bms
-        if km is None:
+    def on_distance(self, t, added_km):
+        """Кадр 3A 17; added_km — сколько на нём добавил одометр приложения (last_added_km)."""
+        p = self.p
+        dt, bt = self.dist_t, self.last_t
+        self.dist_t = t
+        if self.km is None:              # the first frame: the distance starts at 0
+            self.km = 0.0
+            self.first = (0.0, self.e_wh)
+            self.cps.append(self.first)
             return
-        if self.km is None or km > self.km:
-            self.km = km
-            cp = (km, self.e_wh)
-            if self.first is None:
-                self.first = cp
-            self.cps.append(cp)
-            w = self.p['window_km']
-            while len(self.cps) > 1 and self.cps[1][0] <= km - w:
-                self.cps.popleft()
+        if added_km is None or added_km <= 0:
+            return
+        if dt is None or t < dt or t - dt > p['gap_ms']:
+            return                       # over a gap: ridden without the energy measured
+        if bt is None or t < bt or t - bt > p['gap_ms']:
+            return
+        km = self.km + added_km
+        self.km = km
+        self.cps.append((km, self.e_wh))
+        w = p['window_km']
+        while len(self.cps) > 1 and self.cps[1][0] <= km - w:
+            self.cps.popleft()
 
     def _voltage(self, t, v, i):
         p = self.p
@@ -226,7 +240,8 @@ class BatteryAdvisor:
 
 def replay(log, params=None, every=None, events=None):
     """Лог через AppOdometer и BatteryAdvisor. Возвращает список шагов
-    (t, км, warnings, range, bms) на каждом кадре BMS (every — функция t → bool, чтобы реже).
+    (t, км, warnings, range, bms) на каждом кадре BMS (км — путь советчика с начала лога; every — функция
+    t → bool, чтобы реже).
     events — уже разобранные bird_frames.events(log), если есть."""
     adv = BatteryAdvisor(**(params or {}))
     od = ao.AppOdometer()
@@ -234,7 +249,8 @@ def replay(log, params=None, every=None, events=None):
     out = []
     for kind, t, x in (events if events is not None else bf.events(log)):
         if kind == 'motion':
-            adv.on_distance(t, od.update(x.trip_km, x.odo_km, None if t0 is None else t0 + t))
+            od.update(x.trip_km, x.odo_km, None if t0 is None else t0 + t)
+            adv.on_distance(t, od.last_added_km)
         elif kind == 'bms':
             adv.on_bms(t, x.v, x.i, x.temp1, x.temp2, x.rem_mah, x.full_mah)
             if every is None or every(t):

@@ -141,12 +141,12 @@ object RideLogs {
     }
 
     /** {log: {"fast": [[t, v, i, iFast, pFast]…], "adv": [[t, low, hot, km|null, rangeKm|null, whPerKm|null, basis|null]…],
-     *  "odo": total km}} from tools/fast_power.py and tools/battery_advisor.py. */
+     *  "odo": the app odometer's total}} from tools/fast_power.py, tools/battery_advisor.py and tools/app_odometer.py. */
     val python: Map<String, JsonObject> by lazy {
         val script = """
             import json, sys
             sys.path.insert(0, sys.argv[1])
-            import birdlog as bl, bird_frames as bf, fast_power as fp, battery_advisor as ba
+            import birdlog as bl, bird_frames as bf, fast_power as fp, battery_advisor as ba, app_odometer as ao
             for path in sys.argv[2:]:
                 lg = bl.load_file(path)
                 ev = bf.events(lg)
@@ -156,7 +156,7 @@ object RideLogs {
                     lv = {w.id: (2 if w.level == ba.CRITICAL else 1) for w in ws}
                     adv.append([t, lv.get('battery_low', 0), lv.get('battery_hot', 0), km,
                                 None if rg is None else rg.km, None if rg is None else rg.wh_per_km, None if rg is None else rg.basis])
-                odo = adv[-1][3] if adv else None
+                odo = ao.replay([lg], events=lambda _lg: ev)[0].total_km
                 print(json.dumps({'log': path, 'fast': [[r[0], r[1], r[2], r[4], r[5]] for r in rows], 'adv': adv, 'odo': odo}))
         """.trimIndent()
         val out = Py.run(script, "", *ALL.map { Repo.file(it).absolutePath }.toTypedArray())
