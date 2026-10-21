@@ -78,13 +78,19 @@ object Versions {
 
     const val WATCH_ACTIVE_MS = 45_000L
 
-    /** The watch hint: null when it is fine or unknown; the phone's own code 1 is a local build and compares with nothing. */
+    /**
+     * The watch hint: null when it is fine or unknown; the phone's own code 1 is a local build and compares with nothing.
+     * The watch updates itself («Подробно» → «Обновить часы»); a build without that button (one that does not tell its
+     * version at all, or an older one) is put on by hand once.
+     */
     fun watchHint(w: WatchVersion?, helloSeen: Boolean, phoneCode: Int): String? {
-        val upd = "обнови часы: $WATCH_APK через Bugjaeger (android/README.md)"
-        if (w == null) return if (helloSeen && phoneCode > 1) "Часы не сообщают версию — там старая сборка, $upd." else null
+        if (w == null) return if (helloSeen && phoneCode > 1) "Часы не сообщают версию — там старая сборка: один раз поставь $WATCH_APK вручную (android/README.md), дальше — $WATCH_UPDATE." else null
         val c = w.versionCode ?: return null
-        return if (c < phoneCode) "На часах v$c, на телефоне v$phoneCode — $upd." else null
+        return if (c < phoneCode) "На часах v$c, на телефоне v$phoneCode — $WATCH_UPDATE (нет такой кнопки — один раз вручную, android/README.md)." else null
     }
+
+    /** Where the watch app updates itself. */
+    const val WATCH_UPDATE = "на часах: Подробно → Обновить часы"
 
     private fun obj(text: String?): JsonObject? = try {
         text?.trim()?.takeIf { it.startsWith("{") }?.let { JSON.parseToJsonElement(it) as? JsonObject }

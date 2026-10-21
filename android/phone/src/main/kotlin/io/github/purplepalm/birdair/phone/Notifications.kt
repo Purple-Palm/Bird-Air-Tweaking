@@ -11,14 +11,13 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import io.github.purplepalm.birdair.core.BatteryWarning
+import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
-import io.github.purplepalm.birdair.core.WarningLevel
 
 /**
  * The «Поездка» channel and the service's ongoing notification (phone only: setLocalOnly, the watch has its app),
- * and the «Предупреждения» channel: low battery and overheating, high priority with vibration ([WarningAlerts]
- * decides when it buzzes). Warnings reach the watch: mirrored by Wear OS, unless the watch app is active and
+ * and the «Предупреждения» channel: the cluster's red and amber lamps (overheat, low battery, traction, overvoltage,
+ * consumption), high priority with vibration ([RideAlerts] decides when it buzzes). Warnings reach the watch: mirrored by Wear OS, unless the watch app is active and
  * vibrates for them itself ([Versions.watchBuzzes]) — then they are local-only, one buzz on the wrist, not two.
  */
 object Notifications {
@@ -36,7 +35,7 @@ object Notifications {
             setShowBadge(false)
         }
         val warn = NotificationChannel(WARN_CHANNEL, "Предупреждения", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "Батарея на исходе или перегрета: с вибрацией, одно и то же — не чаще раза в 5 минут"
+            description = "Красные лампы приборки (перегрев, отсечка) — с вибрацией, не чаще раза в 5 минут; оранжевые — один раз за поездку"
             enableVibration(true)
             vibrationPattern = VIBRATE
         }
@@ -44,21 +43,22 @@ object Notifications {
         nm.createNotificationChannel(warn)
     }
 
-    /** The active battery warnings, CRITICAL first; [loud]: buzz (new or stepped up), else the text changes silently. */
-    fun warning(ctx: Context, ws: List<BatteryWarning>, loud: Boolean, localOnly: Boolean = false) {
-        if (ws.isEmpty()) { cancelWarning(ctx); return }
+    /** The red and amber lamps, red first ([RideAlerts.items]); [loud]: buzz, else the text changes silently. */
+    fun warning(ctx: Context, items: List<AlertItem>, loud: Boolean, localOnly: Boolean = false) {
+        if (items.isEmpty()) { cancelWarning(ctx); return }
         val open = PendingIntent.getActivity(
             ctx, 3,
             Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val crit = ws.any { it.level == WarningLevel.CRITICAL }
-        val hint = WarnText.hint(ws.first())
+        val crit = items.any { it.level == LampLevel.RED }
+        val hint = items.first().hint
         val n = NotificationCompat.Builder(ctx, WARN_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_scooter)
-            .setContentTitle(WarnText.title(ws))
-            .setContentText(WarnText.line(ws.first()))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(WarnText.body(ws) + if (hint.isNotEmpty()) "\n$hint" else ""))
+            // a long title («Батарея перегрета — скоро отключится, сбавь газ») ellipsizes; the big text has every line whole
+            .setContentTitle(RideAlerts.title(items))
+            .setContentText(items.first().line)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(RideAlerts.body(items) + if (hint.isNotEmpty()) "\n$hint" else ""))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setColor(if (crit) CRIT else WARN)
