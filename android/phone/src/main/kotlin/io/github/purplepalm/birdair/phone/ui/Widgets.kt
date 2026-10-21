@@ -1,8 +1,5 @@
 package io.github.purplepalm.birdair.phone.ui
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -25,7 +22,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -44,6 +47,8 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.purplepalm.birdair.phone.CriticalSpring
+import kotlinx.coroutines.flow.first
 
 /** Tabular figures: numbers that change 4 times a second do not jitter. */
 val Tnum = TextStyle(fontFeatureSettings = "tnum")
@@ -146,16 +151,49 @@ fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, hint
 }
 
 /**
- * THE power bar: centre zero, traction to the right in --draw, regen to the left in --flow, [frac] = P / scale
- * in −1…1, animated over 150 ms so the 4 Hz updates glide.
+ * [target] through a [CriticalSpring] stepped on every display frame while [smooth] (settles in ~110 ms, never
+ * overshoots); without it the value is the target itself and jumps with the data. Read the returned state inside a
+ * draw lambda: then only the drawing repeats per frame, nothing recomposes. The frame loop sleeps once settled.
  */
 @Composable
-fun PowerBar(frac: Float, live: Boolean, modifier: Modifier = Modifier) {
+fun rememberSpring(target: Float, smooth: Boolean): State<Float> {
+    val goal = rememberUpdatedState(target)
+    val out = remember { mutableFloatStateOf(target) }
+    LaunchedEffect(smooth) {
+        if (!smooth) return@LaunchedEffect
+        out.floatValue = goal.value
+        val s = CriticalSpring(goal.value.toDouble())
+        var last = Long.MIN_VALUE
+        while (true) {
+            val g = goal.value.toDouble()
+            if (s.settled(g)) {
+                out.floatValue = g.toFloat()
+                last = Long.MIN_VALUE
+                snapshotFlow { goal.value }.first { it.toDouble() != g }
+                continue
+            }
+            withFrameNanos { now ->
+                val dt = if (last == Long.MIN_VALUE) CriticalSpring.FIRST_FRAME_S else (now - last) / 1e9
+                last = now
+                s.step(goal.value.toDouble(), dt)
+                out.floatValue = s.value.toFloat()
+            }
+        }
+    }
+    return if (smooth) out else goal
+}
+
+/**
+ * THE power bar: centre zero, traction to the right in --draw, regen to the left in --flow, [frac] = P / scale
+ * in −1…1 (read while drawing: [rememberSpring] moves it per display frame).
+ */
+@Composable
+fun PowerBar(frac: State<Float>, live: Boolean, modifier: Modifier = Modifier) {
     val c = LocalBal.current
-    val a by animateFloatAsState(frac.coerceIn(-1f, 1f), tween(150, easing = LinearEasing), label = "power")
     val draw = if (live) c.draw else c.draw.copy(alpha = 0.35f)
     val flow = if (live) c.flow else c.flow.copy(alpha = 0.35f)
     Canvas(modifier.fillMaxWidth().height(52.dp).semantics { contentDescription = "Полоса мощности" }) {
+        val a = frac.value.coerceIn(-1f, 1f)
         val w = size.width
         val h = size.height
         val r = CornerRadius(10.dp.toPx())

@@ -3,6 +3,9 @@ package io.github.purplepalm.birdair.phone
 import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.Telemetry
 import java.math.BigDecimal
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.math.RoundingMode
 import kotlin.math.abs
 
@@ -41,6 +44,17 @@ object Fmt {
 
     /** The power bar's scale: "±300 Вт", "±1,2 кВт". */
     fun scale(peakW: Double): String = "±" + if (peakW >= 1000) n(peakW / 1000, 1) + " кВт" else n(peakW) + " Вт"
+
+    /** Wall-clock time of day, "14:05:09" ("14:05" without [seconds]), in the phone's zone. */
+    fun clock(epochMs: Long, seconds: Boolean = true, zone: ZoneId = ZoneId.systemDefault()): String =
+        (if (seconds) HMS else HM).format(Instant.ofEpochMilli(epochMs).atZone(zone))
+
+    /** "20.10 14:05" */
+    fun dayTime(epochMs: Long, zone: ZoneId = ZoneId.systemDefault()): String = DAY.format(Instant.ofEpochMilli(epochMs).atZone(zone))
+
+    private val HMS = DateTimeFormatter.ofPattern("HH:mm:ss")
+    private val HM = DateTimeFormatter.ofPattern("HH:mm")
+    private val DAY = DateTimeFormatter.ofPattern("dd.MM HH:mm")
 }
 
 /** Display units; the tracker always keeps km/h and km. */
@@ -75,7 +89,8 @@ enum class Flow(val label: String) {
             return if (moving) DRIVE else IDLE
         }
 
-        fun of(t: Telemetry): Flow = of(t.currentA, t.powerW, t.speedKmh)
+        /** [fast]: by the fast current and power (when known), as the bar shows them. */
+        fun of(t: Telemetry, fast: Boolean = false): Flow = of(Power.amps(t, fast), Power.watts(t, fast), t.speedKmh)
     }
 }
 
@@ -93,8 +108,8 @@ enum class Mode(val n: Int, val title: String, val limitMph: Double) {
 
 /** The ongoing notification and the connection pill. */
 object StatusText {
-    /** «25,6 км/ч · 75 % · тяга 320 Вт», «нет связи — переподключаюсь»… */
-    fun notification(t: Telemetry): String = when (t.link) {
+    /** «25,6 км/ч · 75 % · тяга 320 Вт», «нет связи — переподключаюсь»…; [fast]: the fast power, like the bar. */
+    fun notification(t: Telemetry, fast: Boolean = false): String = when (t.link) {
         Link.IDLE -> "не подключено"
         Link.SCANNING -> "ищу самокат…"
         Link.CONNECTING -> "подключаюсь…"
@@ -103,8 +118,8 @@ object StatusText {
             val parts = ArrayList<String>()
             Units.speed(t.speedKmh, t.units)?.let { parts.add(Fmt.n(it, 1) + " " + Units.speedLabel(t.units)) }
             t.batteryPct?.let { parts.add(Fmt.n(it) + " %") }
-            val p = t.powerW
-            when (Flow.of(t)) {
+            val p = Power.watts(t, fast)
+            when (Flow.of(t, fast)) {
                 Flow.DRIVE -> parts.add("тяга " + Fmt.watts(p?.let { abs(it) } ?: 0.0))
                 Flow.REGEN -> parts.add("рекуперация " + Fmt.watts(p?.let { abs(it) } ?: 0.0))
                 Flow.CHARGE, Flow.INTO -> parts.add("в батарею " + Fmt.watts(p?.let { abs(it) } ?: 0.0))

@@ -30,6 +30,7 @@ class RideService : Service() {
     private var notification: NotificationCompat.Builder? = null
     private var ongoing: OngoingActivity? = null
     private var shownText: String? = null
+    private var shownKey: String? = null
     private var shownAtMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -96,30 +97,37 @@ class RideService : Service() {
         notification = b
         ongoing = oa
         shownText = text
+        shownKey = WatchFeed.feed.value.let { f -> RideStatus.warningKey(f.t, Health.of(f.t, f.rxAtMs, SystemClock.elapsedRealtime())) }
         shownAtMs = SystemClock.elapsedRealtime()
     }
 
-    /** Once a second: stop when the ride is over, refresh the status text at most every [RideStatus.EVERY_MS]. */
+    /**
+     * Once a second: stop when the ride is over, refresh the status text at most every [RideStatus.EVERY_MS] — at once
+     * when the phone's top battery warning changes.
+     */
     private suspend fun watch() {
         val startedAt = SystemClock.elapsedRealtime()
         while (scope.isActive) {
             val now = SystemClock.elapsedRealtime()
             val f = WatchFeed.feed.value
             if (Idle.expired(f.liveAtMs, startedAt, now)) { finish(); return }
-            val text = statusNow(now)
-            if (text != shownText && now - shownAtMs >= RideStatus.EVERY_MS) {
+            val h = Health.of(f.t, f.rxAtMs, now)
+            val text = RideStatus.text(f.t, h)
+            val key = RideStatus.warningKey(f.t, h)
+            if (RideStatus.due(text, shownText, key, shownKey, now - shownAtMs)) {
                 notification?.setContentText(text)
                 ongoing?.update(applicationContext, Status.Builder().addTemplate(text).build())
                 shownText = text
+                shownKey = key
                 shownAtMs = now
             }
             delay(1000)
         }
     }
 
-    private fun statusNow(now: Long = SystemClock.elapsedRealtime()): String {
+    private fun statusNow(): String {
         val f = WatchFeed.feed.value
-        return RideStatus.text(f.t, Health.of(f.t, f.rxAtMs, now))
+        return RideStatus.text(f.t, Health.of(f.t, f.rxAtMs, SystemClock.elapsedRealtime()))
     }
 
     private fun finish() {

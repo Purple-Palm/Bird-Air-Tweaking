@@ -5,6 +5,9 @@ plugins {
 }
 // -Pshots: also render the screens to PNG with Robolectric (src/shots, see Shots.kt)
 val shots = providers.gradleProperty("shots").isPresent
+// -PversionCode=12 -PversionName=0.3-abc1234 (CI); a local build is 1 / "dev". The watch sends both in its hello.
+val appVersionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
+val appVersionName = providers.gradleProperty("versionName").orNull?.takeIf { it.isNotBlank() } ?: "dev"
 android {
     namespace = "io.github.purplepalm.birdair.wear"
     compileSdk = 35
@@ -13,8 +16,8 @@ android {
         applicationId = "io.github.purplepalm.birdair"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
     signingConfigs {
         getByName("debug") {
@@ -27,7 +30,7 @@ android {
     buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     if (shots) {
         sourceSets.getByName("test").kotlin.srcDir("src/shots/kotlin")
         testOptions { unitTests { isIncludeAndroidResources = true } }

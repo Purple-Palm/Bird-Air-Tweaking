@@ -1,0 +1,88 @@
+package io.github.purplepalm.birdair.phone
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
+
+/** version.json of the android-latest release: {"versionCode": int, "versionName": str, "sha": str}. */
+data class UpdateInfo(val versionCode: Int, val versionName: String, val sha: String) {
+    /** «v42 (0.42, 1a2b3c4)» */
+    fun label(): String = "v$versionCode" + listOfNotNull(versionName.ifEmpty { null }, sha.take(7).ifEmpty { null }).joinToString(", ").let { if (it.isEmpty()) "" else " ($it)" }
+}
+
+/** A watch app's version, from its «hello». */
+data class WatchVersion(val versionCode: Int?, val versionName: String?)
+
+object Versions {
+    private const val RELEASE = "https://github.com/Purple-Palm/Bird-Air-Tweaking/releases/download/android-latest/"
+    const val VERSION_URL = RELEASE + "version.json"
+    const val PHONE_APK_URL = RELEASE + "bird-air-phone.apk"
+    const val PHONE_APK = "bird-air-phone.apk"
+    const val WATCH_APK = "bird-air-watch.apk"
+    /** Check this often while the app runs (and at every start, see [checkDue]). */
+    const val CHECK_EVERY_MS = 24 * 3600_000L
+    /** Starts closer together than this do not check again (the process starts for every watch «hello»). */
+    const val START_GAP_MS = 10 * 60_000L
+
+    private val JSON = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /** null for anything that is not a version.json with a positive versionCode. */
+    fun parse(text: String?): UpdateInfo? {
+        val o = obj(text) ?: return null
+        val code = num(o["versionCode"]) ?: return null
+        if (code <= 0) return null
+        return UpdateInfo(code, str(o["versionName"]) ?: "", str(o["sha"]) ?: "")
+    }
+
+    /** Newer than what is installed: by versionCode only (names are free text, «dev» for local builds). */
+    fun isNewer(remote: UpdateInfo?, installedCode: Int): Boolean = remote != null && remote.versionCode > installedCode
+
+    /** Time to look for an update: never checked, a day passed, or [atStart] and the last check is [START_GAP_MS] old. */
+    fun checkDue(lastCheckMs: Long, nowMs: Long, atStart: Boolean): Boolean {
+        if (lastCheckMs <= 0 || nowMs < lastCheckMs) return true
+        val age = nowMs - lastCheckMs
+        return age >= CHECK_EVERY_MS || (atStart && age >= START_GAP_MS)
+    }
+
+    /**
+     * The watch's «hello» payload: empty (a watch build from before versions), or UTF-8 JSON
+     * {"versionCode": 42, "versionName": "0.42"} (also "vc"/"vn"), or lines "versionCode=42".
+     */
+    fun watch(bytes: ByteArray?): WatchVersion? {
+        if (bytes == null || bytes.isEmpty()) return null
+        val s = String(bytes, Charsets.UTF_8).trim()
+        if (s.isEmpty()) return null
+        val o = obj(s)
+        if (o != null) {
+            val code = num(o["versionCode"]) ?: num(o["vc"]) ?: num(o["code"])
+            val name = str(o["versionName"]) ?: str(o["vn"]) ?: str(o["name"])
+            return if (code == null && name == null) null else WatchVersion(code, name)
+        }
+        val kv = s.lines().mapNotNull { l -> l.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0].trim() to it[1].trim() } }.toMap()
+        val code = (kv["versionCode"] ?: kv["vc"])?.toIntOrNull()
+        val name = kv["versionName"] ?: kv["vn"]
+        return if (code == null && name == null) null else WatchVersion(code, name)
+    }
+
+    /** The watch hint: null when it is fine or unknown; the phone's own code 1 is a local build and compares with nothing. */
+    fun watchHint(w: WatchVersion?, helloSeen: Boolean, phoneCode: Int): String? {
+        val upd = "обнови часы: $WATCH_APK через Bugjaeger (android/README.md)"
+        if (w == null) return if (helloSeen && phoneCode > 1) "Часы не сообщают версию — там старая сборка, $upd." else null
+        val c = w.versionCode ?: return null
+        return if (c < phoneCode) "На часах v$c, на телефоне v$phoneCode — $upd." else null
+    }
+
+    private fun obj(text: String?): JsonObject? = try {
+        text?.trim()?.takeIf { it.startsWith("{") }?.let { JSON.parseToJsonElement(it) as? JsonObject }
+    } catch (e: Exception) { null }
+
+    private fun num(e: Any?): Int? {
+        val p = e as? JsonPrimitive ?: return null
+        return p.intOrNull ?: p.longOrNull?.takeIf { it in 1..Int.MAX_VALUE }?.toInt() ?: p.contentOrNull?.trim()?.toIntOrNull()
+    }
+
+    private fun str(e: Any?): String? = (e as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+}
