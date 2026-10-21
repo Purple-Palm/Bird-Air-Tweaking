@@ -32,7 +32,7 @@ class ClusterTest {
     private val silent = Lamp(TellTales.LINK, AMBER, "Руль молчит")
     private val dashOnly = Lamp(TellTales.LINK, AMBER, "Руль на связи, BMS молчит")
     private val critical = Lamp(TellTales.BATTERY, RED, "Сейчас отключится", 31.5)
-    private val bmsCut = Lamp(TellTales.BATTERY, RED, "BMS отключает батарею", 31.24)
+    private val bmsCut = Lamp(TellTales.BATTERY, RED, "BMS отключает батарею", 31.249)    // 20.10's first flagged frame
     private val noBms = Lamp(TellTales.BATTERY, RED, "Нет связи с BMS")
     private val chargeWait = Lamp(TellTales.CHARGING, AMBER, "Зарядка ждёт остывания", 45.0)
     private val s = 1000L
@@ -345,6 +345,7 @@ class ClusterTest {
         fun first(prefix: String) = r.marks.firstOrNull { it.second.text.startsWith(prefix) }?.first
         val cut = first("⛔ BMS отключает батарею")!!
         assertTrue("$cut", cut in 1_810_000L..1_811_000L)                     // b5 0x02 from 1810.0 s, the last BMS frame 1812.4 s
+        assertEquals("31.249 V rounded once", "⛔ BMS отключает батарею 31,2 В", r.marks.first { it.first == cut }.second.text)
         assertTrue("${first("⛔ Нет связи с BMS (код 0x26)")}", first("⛔ Нет связи с BMS (код 0x26)")!! in 1_814_700L..1_815_500L)
         val dash = r.marks.filter { it.second.text == "⚠ Руль на связи, BMS молчит" }.map { it.first }
         assertTrue("$dash", dash.first() in 1_822_000L..1_824_000L && dash.any { it in 2_117_000L..2_160_000L })

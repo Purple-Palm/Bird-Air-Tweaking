@@ -91,7 +91,8 @@ data class BmsFrame(
 /**
  * 3A 17 00 0D: speed 6–7 u16be, average since power-on byte 5, mode byte 9 & 3, trip since power-on 10–11 u16be, odometer
  * 12–14 u24be (× 0.1). [code] byte 8, raw: 0 in every frame of the logs but two runs — 0x26 in the 5 s between the BMS
- * going silent and the controller (20.10), 0x21 parked for 20 s (15.10).
+ * going silent and the controller (20.10), 0x21 in 201 frames over 12.8 s parked (15.10, 112.3–125.0 s, then the
+ * dash went silent and the link dropped).
  */
 data class MotionFrame(
     val speedKmh: Double,

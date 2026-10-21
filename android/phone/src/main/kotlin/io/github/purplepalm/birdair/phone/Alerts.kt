@@ -7,7 +7,6 @@ import io.github.purplepalm.birdair.core.RangeEstimate
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.core.WarningLevel
-import kotlin.math.roundToLong
 
 /**
  * The voltage under load shown with «Заряд на исходе» / «Сейчас отключится»: the lowest voltage of the BMS frames of
@@ -67,7 +66,7 @@ class LoadSag(val windowMs: Long = 30_000, val loadA: Double = 5.0) {
         /** The charge lamp shows battery_low's value when it is lit for it: the same voltage under load as the warning. */
         fun fixLamp(lamps: List<Lamp>, ws: List<BatteryWarning>): List<Lamp> {
             val low = ws.firstOrNull { it.id == BatteryAdvisor.LOW } ?: return lamps
-            val v = low.value?.let { (it * 100).roundToLong() / 100.0 }
+            val v = TellTales.lampValue(low.value)
             return lamps.map { if (it.id == TellTales.BATTERY && it.text == low.text) it.copy(value = v) else it }
         }
     }

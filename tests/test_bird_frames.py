@@ -67,7 +67,7 @@ class FramesTest(unittest.TestCase):
         t26 = codes[(rl.TO_ZERO, 0x26)]
         self.assertTrue(1814000 <= min(t26) and max(t26) <= 1818000, (min(t26), max(t26)))
         t21 = codes[(rl.CUTOFF_HOT, 0x21)]
-        self.assertTrue(112000 <= min(t21) and max(t21) <= 133000, (min(t21), max(t21)))
+        self.assertEqual((len(t21), min(t21), max(t21)), (201, 112254, 125030))
         # over-voltage protection: regen on a full pack, 19.10 (twice) and 20.10 at 135.6–139.1 s
         self.assertEqual(sorted(ov_cut), sorted([rl.CUTOFF, rl.EVENING, rl.TO_ZERO]))
         self.assertTrue(135000 <= min(ov_cut[rl.TO_ZERO]) and max(ov_cut[rl.TO_ZERO]) <= 139200)

@@ -311,7 +311,7 @@ class TellTalesTest {
         assertTrue(replay(TO_ZERO).filter { it.t in 2_159_000..2_162_000 }.none(::dash))                 // boot C: data came
     }
 
-    /** The controller's code (byte 8 of 3A 17): 0x21 for 20 s parked on 15.10 on the link lamp; 0x26 (20.10, the BMS gone)
+    /** The controller's code (byte 8 of 3A 17): 0x21 parked on 15.10 (112.3–125.0 s) on the link lamp; 0x26 (20.10, the BMS gone)
      *  is the charge lamp's «Нет связи с BMS». */
     @Test fun controllerCode() {
         fun code(s: Snap) = s.lamps[TellTales.LINK]?.text?.startsWith("Код контроллера") == true
@@ -330,7 +330,8 @@ class TellTalesTest {
         val sn = replay(TO_ZERO)
         val c = sn.filter(::cut)
         assertTrue(c.size >= 3 && c.all { it.t in 1_810_000..1_815_000 && it.level(TellTales.BATTERY) == LampLevel.RED }, c.joinToString { "${it.t}" })
-        assertEquals(31.25, c.first().lamps.getValue(TellTales.BATTERY).value!!, 0.01)
+        // the last flagged frame's voltage as it is: 31.245 V at 1810.9 s (rounded to 0.01, 31.25, it read 31,3)
+        assertEquals(31.245, c.first().lamps.getValue(TellTales.BATTERY).value!!, 1e-9)
         val g = periods(sn, TellTales.BATTERY) { it.text == "Нет связи с BMS" }.single()
         assertTrue(g.t0 in 1_814_000..1_816_000 && g.t1 in 2_162_000..2_168_000 && g.level == LampLevel.RED, "${g.t0}–${g.t1}")
         // after boot C the advisor's «Сейчас отключится» again (the pack was not charged)

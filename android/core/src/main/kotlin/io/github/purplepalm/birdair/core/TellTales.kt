@@ -10,7 +10,7 @@ enum class LampLevel { OFF, GREEN, BLUE, YELLOW, AMBER, RED }
 
 /**
  * One lit tell-tale. [text]: a short line for the dial (≤ ~24 chars); [value]: what it is about (°C, V, A, Wh/km,
- * W, %, km/h, Ω — see [TellTales.HELP]), rounded to 0.01; [rising]: the temperature climbs fast (the ▲).
+ * W, %, km/h, Ω — see [TellTales.HELP]), rounded once by [TellTales.lampValue]; [rising]: the temperature climbs fast (the ▲).
  * [level] has a default only so that a level an older watch does not know reads as OFF instead of breaking the message.
  */
 @Serializable
@@ -315,7 +315,7 @@ class TellTales(val params: Params = Params()) {
     fun lamps(nowMs: Long, range: RangeEstimate?, warnings: List<BatteryWarning>, link: Link, streaming: Boolean): List<Lamp> {
         val on = HashMap<String, Lamp>()
         fun lit(id: String, level: LampLevel, text: String, value: Double? = null, rising: Boolean = false) {
-            on[id] = Lamp(id, level, text, value?.takeIf { it.isFinite() }?.let { (it * 100).roundToLong() / 100.0 }, rising)
+            on[id] = Lamp(id, level, text, lampValue(value), rising)
         }
         val rising = rise.on(nowMs) && nowMs - (lastBmsT ?: Long.MIN_VALUE / 2) <= p.riseHoldMs
         tempC?.let { t ->
@@ -462,6 +462,10 @@ class TellTales(val params: Params = Params()) {
         /** The mode's speed limit, mph (TAKEOFF 9, GLIDE 12.5, FLY 16), and in km/h. */
         fun limitMph(mode: Int?): Double? = when (mode) { 1 -> 9.0; 2 -> 12.5; 3 -> 16.0; else -> null }
         fun limitKmh(mode: Int?): Double? = limitMph(mode)?.let { it * BatteryAdvisor.MILE_KM }
+
+        /** A lamp's value as sent: 0.001 keeps the BMS's mV and mA exact, so the displays round only once. At 0.01 the
+         *  20.10 cut-off's 31.249 V went 31.25 → «31,3 В». */
+        fun lampValue(v: Double?): Double? = v?.takeIf { it.isFinite() }?.let { (it * 1000).roundToLong() / 1000.0 }
 
         private fun fmt(x: Double, d: Int) = String.format(java.util.Locale.ROOT, "%.${d}f", x).replace('.', ',')
         fun fmt0(x: Double) = fmt(x, 0)
