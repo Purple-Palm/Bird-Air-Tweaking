@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The watch's settings ([WatchPrefs]) for the whole process: the gauge changes them on the details page, [RideService]
- * reads the overspeed ones while the screen is off. Kept in SharedPreferences "bal.wear". Main thread.
+ * reads the overspeed ones while the screen is off, [WatchFeed] the lamp vibration switch. Kept in SharedPreferences "bal.wear". Main thread.
  */
 object Settings {
     const val FILE = "bal.wear"
@@ -18,6 +18,7 @@ object Settings {
     private const val SMOOTH = "smooth"
     private const val OVERSPEED_ON = "overspeedOn"
     private const val OVERSPEED_MPH = "overspeedMph"
+    private const val LAMP_BUZZ = "lampBuzz"
 
     private val state = MutableStateFlow(WatchPrefs())
     val prefs: StateFlow<WatchPrefs> = state.asStateFlow()
@@ -33,6 +34,7 @@ object Settings {
             smooth = SmoothPref.of(p.getString(SMOOTH, null)),
             overspeedOn = p.getBoolean(OVERSPEED_ON, true),
             overspeedMph = OverspeedPref.clamp(p.getFloat(OVERSPEED_MPH, OverspeedPref.DEFAULT_MPH.toFloat()).toDouble()),
+            lampBuzz = p.getBoolean(LAMP_BUZZ, true),
         )
     }
 
@@ -45,6 +47,7 @@ object Settings {
             ?.putString(SMOOTH, v.smooth.key)
             ?.putBoolean(OVERSPEED_ON, v.overspeedOn)
             ?.putFloat(OVERSPEED_MPH, v.overspeedMph.toFloat())
+            ?.putBoolean(LAMP_BUZZ, v.lampBuzz)
             ?.apply()
     }
 }

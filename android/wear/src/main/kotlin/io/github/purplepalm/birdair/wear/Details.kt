@@ -110,6 +110,9 @@ fun smoothChipIndex(s: Screen): Int = 2 + lampLines(s.t).size + detailRows(s.t, 
 /** Index of the overspeed vibration switch, right under «Плавно». */
 fun overspeedChipIndex(s: Screen): Int = smoothChipIndex(s) + 1
 
+/** Index of «Вибрация ламп», under the overspeed threshold. */
+fun lampBuzzChipIndex(s: Screen): Int = overspeedChipIndex(s) + 2
+
 /** [list]: by default starts with the first values in the middle, the header and state above them. */
 @Composable
 fun DetailsScreen(
@@ -169,6 +172,17 @@ fun DetailsScreen(
                 )
             }
             item { OverspeedSlider(prefs, s.t.units, onPrefs) }
+            item {
+                ToggleChip(
+                    checked = prefs.lampBuzz,
+                    onCheckedChange = { onPrefs(prefs.copy(lampBuzz = it)) },
+                    label = { Text("Вибрация ламп", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    secondaryLabel = { Text("оранжевые и красные", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    toggleControl = { Switch(checked = prefs.lampBuzz) },
+                    colors = ToggleChipDefaults.toggleChipColors(checkedEndBackgroundColor = argb(Palette.LAMP_AMBER).copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             // the watch's own update («Обновить часы», WatchUpdater), above the version line
             item { WatchUpdateItem() }
             item {

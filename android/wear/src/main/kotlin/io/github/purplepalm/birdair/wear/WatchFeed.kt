@@ -23,7 +23,8 @@ import kotlinx.coroutines.tasks.await
 
 /**
  * The last telemetry from the phone. [rxAtMs]: when it came, [liveAtMs]: when the last live one came
- * (link CONNECTED and streaming) — both on the watch's elapsedRealtime clock. [flags]: the phone's «fast» and
+ * (link CONNECTED and streaming), [freshAtMs]: when the last one with new data came (its [Telemetry.seq] moved; a
+ * phone's heartbeat repeats the old seq) — all on the watch's elapsedRealtime clock. [flags]: the phone's «fast» and
  * «smooth» settings, from the same messages (see [PhoneFlags]).
  */
 data class Feed(
@@ -31,6 +32,7 @@ data class Feed(
     val rxAtMs: Long? = null,
     val liveAtMs: Long? = null,
     val flags: PhoneFlags = PhoneFlags(),
+    val freshAtMs: Long? = null,
 ) {
     val live: Boolean get() = t.link == Link.CONNECTED && t.streaming
 
@@ -39,7 +41,9 @@ data class Feed(
         val n = Wire.decode(bytes) ?: return null
         if (late(n, nowMs)) return null
         val live = n.link == Link.CONNECTED && n.streaming
-        return Feed(n, nowMs, if (live) nowMs else liveAtMs, flags.merge(PhoneFlags.parse(bytes)))
+        // seq 0: a phone without it (or without data yet) — every message counts as new
+        val fresh = if (rxAtMs == null || n.seq == 0L || n.seq != t.seq) nowMs else freshAtMs
+        return Feed(n, nowMs, if (live) nowMs else liveAtMs, flags.merge(PhoneFlags.parse(bytes)), fresh)
     }
 
     /**
@@ -62,7 +66,7 @@ data class Feed(
  * registered while at least one of them exists (so it keeps updating in ambient, and with the activity gone
  * while the ride service runs), and [Wire.HELLO] (with [HelloInfo]) to every connected node on the first [acquire],
  * then as [Hello] says. The phone's lamps vibrate here, once per [LampAlarm] event, whichever of the
- * two is alive. Main thread only.
+ * two is alive, unless «Вибрация ламп» is off ([WatchPrefs.lampBuzz]). Main thread only.
  */
 object WatchFeed {
     private val state = MutableStateFlow(Feed())
@@ -85,8 +89,10 @@ object WatchFeed {
         val now = SystemClock.elapsedRealtime()
         val f = state.value.received(ev.data, now) ?: return@OnMessageReceivedListener
         state.value = f
-        // an older phone sends no lamps: its battery warnings stand in (Cluster.lamps)
-        alarm.onMessage(Cluster.lamps(f.t), f.live, now)?.let { buzzer?.play(it) }
+        // an older phone sends no lamps: its battery warnings stand in (Cluster.lamps); switched off, the alarm still
+        // follows the lamps, so switching it on again does not buzz what is already lit
+        val buzz = alarm.onMessage(Cluster.lamps(f.t), f.live, now, f.t.speedKmh)
+        if (buzz != null && Settings.prefs.value.lampBuzz) buzzer?.play(buzz)
     }
 
     @MainThread

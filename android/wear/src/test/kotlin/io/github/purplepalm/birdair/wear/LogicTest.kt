@@ -225,6 +225,24 @@ class TimersTest {
         assertFalse(Idle.keepScreenOn(true, 1_000, 0, 2_000 + min5))
     }
 
+    @Test fun theRideServiceOutlivesAPauseWithTheScooterOff() {
+        val min5 = Idle.AFTER_MS
+        val s = SessionIdle(0)
+        assertFalse(s.expired(Health.LIVE, 1_000))
+        // a 20-minute stop, scooter off: the phone keeps reconnecting, the service (and the overspeed buzz) stays
+        for (k in 1..1_200) assertFalse(s.expired(Health.RECONNECTING, 1_000 + k * 1_000L))
+        assertFalse(s.expired(Health.SILENT, 1_300_000))
+        // «Отключить» on the phone: 5 minutes later the service goes
+        assertFalse(s.expired(Health.IDLE, 1_300_000 + min5))
+        assertTrue(s.expired(Health.IDLE, 1_300_001 + min5))
+        // the phone gone (no messages) counts the same; started but never active: 5 minutes from the start
+        val gone = SessionIdle(0)
+        assertFalse(gone.expired(Health.CONNECTING, 10_000))
+        assertTrue(gone.expired(Health.NO_PHONE, 10_001 + min5))
+        assertTrue(SessionIdle(0).expired(Health.NO_PHONE, min5 + 1))
+        assertFalse(SessionIdle(0).expired(Health.NO_PHONE, min5))
+    }
+
     @Test fun helloPacing() {
         assertTrue(Hello.due(rxAtMs = null, lastHelloMs = null, nowMs = 0))
         // nothing comes: retry every 5 s

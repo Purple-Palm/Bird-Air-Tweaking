@@ -278,11 +278,11 @@ object BurnIn {
 }
 
 /**
- * "Still riding?": the last time the data was live ([Health.LIVE]) decides how long the screen is kept on
- * and the ride service runs once the scooter stops streaming.
+ * "Still riding?": the last time the data was live ([Health.LIVE]) decides how long the screen is kept on once the
+ * scooter stops streaming; the ride service goes by the phone's session instead ([SessionIdle]).
  */
 object Idle {
-    /** No live data for this long: the screen may time out and the ride service stops. */
+    /** No live data for this long: the screen may time out; no session on the phone for this long: the ride service stops. */
     const val AFTER_MS = 5 * 60_000L
 
     /** [sinceMs]: the later of the last live message and the moment the screen was opened. */
@@ -291,6 +291,22 @@ object Idle {
 
     fun keepScreenOn(enabled: Boolean, lastLiveMs: Long?, openedAtMs: Long, nowMs: Long): Boolean =
         enabled && !expired(lastLiveMs, openedAtMs, nowMs)
+}
+
+/**
+ * When the ride service stops: [Idle.AFTER_MS] after the phone last reported a session ([Health.active]: connecting,
+ * reconnecting, a silent handlebar or live data), not after the last live data — a stop with the scooter off keeps
+ * the service, and with it the overspeed vibration, for the rest of the ride (only the activity, while visible, could
+ * start it again). IDLE or no phone for that long: the ride is over.
+ */
+class SessionIdle(startedAtMs: Long) {
+    private var activeAtMs = startedAtMs
+
+    /** Call about once a second with the health at [nowMs]. */
+    fun expired(h: Health, nowMs: Long): Boolean {
+        if (h.active) activeAtMs = nowMs
+        return nowMs - activeAtMs > Idle.AFTER_MS
+    }
 }
 
 /** When to (re)send [io.github.purplepalm.birdair.core.Wire.HELLO]: soon while nothing comes, rarely while data flows. */

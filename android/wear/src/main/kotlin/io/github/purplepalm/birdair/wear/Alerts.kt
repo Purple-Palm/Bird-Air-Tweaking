@@ -95,67 +95,94 @@ class Buzz private constructor(val level: LampLevel, val timings: LongArray, val
     companion object {
         /** A lamp turned amber: one short tap. */
         val AMBER = Buzz(LampLevel.AMBER, longArrayOf(0, 110), intArrayOf(0, 200))
-        /** A lamp turned red (and every [LampAlarm.RED_REPEAT_MS] while one stays red): three long pulses at full strength. */
+        /** A lamp turned red (and the [LampAlarm.RED_REPEATS_MS] repeats while one stays red): three long pulses at full strength. */
         val RED = Buzz(LampLevel.RED, longArrayOf(0, 230, 110, 230, 110, 230), intArrayOf(0, 255, 0, 255, 0, 255))
     }
 }
 
 /**
  * When the lamps vibrate. A lamp that rises to AMBER (from off, green, blue or yellow) taps once — the same lamp again
- * only after [amberCooldownMs]; a lamp that turns RED buzzes hard at once and then every [redRepeatMs] while any lamp
- * stays red; a red that comes back within [redRepeatMs] of the last red buzz waits for the repeat. Two buzzes are at
- * least [gapMs] apart: several lamps at once give one buzz (the strongest), and a lamp covered by a buzz (or rising
- * within the gap after one) counts as buzzed. Standing lamps ([TellTales.QUIET]: service, weak, ECO), falling levels,
- * YELLOW / GREEN / BLUE, old data (not live) and a bulb check never buzz. Clock: the watch's elapsedRealtime.
+ * only after [amberCooldownMs]; a lamp that turns RED buzzes hard at once (after an amber tap without waiting for the
+ * gap), then, while any lamp stays red, again [redRepeatsMs] after the previous red buzz (30 s, 2 min, 5 min) and no
+ * more until a new red: not at standstill (below [movingKmh]; an overdue repeat waits until the ride goes on). A red
+ * that comes back within [redForgetMs] of going out is a flicker, not news. Two buzzes are at least [gapMs] apart:
+ * several lamps at once give one buzz (the strongest), and a lamp covered by a buzz (or rising within the gap after
+ * one) counts as buzzed. Standing lamps ([TellTales.QUIET]: service, weak, ECO), the link lamp (it is lit only while the
+ * data is not live, so it could only buzz late), falling levels, YELLOW / GREEN / BLUE, old data (not live) and a
+ * bulb check never buzz. Clock: the watch's elapsedRealtime.
  */
 class LampAlarm(
     val amberCooldownMs: Long = AMBER_COOLDOWN_MS,
-    val redRepeatMs: Long = RED_REPEAT_MS,
+    val redRepeatsMs: List<Long> = RED_REPEATS_MS,
+    val redForgetMs: Long = RED_FORGET_MS,
     val gapMs: Long = GAP_MS,
+    val movingKmh: Double = MOVING_KMH,
 ) {
     private var levels: Map<String, LampLevel> = emptyMap()
     private val amberAt = HashMap<String, Long>()
+    // red lamps a buzz announced, and since when each is out (a short flicker keeps it announced)
+    private val covered = HashSet<String>()
+    private val redOffAt = HashMap<String, Long>()
     private var redAt: Long? = null
-    private var redBuzzed: Set<String> = emptySet()
+    private var repeats = 0
     private var lastAt: Long? = null
+    private var lastRed = false
 
-    /** The buzz for this message's lamps, or null. */
-    fun onMessage(lamps: List<Lamp>, live: Boolean, nowMs: Long): Buzz? {
+    /** The buzz for this message's lamps, or null. [speedKmh]: null when unknown (repeats are not held back then). */
+    fun onMessage(lamps: List<Lamp>, live: Boolean, nowMs: Long, speedKmh: Double? = null): Buzz? {
         // a stale gap changes nothing: what stayed lit through it is not news afterwards
         if (!live || Cluster.isBulbCheck(lamps)) return null
-        val now = lamps.filter { it.id !in TellTales.QUIET }.associate { it.id to it.level }
+        val now = lamps.filter { it.id !in SILENT }.associate { it.id to it.level }
         val before = levels
         levels = now
         val reds = now.filterValues { it == LampLevel.RED }.keys
+        val gone = ArrayList<String>()
+        for (id in covered) {
+            if (id in reds) redOffAt.remove(id)
+            else if (nowMs - redOffAt.getOrPut(id) { nowMs } >= redForgetMs) gone += id
+        }
+        for (id in gone) { covered.remove(id); redOffAt.remove(id) }
         val ambers = now.filter { (id, lvl) -> lvl == LampLevel.AMBER && (before[id] ?: LampLevel.OFF) < LampLevel.AMBER }.keys
         val gapOk = lastAt.let { it == null || nowMs - it >= gapMs }
-        val repeat = redAt.let { it == null || nowMs - it >= redRepeatMs }
-        val newRed = reds.any { it !in redBuzzed && before[it] != LampLevel.RED }
+        val news = reds.any { it !in covered }
+        val moving = speedKmh == null || speedKmh.isNaN() || speedKmh >= movingKmh
+        val repeatDue = redAt.let { at -> at != null && repeats < redRepeatsMs.size && nowMs - at >= redRepeatsMs[repeats] }
         val buzz = when {
-            reds.isNotEmpty() && (repeat || (newRed && gapOk)) -> Buzz.RED
+            reds.isNotEmpty() && news && (gapOk || !lastRed) -> Buzz.RED
+            reds.isNotEmpty() && repeatDue && moving && gapOk -> Buzz.RED
             gapOk && ambers.any { id -> amberAt[id].let { it == null || nowMs - it >= amberCooldownMs } } -> Buzz.AMBER
             else -> null
         }
         if (buzz != null || !gapOk) for (id in ambers) amberAt[id] = nowMs
         if (buzz == Buzz.RED) {
+            repeats = if (news) 0 else repeats + 1
             redAt = nowMs
-            redBuzzed = reds
+            covered += reds
         }
-        if (buzz != null) lastAt = nowMs
+        if (buzz != null) {
+            lastAt = nowMs
+            lastRed = buzz == Buzz.RED
+        }
         return buzz
     }
 
     companion object {
         const val AMBER_COOLDOWN_MS = 300_000L
-        const val RED_REPEAT_MS = 30_000L
+        /** The red repeats, each after the previous red buzz; then quiet until a new red. */
+        val RED_REPEATS_MS: List<Long> = listOf(30_000L, 120_000L, 300_000L)
+        const val RED_FORGET_MS = 120_000L
         const val GAP_MS = 5_000L
+        /** Below this the scooter stands (cooling off, as the overheat lamp asks): no red repeats. */
+        const val MOVING_KMH = 3.0
+        /** Lamps that never vibrate. */
+        val SILENT: Set<String> = TellTales.QUIET + TellTales.LINK
     }
 }
 
 /**
  * «Вибрация быстрее N mph»: the watch vibrates without a stop while the speed is above the threshold — a cue to brake
  * without looking down. On above the threshold, off below it − [hystMph]; off at once when disabled, without a speed or
- * when the data is not live (older than [Health.STALE_MS], the link not CONNECTED or not streaming). The motor runs a
+ * when the data is not live (the link not CONNECTED or not streaming, or no new data for [FRESH_MS]). The motor runs a
  * repeating waveform ([TIMINGS] from [REPEAT]); while on it is armed again every [rearmMs]: the system cancels an app's
  * vibration when the screen is turned off by a gesture, and re-arming picks it up again.
  */
@@ -166,7 +193,7 @@ class OverspeedAlarm(val hystMph: Double = HYST_MPH, val rearmMs: Long = REARM_M
         private set
     private var armedAtMs = 0L
 
-    /** [live]: [Health.LIVE] at [nowMs]. START also means «arm again». */
+    /** [live]: [Health.LIVE] and [fresh] at [nowMs]. START also means «arm again». */
     fun update(enabled: Boolean, thresholdMph: Double, speedKmh: Double?, live: Boolean, nowMs: Long): Action {
         val mph = speedKmh?.takeIf { it.isFinite() }?.div(Fmt.MILE)
         val want = enabled && live && mph != null && thresholdMph.isFinite() &&
@@ -186,6 +213,15 @@ class OverspeedAlarm(val hystMph: Double = HYST_MPH, val rearmMs: Long = REARM_M
     companion object {
         const val HYST_MPH = 0.5
         const val REARM_MS = 2_000L
+        /**
+         * New data ([Feed.freshAtMs]: the phone's seq moved) within this: the speed is current. Riding, frames come ~3/s
+         * and the phone sends each at once; the 3 s of [Health.STALE_MS] and of the phone's «streaming» are too slow
+         * to stop a buzz that may no longer be true.
+         */
+        const val FRESH_MS = 1_500L
+
+        fun fresh(freshAtMs: Long?, nowMs: Long): Boolean = freshAtMs != null && nowMs - freshAtMs <= FRESH_MS
+
         /** 500 ms on, 100 ms off, repeated from [REPEAT]: a steady buzz with a beat in it, so it is not tuned out. */
         val TIMINGS = longArrayOf(0, 500, 100)
         val AMPLITUDES = intArrayOf(0, 255, 0)

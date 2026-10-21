@@ -230,6 +230,25 @@ class FeedOrderTest {
         val z = Feed().received(Wire.encode(Telemetry(link = Link.CONNECTED)), 0)!!
         assertNotNull(z.received(Wire.encode(Telemetry(link = Link.CONNECTED, speedKmh = 3.0)), 100))
     }
+
+    @Test fun freshOnlyWhenTheSeqMoves() {
+        var f = Feed().received(t(1_000, 10, 100.0), 50_000)!!
+        assertEquals(50_000L, f.freshAtMs)
+        f = f.received(t(1_300, 11, 100.0), 50_300)!!
+        assertEquals(50_300L, f.freshAtMs)
+        // the phone's 1/s heartbeat with no new frame (the handlebar went quiet, «streaming» still true for 3 s)
+        f = f.received(t(2_300, 11, 100.0), 51_300)!!
+        f = f.received(t(3_300, 11, 100.0), 52_300)!!
+        assertEquals(50_300L, f.freshAtMs)
+        assertEquals(52_300L, f.rxAtMs)
+        assertTrue(OverspeedAlarm.fresh(f.freshAtMs, 50_300 + OverspeedAlarm.FRESH_MS))
+        assertFalse(OverspeedAlarm.fresh(f.freshAtMs, 50_301 + OverspeedAlarm.FRESH_MS))
+        assertFalse(OverspeedAlarm.fresh(null, 0))
+        // a phone without seq: every message is new
+        var z = Feed().received(Wire.encode(Telemetry(link = Link.CONNECTED, streaming = true)), 0)!!
+        z = z.received(Wire.encode(Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = 30.0)), 900)!!
+        assertEquals(900L, z.freshAtMs)
+    }
 }
 
 class PowerViewTest {

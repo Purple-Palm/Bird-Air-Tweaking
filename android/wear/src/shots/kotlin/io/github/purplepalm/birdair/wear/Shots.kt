@@ -97,6 +97,10 @@ class Shots {
         val s = Screen(Samples.riding, Health.LIVE)
         WatchTheme { DetailsScreen(s, WatchPrefs(overspeedMph = 17.5), rememberScalingLazyListState(overspeedChipIndex(s) + 1)) {} }
     }
+    @Test fun detailsLampBuzz() = shot("details-lamp-buzz") {
+        val s = Screen(Samples.riding, Health.LIVE)
+        WatchTheme { DetailsScreen(s, WatchPrefs(lampBuzz = false), rememberScalingLazyListState(lampBuzzChipIndex(s))) {} }
+    }
 
     // the watch's own update (WatchUpdater): offered, downloading through the phone, ready to install
     private fun updates(name: String, vararg states: UpdateState) = shot(name) {

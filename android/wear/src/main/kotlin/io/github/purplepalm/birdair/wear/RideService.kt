@@ -29,7 +29,8 @@ import kotlinx.coroutines.launch
  * on), the app sits on the watch face (one tap back to the gauge) and its process — with [WatchFeed]'s
  * listener — stays alive. It also runs the overspeed vibration ([OverspeedAlarm]): it keeps running while the screen
  * is dim or off, the activity may not.
- * It writes nothing anywhere and stops itself after [Idle.AFTER_MS] without live data, or on «Скрыть».
+ * It writes nothing anywhere and stops itself [Idle.AFTER_MS] after the phone's session ended (IDLE or no phone,
+ * [SessionIdle]; a pause with the scooter off does not end it), or on «Скрыть».
  */
 class RideService : Service() {
     private val scope = MainScope()
@@ -120,12 +121,12 @@ class RideService : Service() {
      * when the top lamp changes.
      */
     private suspend fun watch() {
-        val startedAt = SystemClock.elapsedRealtime()
+        val idle = SessionIdle(SystemClock.elapsedRealtime())
         while (scope.isActive) {
             val now = SystemClock.elapsedRealtime()
             val f = WatchFeed.feed.value
-            if (Idle.expired(f.liveAtMs, startedAt, now)) { finish(); return }
             val h = Health.of(f.t, f.rxAtMs, now)
+            if (idle.expired(h, now)) { finish(); return }
             val text = RideStatus.text(f.t, h)
             val key = RideStatus.warningKey(f.t, h)
             if (RideStatus.due(text, shownText, key, shownKey, now - shownAtMs)) {
@@ -141,16 +142,17 @@ class RideService : Service() {
 
     /**
      * The overspeed vibration: judged on every message and on every change of the setting; while it runs, again when
-     * the message goes stale ([Health.STALE_MS], then it stops at once) and every [OverspeedAlarm.rearmMs] to arm it again.
+     * no new data came for [OverspeedAlarm.FRESH_MS] (then it stops at once) and every [OverspeedAlarm.rearmMs] to arm
+     * it again.
      */
     private suspend fun overspeedLoop() {
         combine(WatchFeed.feed, Settings.prefs) { f, p -> f to p }.collectLatest { (f, p) ->
             while (true) {
                 val now = SystemClock.elapsedRealtime()
-                val live = Health.of(f.t, f.rxAtMs, now).live
+                val live = Health.of(f.t, f.rxAtMs, now).live && OverspeedAlarm.fresh(f.freshAtMs, now)
                 act(overspeed.update(p.overspeedOn, p.overspeedMph, f.t.speedKmh, live, now))
                 if (!overspeed.on) return@collectLatest
-                val untilStale = (f.rxAtMs ?: now) + Health.STALE_MS + 1 - now
+                val untilStale = (f.freshAtMs ?: now) + OverspeedAlarm.FRESH_MS + 1 - now
                 delay(minOf(overspeed.rearmMs, untilStale).coerceAtLeast(1))
             }
         }

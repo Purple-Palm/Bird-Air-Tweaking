@@ -324,14 +324,33 @@ class LampAlarmTest {
         assertNull(b.onMessage(listOf(lamp(temp, LampLevel.AMBER)), true, 25_000))
     }
 
-    @Test fun redRepeatsEveryThirtySecondsWhileRed() {
+    @Test fun redRepeatsSlowDownThenStop() {
         val a = LampAlarm()
-        assertSame(Buzz.RED, a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 0))
-        val buzzes = (1..120).mapNotNull { k -> a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, k * 1_000L)?.let { k } }
-        assertEquals(listOf(30, 60, 90, 120), buzzes)
+        val red = listOf(lamp(temp, LampLevel.RED))
+        assertSame(Buzz.RED, a.onMessage(red, true, 0, 25.0))
+        // riding on with it red for half an hour: 30 s, then 2 min, then 5 min later, then quiet
+        val buzzes = (1..1_800).mapNotNull { k -> a.onMessage(red, true, k * 1_000L, 25.0)?.let { k } }
+        assertEquals(listOf(30, 150, 450), buzzes)
+        assertEquals(listOf(30_000L, 120_000L, 300_000L), LampAlarm.RED_REPEATS_MS)
         // cleared: quiet
-        assertNull(a.onMessage(emptyList(), true, 150_000))
-        assertNull(a.onMessage(emptyList(), true, 200_000))
+        assertNull(a.onMessage(emptyList(), true, 1_850_000, 25.0))
+        assertNull(a.onMessage(emptyList(), true, 1_900_000, 25.0))
+    }
+
+    @Test fun noRepeatsAtAStandstill() {
+        val a = LampAlarm()
+        val red = listOf(lamp(temp, LampLevel.RED))
+        assertSame(Buzz.RED, a.onMessage(red, true, 0, 20.0))
+        // stopped to cool off, as the lamp asks: the overheat stays red, the watch keeps quiet
+        for (k in 1..600) assertNull(a.onMessage(red, true, k * 1_000L, if (k % 2 == 0) 0.0 else 2.9))
+        // riding again, still red: the overdue repeat once, then the next one 2 min on
+        assertSame(Buzz.RED, a.onMessage(red, true, 601_000, 12.0))
+        assertNull(a.onMessage(red, true, 700_000, 12.0))
+        assertSame(Buzz.RED, a.onMessage(red, true, 721_000, 12.0))
+        // a red that turns on at a standstill is news all the same
+        val b = LampAlarm()
+        assertSame(Buzz.RED, b.onMessage(listOf(lamp(battery, LampLevel.RED)), true, 0, 0.0))
+        assertEquals(3.0, LampAlarm.MOVING_KMH, 0.0)
     }
 
     @Test fun aFlickeringRedWaitsForTheRepeat() {
@@ -340,6 +359,36 @@ class LampAlarmTest {
         assertNull(a.onMessage(listOf(lamp(temp, LampLevel.AMBER)), true, 10_000))
         assertNull(a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 20_000))
         assertSame(Buzz.RED, a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 30_000))
+        // out for less than 2 min and back: still the same red, the next repeat 2 min after the last
+        assertNull(a.onMessage(listOf(lamp(temp, LampLevel.AMBER)), true, 40_000))
+        assertNull(a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 140_000))
+        assertSame(Buzz.RED, a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 150_000))
+        // out for 2 min or more: news again when it comes back
+        assertNull(a.onMessage(listOf(lamp(temp, LampLevel.AMBER)), true, 160_000))
+        assertNull(a.onMessage(listOf(lamp(temp, LampLevel.AMBER)), true, 160_000 + LampAlarm.RED_FORGET_MS))
+        assertSame(Buzz.RED, a.onMessage(listOf(lamp(temp, LampLevel.RED)), true, 161_000 + LampAlarm.RED_FORGET_MS))
+    }
+
+    @Test fun redRightAfterAnAmberDoesNotWaitButTwoRedsDo() {
+        val a = LampAlarm()
+        assertSame(Buzz.AMBER, a.onMessage(listOf(lamp(traction, LampLevel.AMBER)), true, 0))
+        assertSame(Buzz.RED, a.onMessage(listOf(lamp(traction, LampLevel.AMBER), lamp(temp, LampLevel.RED)), true, 1_000))
+        // another red 1 s later: after the gap, not lost
+        val both = listOf(lamp(temp, LampLevel.RED), lamp(battery, LampLevel.RED))
+        assertNull(a.onMessage(both, true, 2_000))
+        assertNull(a.onMessage(both, true, 5_999))
+        assertSame(Buzz.RED, a.onMessage(both, true, 6_000))
+        assertNull(a.onMessage(both, true, 7_000))
+    }
+
+    @Test fun theLinkLampNeverBuzzes() {
+        // lit only while the data is not live (or for its hold after): a buzz could only come once the data is back
+        val a = LampAlarm()
+        assertNull(a.onMessage(listOf(lamp(TellTales.LINK, LampLevel.AMBER)), true, 0))
+        assertNull(a.onMessage(emptyList(), true, 400_000))
+        assertNull(a.onMessage(listOf(lamp(TellTales.LINK, LampLevel.AMBER)), true, 800_000))
+        assertTrue(TellTales.LINK in LampAlarm.SILENT)
+        assertTrue(LampAlarm.SILENT.containsAll(TellTales.QUIET))
     }
 
     @Test fun anotherRedAtOnceSeveralLampsOneBuzz() {
@@ -472,6 +521,17 @@ class OverspeedAlarmTest {
         // re-armed before the system could notice a gap
         assertTrue(OverspeedAlarm.REARM_MS < Health.STALE_MS)
     }
+
+    @Test fun stopsWithinAboutASecondAndAHalfWithoutNewData() {
+        // what RideService passes: live and fresh; the phone's heartbeat keeps «streaming» true 3 s after the last frame
+        val t = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = mph16 + 3)
+        fun live(freshAt: Long, rxAt: Long, now: Long) = Health.of(t, rxAt, now).live && OverspeedAlarm.fresh(freshAt, now)
+        val a = OverspeedAlarm()
+        assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, t.speedKmh, live(10_000, 10_000, 10_000), 10_000))
+        assertEquals(OverspeedAlarm.Action.NONE, a.update(true, 16.0, t.speedKmh, live(10_000, 11_000, 11_500), 11_500))
+        assertEquals(OverspeedAlarm.Action.STOP, a.update(true, 16.0, t.speedKmh, live(10_000, 11_000, 11_501), 11_501))
+        assertTrue(OverspeedAlarm.FRESH_MS < Health.STALE_MS)
+    }
 }
 
 class OverspeedPrefTest {
@@ -498,6 +558,7 @@ class OverspeedPrefTest {
 
     @Test fun onAtSixteenByDefault() {
         val p = WatchPrefs()
+        assertTrue(p.lampBuzz)
         assertTrue(p.overspeedOn)
         assertEquals(16.0, p.overspeedMph, 0.0)
         assertEquals(OverspeedPref.DEFAULT_MPH, p.overspeedMph, 0.0)
@@ -518,5 +579,7 @@ class LampLinesTest {
         val s = Screen(Samples.critical, Health.LIVE)
         assertEquals(2 + lines.size + detailRows(s.t, s.fast).size + 1, smoothChipIndex(s))
         assertEquals(smoothChipIndex(s) + 1, overspeedChipIndex(s))
+        // «Вибрация ламп» under the threshold slider
+        assertEquals(overspeedChipIndex(s) + 2, lampBuzzChipIndex(s))
     }
 }
