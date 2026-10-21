@@ -278,7 +278,7 @@ class ScooterService : Service() {
             s.gatt = list
             val nChars = list.sumOf { it.chars.size }
             s.recorder.servicesFound(list.size, nChars, s.now())
-            ScooterRepo.tracker.restartStreams()
+            ScooterRepo.restartStreams()
             ScooterRepo.note("Найдено сервисов: ${list.size}, характеристик: $nChars")
         }
 

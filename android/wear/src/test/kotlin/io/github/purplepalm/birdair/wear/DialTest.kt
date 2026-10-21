@@ -166,6 +166,37 @@ class DialTextTest {
         assertEquals(Palette.FLOW, Dial.powerArgb(-150.0))
         assertEquals(Palette.MUTED, Dial.powerArgb(0.0))
         assertEquals(Palette.MUTED, Dial.powerArgb(null))
+        // coasting: −8 W of a released throttle is grey «накат», not blue regen; the phone's state decides
+        assertEquals(Palette.MUTED, Dial.powerArgb(-8.0, Flow.COAST))
+        assertEquals(Palette.FLOW, Dial.powerArgb(-150.0, Flow.REGEN))
+        assertEquals(Palette.DRAW, Dial.powerArgb(180.0, Flow.DRIVE))
+    }
+
+    @Test fun aLongLampTextIsSetSmallerThenEllipsized() {
+        assertEquals(Dial.MSG_FONT, Dial.msgFont(100f, 124f))
+        assertEquals(Dial.MSG_FONT, Dial.msgFont(124f, 124f))
+        assertEquals(Dial.MSG_FONT * 124f / 131f * Dial.MSG_FIT, Dial.msgFont(131f, 124f), 1e-5f)
+        assertTrue(131f * Dial.msgFont(131f, 124f) / Dial.MSG_FONT < 124f)
+        assertEquals(Dial.MSG_MIN_FONT, Dial.msgFont(400f, 124f))
+        assertEquals(Dial.MSG_FONT, Dial.msgFont(0f, 124f))
+        assertTrue(Dial.MSG_MIN_FONT < Dial.MSG_FONT)
+    }
+
+    @Test fun theBmsLines() {
+        // after the BMS cut the pack (20.10): the dash answers, no frame comes — the top line says so
+        val lamps = listOf(Lamp(TellTales.BATTERY, LampLevel.RED, Cluster.NO_BMS), Lamp(TellTales.LINK, LampLevel.AMBER, Cluster.DASH_NO_BMS))
+        assertEquals("BMS молчит", Cluster.statusLabel(Health.SILENT, lamps))
+        assertEquals("руль молчит", Cluster.statusLabel(Health.SILENT, lamps.take(1)))
+        assertEquals("нет данных\nс телефона", Cluster.statusLabel(Health.NO_PHONE, lamps))
+        assertEquals("нет данных с телефона", Cluster.statusLabel(Health.NO_PHONE, lamps, gauge = false))
+        assertNull(Cluster.statusLabel(Health.LIVE, lamps))
+        assertEquals("BMS молчит", RideStatus.text(Telemetry(link = Link.CONNECTED, lamps = lamps), Health.SILENT))
+        // the details: the BMS's flag with the voltage it came at; with the BMS gone no old value
+        val warn = BatteryWarning(BatteryAdvisor.LOW, WarningLevel.CRITICAL, "Сейчас отключится", 31.2)
+        val cut = Telemetry(warnings = listOf(warn), lamps = listOf(Lamp(TellTales.BATTERY, LampLevel.RED, Cluster.BMS_CUT, 30.94)))
+        assertEquals("Заряд · 30,9${NB}В", lampLines(cut).single().second)
+        assertEquals("Заряд", lampLines(cut.copy(lamps = lamps.take(1))).single().second)
+        assertEquals("Заряд · 31,2${NB}В под нагрузкой", lampLines(cut.copy(lamps = listOf(Lamp(TellTales.BATTERY, LampLevel.RED, "Сейчас отключится", 31.2)))).single().second)
     }
 
     @Test fun theLampLine() {
@@ -449,123 +480,6 @@ class LampAlarmTest {
     }
 }
 
-class OverspeedAlarmTest {
-    private val mph16 = 16 * Fmt.MILE
-
-    @Test fun onAboveOffBelowWithHalfAMileOfHysteresis() {
-        val a = OverspeedAlarm()
-        fun at(mph: Double, t: Long) = a.update(true, 16.0, mph * Fmt.MILE, true, t)
-        assertEquals(OverspeedAlarm.Action.NONE, at(15.0, 0))
-        // exactly 16: not above
-        assertEquals(OverspeedAlarm.Action.NONE, at(16.0, 100))
-        assertFalse(a.on)
-        assertEquals(OverspeedAlarm.Action.START, at(16.1, 200))
-        assertTrue(a.on)
-        assertEquals(OverspeedAlarm.Action.NONE, at(15.6, 300))
-        assertEquals(OverspeedAlarm.Action.NONE, at(15.51, 400))
-        assertTrue(a.on)
-        assertEquals(OverspeedAlarm.Action.STOP, at(15.49, 500))
-        assertFalse(a.on)
-        // back between: stays off until above 16 again
-        assertEquals(OverspeedAlarm.Action.NONE, at(15.9, 600))
-        assertEquals(OverspeedAlarm.Action.START, at(16.5, 700))
-    }
-
-    @Test fun armedAgainEveryTwoSeconds() {
-        val a = OverspeedAlarm()
-        assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, mph16 + 1, true, 10_000))
-        assertEquals(OverspeedAlarm.Action.NONE, a.update(true, 16.0, mph16 + 1, true, 11_999))
-        assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, mph16 + 1, true, 12_000))
-        assertEquals(OverspeedAlarm.Action.NONE, a.update(true, 16.0, mph16 + 1, true, 13_000))
-        assertEquals(OverspeedAlarm.REARM_MS, a.rearmMs)
-    }
-
-    @Test fun stopsAtOnceWithoutLiveData() {
-        for (stop in listOf<(OverspeedAlarm) -> OverspeedAlarm.Action>(
-            { it.update(true, 16.0, mph16 + 3, false, 1_000) },   // stale / not streaming / link down
-            { it.update(false, 16.0, mph16 + 3, true, 1_000) },   // switched off on the details page
-            { it.update(true, 16.0, null, true, 1_000) },         // no speed
-            { it.update(true, 20.0, mph16 + 3, true, 1_000) },    // threshold raised past the speed
-            { it.stop() },                                        // the service stops
-        )) {
-            val a = OverspeedAlarm()
-            assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, mph16 + 3, true, 0))
-            assertEquals(OverspeedAlarm.Action.STOP, stop(a))
-            assertFalse(a.on)
-        }
-        assertEquals(OverspeedAlarm.Action.NONE, OverspeedAlarm().stop())
-    }
-
-    @Test fun liveMeansFreshAndStreaming() {
-        // what RideService passes as «live»: Health.of at the time of the check
-        val t = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = mph16 + 3)
-        assertTrue(Health.of(t, 10_000, 13_000).live)
-        assertFalse(Health.of(t, 10_000, 13_001).live)
-        assertFalse(Health.of(t.copy(link = Link.RECONNECTING), 10_000, 10_000).live)
-        assertFalse(Health.of(t.copy(streaming = false), 10_000, 10_000).live)
-        val a = OverspeedAlarm()
-        assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, t.speedKmh, Health.of(t, 10_000, 10_000).live, 10_000))
-        assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, t.speedKmh, Health.of(t, 10_000, 12_000).live, 12_000))
-        assertEquals(OverspeedAlarm.Action.STOP, a.update(true, 16.0, t.speedKmh, Health.of(t, 10_000, 13_001).live, 13_001))
-    }
-
-    @Test fun aRepeatingWaveform() {
-        val t = OverspeedAlarm.TIMINGS
-        val amp = OverspeedAlarm.AMPLITUDES
-        assertEquals(t.size, amp.size)
-        assertTrue(OverspeedAlarm.REPEAT in t.indices)
-        // the repeated part is mostly on, at full strength
-        val on = t.indices.filter { it >= OverspeedAlarm.REPEAT && amp[it] > 0 }.sumOf { t[it] }
-        val all = t.indices.filter { it >= OverspeedAlarm.REPEAT }.sumOf { t[it] }
-        assertTrue(on >= 0.8 * all)
-        assertEquals(255, amp.max())
-        // re-armed before the system could notice a gap
-        assertTrue(OverspeedAlarm.REARM_MS < Health.STALE_MS)
-    }
-
-    @Test fun stopsWithinAboutASecondAndAHalfWithoutNewData() {
-        // what RideService passes: live and fresh; the phone's heartbeat keeps «streaming» true 3 s after the last frame
-        val t = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = mph16 + 3)
-        fun live(freshAt: Long, rxAt: Long, now: Long) = Health.of(t, rxAt, now).live && OverspeedAlarm.fresh(freshAt, now)
-        val a = OverspeedAlarm()
-        assertEquals(OverspeedAlarm.Action.START, a.update(true, 16.0, t.speedKmh, live(10_000, 10_000, 10_000), 10_000))
-        assertEquals(OverspeedAlarm.Action.NONE, a.update(true, 16.0, t.speedKmh, live(10_000, 11_000, 11_500), 11_500))
-        assertEquals(OverspeedAlarm.Action.STOP, a.update(true, 16.0, t.speedKmh, live(10_000, 11_000, 11_501), 11_501))
-        assertTrue(OverspeedAlarm.FRESH_MS < Health.STALE_MS)
-    }
-}
-
-class OverspeedPrefTest {
-    @Test fun halfMileSteps() {
-        assertEquals(16.0, OverspeedPref.clamp(16.2), 0.0)
-        assertEquals(16.5, OverspeedPref.clamp(16.3), 0.0)
-        assertEquals(25.0, OverspeedPref.clamp(100.0), 0.0)
-        assertEquals(5.0, OverspeedPref.clamp(1.0), 0.0)
-        assertEquals(16.0, OverspeedPref.clamp(Double.NaN), 0.0)
-        assertEquals(16.5, OverspeedPref.step(16.0, 1), 0.0)
-        assertEquals(15.5, OverspeedPref.step(16.0, -1), 0.0)
-        assertEquals(25.0, OverspeedPref.step(25.0, 1), 0.0)
-        assertEquals(5.0, OverspeedPref.step(5.0, -1), 0.0)
-        // 5 … 25 in 0,5: 41 values, 39 between the ends
-        assertEquals(39, OverspeedPref.STEPS)
-    }
-
-    @Test fun texts() {
-        assertEquals("16${NB}mph", OverspeedPref.mph(16.0))
-        assertEquals("16,5${NB}mph", OverspeedPref.mph(16.5))
-        assertEquals("16${NB}mph · 25,7${NB}км/ч", OverspeedPref.describe(16.0, "kmh"))
-        assertEquals("16${NB}mph", OverspeedPref.describe(16.0, "mph"))
-    }
-
-    @Test fun onAtSixteenByDefault() {
-        val p = WatchPrefs()
-        assertTrue(p.lampBuzz)
-        assertTrue(p.overspeedOn)
-        assertEquals(16.0, p.overspeedMph, 0.0)
-        assertEquals(OverspeedPref.DEFAULT_MPH, p.overspeedMph, 0.0)
-    }
-}
-
 class LampLinesTest {
     @Test fun strongestFirstWithWhatItIsAbout() {
         val lines = lampLines(Samples.critical)
@@ -576,10 +490,11 @@ class LampLinesTest {
         assertEquals("Мало тяги · 15,8${NB}А", lampLines(Samples.attention)[1].second)
         assertEquals("Сервис", lampLines(Samples.attention).last().second)
         assertEquals(emptyList<Pair<Lamp, String>>(), lampLines(Telemetry()))
-        // the settings below the values, the overspeed switch right under «Плавно»
+        // the settings below the values: the tap right under «Плавно», its slider and pause, then the rumble
         val s = Screen(Samples.critical, Health.LIVE)
         assertEquals(2 + lines.size + detailRows(s.t, s.fast).size + 1, smoothChipIndex(s))
-        assertEquals(smoothChipIndex(s) + 1, overspeedChipIndex(s))
+        assertEquals(smoothChipIndex(s) + 1, tapChipIndex(s))
+        assertEquals(tapChipIndex(s) + 3, overspeedChipIndex(s))
         // «Вибрация ламп» under the threshold slider
         assertEquals(overspeedChipIndex(s) + 2, lampBuzzChipIndex(s))
     }

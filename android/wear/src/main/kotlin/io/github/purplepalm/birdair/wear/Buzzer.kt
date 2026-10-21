@@ -9,8 +9,8 @@ import android.os.Vibrator
 import android.os.VibratorManager
 
 /**
- * The watch's motor. Usage «alarm»: a lamp's buzz and the overspeed vibration must be felt with the screen off and the
- * app in the background (other usages are dropped for background apps).
+ * The watch's motor. Usage «alarm»: a lamp's buzz and the speed cues must be felt with the screen off and the app in
+ * the background (other usages are dropped for background apps).
  */
 class Buzzer(ctx: Context) {
     private val vibrator: Vibrator? =
@@ -19,6 +19,9 @@ class Buzzer(ctx: Context) {
 
     /** A lamp's [Buzz], once. */
     fun play(b: Buzz) = vibrate(b.timings, b.amplitudes, -1)
+
+    /** [LimiterTap]'s one tap. */
+    fun tap() = vibrate(LimiterTap.TIMINGS, LimiterTap.AMPLITUDES, -1)
 
     /** [OverspeedAlarm]'s waveform, repeated until [stop]; calling it again arms it again. */
     fun rumble() = vibrate(OverspeedAlarm.TIMINGS, OverspeedAlarm.AMPLITUDES, OverspeedAlarm.REPEAT)

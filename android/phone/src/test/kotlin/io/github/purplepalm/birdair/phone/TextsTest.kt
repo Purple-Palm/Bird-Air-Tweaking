@@ -10,6 +10,7 @@ import io.github.purplepalm.birdair.core.TelemetryTracker
 import io.github.purplepalm.birdair.core.Uuids
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -55,6 +56,38 @@ class TextsTest {
         assertEquals("Накат", Flow.COAST.label)
         val t = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = 20.0, currentA = -0.2, powerW = -8.0, powerState = PowerState.COAST)
         assertEquals("20,0 км/ч · накат", StatusText.notification(t))
+        assertEquals(false, Flow.COAST.intoBattery)
+    }
+
+    /** 20.10 through the pipeline, the power card's line on each BMS frame above 6 km/h (fast power, as the bar). */
+    @Test fun coastingIsNotRegenOnTheRide() {
+        var lastAt: Long? = null
+        var coastFrames = 0
+        var coastShownRegen = 0
+        var coastShownCoast = 0
+        var braking = 0
+        var brakingShownRegen = 0
+        TestLogs.publish(TestLogs.TO_ZERO) { t ->
+            val at = t.powerAtMs
+            if (at == null || at == lastAt) return@publish
+            lastAt = at
+            val a = Power.amps(t, true) ?: return@publish
+            if ((t.speedKmh ?: 0.0) <= 6.0) return@publish
+            val f = Flow.of(t, fast = true)
+            if (a < -0.15 && a >= -0.5) {
+                coastFrames++
+                assertEquals("without the state the page's rule says regen", Flow.REGEN, Flow.of(a, Power.watts(t, true), t.speedKmh))
+                if (f == Flow.REGEN) coastShownRegen++
+                if (f == Flow.COAST) coastShownCoast++
+                assertEquals("t=${t.t}: «${StatusText.notification(t, true)}»", f == Flow.COAST, StatusText.notification(t, true).endsWith("накат"))
+            }
+            if (a <= -3.0) { braking++; if (f == Flow.REGEN) brakingShownRegen++ }
+        }
+        println("20.10 coasting at −0.15…−0.5 A above 6 km/h: $coastFrames frames, «Накат» $coastShownCoast, «Рекуперация» $coastShownRegen; braking ≤ −3 A: $brakingShownRegen of $braking regen")
+        assertTrue("$coastFrames", coastFrames > 120)
+        assertTrue("$coastShownRegen of $coastFrames read «Рекуперация»", coastShownRegen * 4 < coastFrames)
+        assertTrue("$coastShownCoast", coastShownCoast * 2 > coastFrames)
+        assertTrue("$brakingShownRegen of $braking", brakingShownRegen * 10 >= braking * 8)
     }
 
     @Test fun modes() {

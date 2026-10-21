@@ -88,14 +88,20 @@ enum class SmoothPref(val key: String, val label: String) {
 }
 
 /**
- * The watch's own settings (SharedPreferences "bal.wear", see [Settings]). [overspeedOn] / [overspeedMph]: vibrate
- * without a stop while faster than this ([OverspeedAlarm]), on at 16 mph by default. [lampBuzz]: «Вибрация ламп»
- * ([LampAlarm]), on by default.
+ * The watch's own settings (SharedPreferences "bal.wear", see [Settings]). [tapOn] / [tapMph] / [tapPauseS]: one tap
+ * at the limiter ([LimiterTap]), on at 15.5 mph, at most once a minute by default; [overspeedOn] / [overspeedMph]:
+ * vibrate without a stop while faster than the limiter ([OverspeedAlarm]), on at 17.5 mph by default. Both mph are
+ * FLY's, the other modes scale them ([CuePoints]). [lampBuzz]: «Вибрация ламп» ([LampAlarm]), on by default.
  */
 data class WatchPrefs(
     val keepOn: Boolean = true,
     val smooth: SmoothPref = SmoothPref.PHONE,
+    val tapOn: Boolean = true,
+    val tapMph: Double = SpeedPref.TAP_MPH,
+    val tapPauseS: Int = TapPause.DEFAULT_S,
     val overspeedOn: Boolean = true,
-    val overspeedMph: Double = OverspeedPref.DEFAULT_MPH,
+    val overspeedMph: Double = SpeedPref.RUMBLE_MPH,
     val lampBuzz: Boolean = true,
-)
+) {
+    val tapPauseMs: Long get() = TapPause.of(tapPauseS) * 1000L
+}

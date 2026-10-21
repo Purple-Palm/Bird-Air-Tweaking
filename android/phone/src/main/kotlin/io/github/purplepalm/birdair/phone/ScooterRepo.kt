@@ -155,7 +155,8 @@ object ScooterRepo {
         odoSaved = tracker.odometerState
         update.value = UpdateState(latest = Versions.parse(prefs.updateJson), checkedAt = prefs.updateCheckedAt)
         pipeline.onPublish = ::published
-        pipeline.decorate = ::decorate
+        // «под нагрузкой» for battery_low and its lamp (screen, notification, watch): one sample per BMS frame
+        pipeline.decorate = { t, _ -> sag.decorate(t) }
         status.update { it.copy(deviceName = prefs.deviceName, address = prefs.address) }
         DecoderStore.local(app)?.let { useDecoder(it) }
         scope.launch(Dispatchers.IO) {
@@ -208,12 +209,11 @@ object ScooterRepo {
         return t.copy(extras = t.extras + mapOf(EXTRA_FAST to if (s.fastPower) 1.0 else 0.0, EXTRA_SMOOTH to if (s.smooth) 1.0 else 0.0))
     }
 
-    /** Before each publish: «под нагрузкой» for battery_low and its lamp from the phone's [LoadSag] (screen, notification and watch). */
-    private fun decorate(t: Telemetry, fresh: Boolean): Telemetry {
-        if (fresh) sag.add(t.t, t.voltage, t.currentFastA ?: t.currentA)
-        if (t.warnings.isEmpty()) return t
-        val ws = sag.fix(t.warnings, t.t)
-        return t.copy(warnings = ws, lamps = LoadSag.fixLamp(t.lamps, ws))
+    /** A new connection (services discovered): half-received frames go ([TelemetryTracker.restartStreams]) and so does
+     *  the voltage under load of the last one. */
+    fun restartStreams() {
+        tracker.restartStreams()
+        sag.restart()
     }
 
     /** The pipeline's consumer, after each publish (Dispatchers.Default; never the BLE thread). */
@@ -229,8 +229,8 @@ object ScooterRepo {
         // the watch app vibrates for them itself while it is active: then the notification is not mirrored there
         val phoneOnly = d.action != RideAlerts.Action.NONE && Versions.watchBuzzes(watch.value, SystemClock.elapsedRealtime())
         when (d.action) {
-            RideAlerts.Action.ALERT -> Notifications.warning(app, d.items, loud = true, localOnly = phoneOnly)
-            RideAlerts.Action.UPDATE -> Notifications.warning(app, d.items, loud = false, localOnly = phoneOnly)
+            RideAlerts.Action.ALERT -> Notifications.warning(app, d, loud = true, localOnly = phoneOnly)
+            RideAlerts.Action.UPDATE -> Notifications.warning(app, d, loud = false, localOnly = phoneOnly)
             RideAlerts.Action.CANCEL -> Notifications.cancelWarning(app)
             RideAlerts.Action.NONE -> {}
         }

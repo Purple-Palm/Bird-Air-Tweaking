@@ -73,7 +73,7 @@ object Dial {
     const val STATUS_Y = 57f; const val STATUS_FONT = 9.5f; const val STATUS_MAX_W = 90f
     const val RANGE_Y = 131f; const val RANGE_FONT = 13f
     const val DETAILS_Y = 145f; const val DETAILS_FONT = 9.5f
-    const val MSG_Y = 163f; const val MSG_FONT = 9.5f; const val MSG_MAX_W = 124f
+    const val MSG_Y = 163f; const val MSG_FONT = 9.5f; const val MSG_MIN_FONT = 8f; const val MSG_MAX_W = 124f
     const val POWER_Y = 176f
     /** Without a lamp line the power moves up into its place. */
     const val POWER_ALONE_Y = 165f
@@ -194,11 +194,23 @@ object Dial {
         return Fmt.watts(p) + (if (label.isEmpty()) "" else NBSP + label)
     }
 
-    fun powerArgb(p: Double?): Long = when {
+    /** The watts' colour: their sign, but coasting is grey — the −0.2 A of a released throttle is not regen. */
+    fun powerArgb(p: Double?, flow: Flow = Flow.NONE): Long = when {
+        flow == Flow.COAST -> Flow.COAST.tone
         p == null || !p.isFinite() || p == 0.0 -> Palette.MUTED
         p > 0 -> Palette.DRAW
         else -> Palette.FLOW
     }
+
+    /**
+     * The lamp line's font: [MSG_FONT], smaller (down to [MSG_MIN_FONT]) for a text [width] wide at it that would not
+     * fit [maxW] («Руль на связи, BMS молчит»); what still does not fit is ellipsized.
+     */
+    fun msgFont(width: Float, maxW: Float): Float =
+        if (width <= maxW || width <= 0f) MSG_FONT else maxOf(MSG_MIN_FONT, MSG_FONT * maxW / width * MSG_FIT)
+
+    /** Text widths do not scale exactly with the size (hinting, rounding): a little room to spare. */
+    const val MSG_FIT = 0.97f
 
     /** The text line under the details: the top lamp's, «проверка ламп» during the check. */
     data class Message(val text: String, val argb: Long)
@@ -288,6 +300,21 @@ object Cluster {
 
     /** The phone's own bulb check, if it ever sends one: not a real state, nothing to buzz about. */
     fun isBulbCheck(lamps: List<Lamp>): Boolean = lamps.size == TellTales.IDS.size && lamps == TellTales.bulbCheck()
+
+    /** The phone's texts the watch tells apart (TellTales; the 20.10 replay in SpeedCueLogTest checks them). The
+     *  battery: the BMS raised its under-voltage flag (the lamp's value: the voltage then) … */
+    const val BMS_CUT = "BMS отключает батарею"
+    /** … the controller says the BMS is gone (code 0x26); the link: the dash answers, no frame comes. */
+    const val NO_BMS = "Нет связи с BMS"
+    const val DASH_NO_BMS = "Руль на связи, BMS молчит"
+
+    /** The top line for [Health.SILENT] while the dash still answers: it is the BMS that went quiet, not the dash. */
+    const val BMS_SILENT = "BMS молчит"
+
+    /** [Health.gaugeLabel], or [BMS_SILENT] for SILENT with the link lamp saying the dash answers (20.10 after the cut). */
+    fun statusLabel(h: Health, lamps: List<Lamp>, gauge: Boolean = true): String? =
+        if (h == Health.SILENT && lamps.any { it.id == TellTales.LINK && it.text == DASH_NO_BMS }) BMS_SILENT
+        else if (gauge) h.gaugeLabel else h.label
 }
 
 /**

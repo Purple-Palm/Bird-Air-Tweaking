@@ -180,24 +180,125 @@ class LampAlarm(
 }
 
 /**
- * «Вибрация быстрее N mph»: the watch vibrates without a stop while the speed is above the threshold — a cue to brake
- * without looking down. On above the threshold, off below it − [hystMph]; off at once when disabled, without a speed or
- * when the data is not live (the link not CONNECTED or not streaming, or no new data for [FRESH_MS]). The motor runs a
- * repeating waveform ([TIMINGS] from [REPEAT]); while on it is armed again every [rearmMs]: the system cancels an app's
+ * One speed cue's points in the current mode, mph: [onMph] — the speed it starts above; [offMph] — the rumble stops
+ * below it, the tap is armed again below it.
+ */
+data class CuePoint(val onMph: Double, val offMph: Double)
+
+/**
+ * Where the two speed cues sit. The settings are FLY's; FLY's limiter is a function of the speed (20.10 and every FLY
+ * log): the current is 95 % of its plateau at 14.1 mph, 75 % at 15.4, 50 % at 16.9 and none from ≈17.2 mph, so the tap
+ * goes at 15.5 (more throttle gives no more speed there) and the rumble at 17.5 (only a hill gets there: brake). The
+ * other modes scale both and their hysteresis by the mode's limit (× [TellTales.limitMph] / 16: TAKEOFF 8.7 / 9.8 mph,
+ * GLIDE 12.1 / 13.7; TAKEOFF's taper 8.7–9.5 mph); an unknown mode gets FLY's.
+ */
+object CuePoints {
+    const val FLY_LIMIT_MPH = 16.0
+    /** The tap is armed again this far below its point (FLY). */
+    const val TAP_REARM_MPH = 0.6
+    /** The rumble stops this far below its point (FLY). */
+    const val RUMBLE_HYST_MPH = 0.5
+
+    fun scale(mode: Int?): Double = (TellTales.limitMph(mode) ?: FLY_LIMIT_MPH) / FLY_LIMIT_MPH
+
+    fun tap(flyMph: Double, mode: Int?): CuePoint = scale(mode).let { k -> CuePoint(flyMph * k, (flyMph - TAP_REARM_MPH) * k) }
+
+    fun rumble(flyMph: Double, mode: Int?): CuePoint = scale(mode).let { k -> CuePoint(flyMph * k, (flyMph - RUMBLE_HYST_MPH) * k) }
+}
+
+/**
+ * A condition held over fresh samples: true once a sample at least [ms] after the first one that met it meets it too,
+ * every sample between meeting it — so it takes two updates, and a lone sample (or a timer looking at the same one
+ * again) never confirms. [sampleAtMs]: when the sample came ([Feed.freshAtMs]).
+ */
+class Confirm(val ms: Long) {
+    private var since: Long? = null
+
+    fun reset() { since = null }
+
+    fun update(c: Boolean, sampleAtMs: Long?): Boolean {
+        if (!c || sampleAtMs == null) { since = null; return false }
+        val s = since ?: sampleAtMs.also { since = it }
+        return sampleAtMs - s >= ms
+    }
+}
+
+/**
+ * «Тап у ограничителя»: one short tap ([TIMINGS]) when the speed rises above the point where the controller starts
+ * cutting the current ([CuePoints.tap], FLY 15.5 mph) — more throttle gives no more speed from there. It needs the
+ * speed above the point for [confirmMs] over two fresh updates ([Confirm]); after a tap it is quiet until armed again,
+ * and that only below [CuePoint.offMph] with at least the pause ([WatchPrefs.tapPauseMs], 60 / 120 s) passed since the
+ * tap: cruising at the limiter gives one tap, not one per gust. After a change of mode ([hold]) it waits until the
+ * speed has been under the new mode's [CuePoint.offMph]: switching FLY → TAKEOFF at 16 km/h to slow down is not «at the
+ * limiter». Nothing happens (and nothing changes) while it is off or without live data. Clock: the watch's
+ * elapsedRealtime.
+ */
+class LimiterTap(val confirmMs: Long = CONFIRM_MS) {
+    var armed: Boolean = true
+        private set
+    var held: Boolean = false
+        private set
+    private var tapAtMs: Long? = null
+    private val above = Confirm(confirmMs)
+
+    /** The mode changed: its points moved under the speed. */
+    fun hold() { held = true }
+
+    /** True: tap now. [live]: as for [OverspeedAlarm.update]. */
+    fun update(enabled: Boolean, point: CuePoint, pauseMs: Long, speedKmh: Double?, live: Boolean, sampleAtMs: Long?, nowMs: Long): Boolean {
+        val mph = speedKmh?.takeIf { it.isFinite() }?.div(Fmt.MILE)
+        if (!enabled || !live || mph == null || !point.onMph.isFinite()) { above.reset(); return false }
+        if (mph < point.offMph) {
+            held = false
+            if (!armed && tapAtMs.let { it == null || nowMs - it >= pauseMs }) armed = true
+        }
+        if (!above.update(mph > point.onMph, sampleAtMs) || !armed || held) return false
+        armed = false
+        tapAtMs = nowMs
+        return true
+    }
+
+    companion object {
+        /** Two fresh updates at least this far apart (the dash sends ~15 a second): no tap on a lone reading. */
+        const val CONFIRM_MS = 300L
+        /** One firm tap, ~150 ms: unlike the amber lamp's lighter 110 ms. */
+        val TIMINGS = longArrayOf(0, 150)
+        val AMPLITUDES = intArrayOf(0, 255)
+    }
+}
+
+/**
+ * «Вибро быстрее ограничителя»: the watch vibrates without a stop while the speed is above the point ([CuePoints.rumble],
+ * FLY 17.5 mph: past ≈17.2 the controller gives no current, only a hill gets there) — a cue to brake without looking
+ * down. On once above it for [confirmMs] over two fresh updates ([Confirm]), off below [CuePoint.offMph]; off at once
+ * when disabled, without a speed or when the data is not live (the link not CONNECTED or not streaming, or no new data
+ * for [FRESH_MS]). After a change of mode ([hold]) it starts only once the speed has been under the new mode's off
+ * point (16.10: FLY → TAKEOFF at 16.4 km/h to slow down buzzed 1 s); one running goes on. The motor runs a repeating
+ * waveform ([TIMINGS] from [REPEAT]); while on it is armed again every [rearmMs]: the system cancels an app's
  * vibration when the screen is turned off by a gesture, and re-arming picks it up again.
  */
-class OverspeedAlarm(val hystMph: Double = HYST_MPH, val rearmMs: Long = REARM_MS) {
+class OverspeedAlarm(val confirmMs: Long = CONFIRM_MS, val rearmMs: Long = REARM_MS) {
     enum class Action { NONE, START, STOP }
 
     var on: Boolean = false
         private set
+    var held: Boolean = false
+        private set
     private var armedAtMs = 0L
+    private val above = Confirm(confirmMs)
 
-    /** [live]: [Health.LIVE] and [fresh] at [nowMs]. START also means «arm again». */
-    fun update(enabled: Boolean, thresholdMph: Double, speedKmh: Double?, live: Boolean, nowMs: Long): Action {
+    /** The mode changed: its points moved under the speed. */
+    fun hold() { held = true }
+
+    /** [live]: [Health.LIVE] and [fresh] at [nowMs]; [sampleAtMs]: when the speed came ([Feed.freshAtMs]). START also
+     *  means «arm again». */
+    fun update(enabled: Boolean, point: CuePoint, speedKmh: Double?, live: Boolean, sampleAtMs: Long?, nowMs: Long): Action {
         val mph = speedKmh?.takeIf { it.isFinite() }?.div(Fmt.MILE)
-        val want = enabled && live && mph != null && thresholdMph.isFinite() &&
-            (mph > thresholdMph || (on && mph >= thresholdMph - hystMph))
+        val ok = enabled && live && mph != null && point.onMph.isFinite()
+        if (ok && mph!! < point.offMph) held = false
+        val over = ok && above.update(mph!! > point.onMph, sampleAtMs) && !held
+        if (!ok) above.reset()
+        val want = ok && (over || (on && mph!! >= point.offMph))
         val action = when {
             want && (!on || nowMs - armedAtMs >= rearmMs) -> Action.START.also { armedAtMs = nowMs }
             !want && on -> Action.STOP
@@ -208,10 +309,11 @@ class OverspeedAlarm(val hystMph: Double = HYST_MPH, val rearmMs: Long = REARM_M
     }
 
     /** The service stops: STOP when it was on. */
-    fun stop(): Action = if (on) Action.STOP.also { on = false } else Action.NONE
+    fun stop(): Action = if (on) Action.STOP.also { on = false; above.reset() } else Action.NONE
 
     companion object {
-        const val HYST_MPH = 0.5
+        /** Two fresh updates at least this far apart: a lone reading does not start it. */
+        const val CONFIRM_MS = 300L
         const val REARM_MS = 2_000L
         /**
          * New data ([Feed.freshAtMs]: the phone's seq moved) within this: the speed is current. Riding, frames come ~3/s
@@ -229,25 +331,88 @@ class OverspeedAlarm(val hystMph: Double = HYST_MPH, val rearmMs: Long = REARM_M
     }
 }
 
-/** The overspeed threshold on the details page: mph, in [STEP] steps from [MIN] to [MAX]. */
-object OverspeedPref {
-    const val DEFAULT_MPH = 16.0
+/**
+ * Both speed cues as the ride service runs them, on every message, setting change and timer: the rumble first, the
+ * tap only while it is off (a tap would cut the rumble short). A new mode holds both ([OverspeedAlarm.hold],
+ * [LimiterTap.hold]).
+ */
+class SpeedCues {
+    val rumble = OverspeedAlarm()
+    val tap = LimiterTap()
+    private var mode: Int? = null
+
+    data class Out(val rumble: OverspeedAlarm.Action, val tap: Boolean)
+
+    fun update(p: WatchPrefs, t: Telemetry, live: Boolean, sampleAtMs: Long?, nowMs: Long): Out {
+        t.mode?.let { m ->
+            if (mode != null && m != mode) { rumble.hold(); tap.hold() }
+            mode = m
+        }
+        val r = rumble.update(p.overspeedOn, CuePoints.rumble(p.overspeedMph, t.mode), t.speedKmh, live, sampleAtMs, nowMs)
+        val tp = tap.update(p.tapOn, CuePoints.tap(p.tapMph, t.mode), p.tapPauseMs, t.speedKmh, live, sampleAtMs, nowMs)
+        return Out(r, tp && !rumble.on)
+    }
+
+    fun stop(): OverspeedAlarm.Action = rumble.stop()
+}
+
+/** The cues' points on the details page: FLY's mph, in [STEP] steps from [MIN] to [MAX]. */
+object SpeedPref {
+    /** «Тап у ограничителя»: FLY's current is 75 % there (−25 %, felt in the hand). */
+    const val TAP_MPH = 15.5
+    /** «Вибро быстрее ограничителя»: past FLY's zero-current speed (≈17.2 mph). */
+    const val RUMBLE_MPH = 17.5
+    /** v107's rumble default: 159 s above it on 20.10, nearly all full-throttle cruising. */
+    const val OLD_RUMBLE_MPH = 16.0
     const val MIN = 5.0
     const val MAX = 25.0
     const val STEP = 0.5
     /** InlineSlider's steps: the values between the two ends. */
     val STEPS: Int = Math.round((MAX - MIN) / STEP).toInt() - 1
 
-    fun clamp(mph: Double): Double =
-        if (!mph.isFinite()) DEFAULT_MPH else (Math.round(mph / STEP) * STEP).coerceIn(MIN, MAX)
+    fun clamp(mph: Double, default: Double): Double =
+        if (!mph.isFinite()) default else (Math.round(mph / STEP) * STEP).coerceIn(MIN, MAX)
 
-    fun step(mph: Double, by: Int): Double = clamp(clamp(mph) + by * STEP)
+    fun step(mph: Double, by: Int, default: Double): Double = clamp(clamp(mph, default) + by * STEP, default)
 
     /** «16 mph», «16,5 mph». */
     fun mph(mph: Double): String = Fmt.withUnit(mph, if (mph % 1.0 == 0.0) 0 else 1, "mph")
 
-    /** «16 mph · 25,7 км/ч» while the phone shows km/h, «16 mph» in mph. */
+    /** «17,5 mph · 28,2 км/ч» while the phone shows km/h, «17,5 mph» in mph. */
     fun describe(mph: Double, units: String): String =
         if (Fmt.mph(units)) mph(mph) else mph(mph) + " · " + Fmt.withUnit(mph * Fmt.MILE, 1, "км/ч")
+
+    /** The same point in the other modes: «TAKEOFF 9,8 · GLIDE 13,7 mph». */
+    fun otherModes(mph: Double): String =
+        "TAKEOFF " + Fmt.num(mph * CuePoints.scale(1), 1) + " · GLIDE " + Fmt.num(mph * CuePoints.scale(2), 1) + " mph"
+}
+
+/** The tap's pause: at least this long between two taps, a chip on the details page cycles the choices. */
+object TapPause {
+    val CHOICES_S = listOf(60, 120)
+    const val DEFAULT_S = 60
+
+    fun of(s: Int): Int = if (s in CHOICES_S) s else DEFAULT_S
+
+    fun next(s: Int): Int = CHOICES_S[(CHOICES_S.indexOf(of(s)) + 1) % CHOICES_S.size]
+
+    /** «не чаще раза в 60 с». */
+    fun describe(s: Int): String = "не чаще раза в " + of(s) + " с"
+}
+
+/**
+ * The stored settings across versions. [VERSION] 2: the two-stage speed cue. Up to v107 the rumble's threshold was
+ * saved with every setting, at its default 16 mph unless moved: 16 becomes the new default 17.5, a value the owner
+ * chose stays.
+ */
+object PrefsMigration {
+    const val VERSION = 2
+
+    /** [stored]: the saved rumble threshold, null when none was saved; [storedVersion]: 0 before versions were kept. */
+    fun overspeedMph(storedVersion: Int, stored: Double?): Double = when {
+        stored == null || !stored.isFinite() -> SpeedPref.RUMBLE_MPH
+        storedVersion < 2 && stored == SpeedPref.OLD_RUMBLE_MPH -> SpeedPref.RUMBLE_MPH
+        else -> SpeedPref.clamp(stored, SpeedPref.RUMBLE_MPH)
+    }
 }
 

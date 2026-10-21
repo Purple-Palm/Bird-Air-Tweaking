@@ -12,7 +12,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import io.github.purplepalm.birdair.core.Lamp
+import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
+import io.github.purplepalm.birdair.core.TellTales
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -65,12 +68,33 @@ class Shots {
     @Test fun ambientNormal() = shot("ambient-normal") { gauge(Samples.normal, ambient = AmbientState(burnIn = true, tick = 5)) }
     // «проверка ламп»: all 12 in their strongest colour, at start and on each (re)connection
     @Test fun bulbCheck() = shot("bulb-check") { gauge(Samples.normal, bulb = true) }
-    // above the watch's threshold (16 mph): the vibration runs, the dot is red; the blue lamp past the limiter
+    // above the rumble's point (17.5 mph): the vibration runs, the dot is red; the blue lamp past the limiter
     @Test fun overspeed() = shot("overspeed") { gauge(Samples.overspeed, overspeed = true) }
     @Test fun overspeedMph() = shot("overspeed-mph") { gauge(Samples.overspeed.copy(units = "mph"), overspeed = true) }
 
     @Test fun riding() = shot("riding") { gauge(Samples.riding) }
     @Test fun regen() = shot("regen") { gauge(Samples.regen) }
+    // throttle released: «накат» in grey, the arc a sliver
+    @Test fun coast() = shot("coast") { gauge(Samples.coasting) }
+    // 20.10: the BMS's under-voltage flag, 2.4 s before it cut the pack (red, blinks)
+    @Test fun bmsCutoff() = shot("bms-cutoff") { gauge(Samples.bmsCutoff) }
+    // … 13 s after: the dash answers, no frame — «BMS молчит» on top, «Нет связи с BMS» on the line
+    @Test fun linkBmsSilent() = shot("link-bms-silent") { gauge(Samples.bmsSilent, Health.SILENT) }
+    // the longest line, «Руль на связи, BMS молчит», when it is the top lamp: set smaller, not cut
+    @Test fun linkBmsSilentLine() = shot("link-bms-silent-line") {
+        gauge(Samples.bmsSilent.copy(lamps = Samples.bmsSilent.lamps.filter { it.id == TellTales.LINK || it.id == TellTales.SERVICE }), Health.SILENT)
+    }
+    @Test fun detailsBms() = shot("details-bms") { details(Samples.bmsSilent, Health.SILENT) }
+    // regen on a full pack: the BMS warns (amber) and cuts the charge (red)
+    @Test fun overvoltFull() = shot("overvolt-full") { gauge(Samples.overvoltFull) }
+    @Test fun overvoltCut() = shot("overvolt-cut") {
+        gauge(Samples.overvoltFull.copy(voltage = 42.357, lamps = listOf(Lamp(TellTales.OVERVOLT, LampLevel.RED, "Защита от перенапряжения", 42.53), Samples.service)))
+    }
+    // on the charger, hot: the charge waits for ≈37 / 39 °C
+    @Test fun chargeWait() = shot("charge-wait") { gauge(Samples.chargeWait) }
+    @Test fun chargeWaitLine() = shot("charge-wait-line") {
+        gauge(Samples.chargeWait.copy(batteryPctFine = 31.0, batteryPct = 31.0, lamps = Samples.chargeWait.lamps.filter { it.id != TellTales.BATTERY }))
+    }
     @Test fun lowBattery() = shot("low-battery") { gauge(Samples.lowBattery) }
     @Test fun warning() = shot("warning") { gauge(Samples.warning) }
     @Test fun full() = shot("full") {
@@ -93,9 +117,19 @@ class Shots {
         val s = Screen(Samples.riding, Health.LIVE, PhoneFlags(smooth = true))
         WatchTheme { DetailsScreen(s, WatchPrefs(smooth = SmoothPref.OFF), rememberScalingLazyListState(smoothChipIndex(s))) {} }
     }
+    // the speed cues: the tap at the limiter (switch, FLY's point with the other modes under it, the pause) …
+    @Test fun detailsLimiterTap() = shot("details-limiter-tap") {
+        val s = Screen(Samples.riding, Health.LIVE)
+        WatchTheme { DetailsScreen(s, WatchPrefs(), rememberScalingLazyListState(tapChipIndex(s) + 1)) {} }
+    }
+    @Test fun detailsLimiterTapOff() = shot("details-limiter-tap-off") {
+        val s = Screen(Samples.riding.copy(units = "mph"), Health.LIVE)
+        WatchTheme { DetailsScreen(s, WatchPrefs(tapOn = false, tapPauseS = 120), rememberScalingLazyListState(tapChipIndex(s) + 1)) {} }
+    }
+    // … and the rumble past it
     @Test fun detailsOverspeed() = shot("details-overspeed") {
         val s = Screen(Samples.riding, Health.LIVE)
-        WatchTheme { DetailsScreen(s, WatchPrefs(overspeedMph = 17.5), rememberScalingLazyListState(overspeedChipIndex(s) + 1)) {} }
+        WatchTheme { DetailsScreen(s, WatchPrefs(), rememberScalingLazyListState(overspeedChipIndex(s) + 1)) {} }
     }
     @Test fun detailsLampBuzz() = shot("details-lamp-buzz") {
         val s = Screen(Samples.riding, Health.LIVE)

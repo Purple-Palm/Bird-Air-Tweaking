@@ -334,7 +334,7 @@ object RideStatus {
 
     /** The top lamp's line first (as on the dial): «Перегрев — сбавь газ · 11 % · 5,8 км». */
     fun text(t: Telemetry, h: Health): String {
-        if (!h.live) return h.label ?: "Bird Air"
+        if (!h.live) return Cluster.statusLabel(h, Cluster.lamps(t), gauge = false) ?: "Bird Air"
         val parts = ArrayList<String>(3)
         TellTales.top(Cluster.lamps(t))?.text?.takeIf { it.isNotBlank() }?.let { parts += it }
         Battery.level(t)?.let { parts += Fmt.pct(it) }

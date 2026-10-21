@@ -27,8 +27,8 @@ import kotlinx.coroutines.launch
 /**
  * A tiny foreground service behind the Ongoing Activity: while the phone is on a ride (from «подключаюсь»
  * on), the app sits on the watch face (one tap back to the gauge) and its process — with [WatchFeed]'s
- * listener — stays alive. It also runs the overspeed vibration ([OverspeedAlarm]): it keeps running while the screen
- * is dim or off, the activity may not.
+ * listener — stays alive. It also runs the speed cues ([SpeedCues]: the tap at the limiter, [LimiterTap], and the
+ * vibration past it, [OverspeedAlarm]): it keeps running while the screen is dim or off, the activity may not.
  * It writes nothing anywhere and stops itself [Idle.AFTER_MS] after the phone's session ended (IDLE or no phone,
  * [SessionIdle]; a pause with the scooter off does not end it), or on «Скрыть».
  */
@@ -39,7 +39,7 @@ class RideService : Service() {
     private var shownText: String? = null
     private var shownKey: String? = null
     private var shownAtMs = 0L
-    private val overspeed = OverspeedAlarm()
+    private val cues = SpeedCues()
     private var buzzer: Buzzer? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -61,7 +61,7 @@ class RideService : Service() {
         if (ongoing == null) {
             goForeground()
             scope.launch { watch() }
-            scope.launch { overspeedLoop() }
+            scope.launch { cueLoop() }
         }
         return START_NOT_STICKY
     }
@@ -69,7 +69,7 @@ class RideService : Service() {
     override fun onDestroy() {
         scope.cancel()
         // the service goes: so does the vibration, at once
-        act(overspeed.stop())
+        act(cues.stop())
         buzzer = null
         WatchFeed.release()
         running = false
@@ -141,19 +141,21 @@ class RideService : Service() {
     }
 
     /**
-     * The overspeed vibration: judged on every message and on every change of the setting; while it runs, again when
+     * The speed cues: judged on every message and on every change of the settings; while the rumble runs, again when
      * no new data came for [OverspeedAlarm.FRESH_MS] (then it stops at once) and every [OverspeedAlarm.rearmMs] to arm
-     * it again.
+     * it again. Both need a second fresh update to start ([Confirm]), which is a message: no timer for that.
      */
-    private suspend fun overspeedLoop() {
+    private suspend fun cueLoop() {
         combine(WatchFeed.feed, Settings.prefs) { f, p -> f to p }.collectLatest { (f, p) ->
             while (true) {
                 val now = SystemClock.elapsedRealtime()
                 val live = Health.of(f.t, f.rxAtMs, now).live && OverspeedAlarm.fresh(f.freshAtMs, now)
-                act(overspeed.update(p.overspeedOn, p.overspeedMph, f.t.speedKmh, live, now))
-                if (!overspeed.on) return@collectLatest
+                val out = cues.update(p, f.t, live, f.freshAtMs, now)
+                act(out.rumble)
+                if (out.tap) buzzer?.tap()
+                if (!cues.rumble.on) return@collectLatest
                 val untilStale = (f.freshAtMs ?: now) + OverspeedAlarm.FRESH_MS + 1 - now
-                delay(minOf(overspeed.rearmMs, untilStale).coerceAtLeast(1))
+                delay(minOf(cues.rumble.rearmMs, untilStale).coerceAtLeast(1))
             }
         }
     }
@@ -164,7 +166,7 @@ class RideService : Service() {
             OverspeedAlarm.Action.STOP -> buzzer?.stop()
             OverspeedAlarm.Action.NONE -> Unit
         }
-        overspeeding.value = overspeed.on
+        overspeeding.value = cues.rumble.on
     }
 
     private fun statusNow(): String {
