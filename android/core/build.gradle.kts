@@ -13,6 +13,11 @@ dependencies {
 tasks.test {
     useJUnit()
     systemProperty("repoRoot", rootDir.parentFile.absolutePath)
+    // the tests read the repo's logs, decoder and Python reference tools: rerun when they change
+    val repo = rootDir.parentFile
+    inputs.dir(repo.resolve("logs")).withPropertyName("logs")
+    inputs.file(repo.resolve("decoders/current.json")).withPropertyName("decoder")
+    inputs.dir(repo.resolve("tools")).withPropertyName("tools")
     // the ride log is parsed whole in a test
     maxHeapSize = "1g"
     testLogging {

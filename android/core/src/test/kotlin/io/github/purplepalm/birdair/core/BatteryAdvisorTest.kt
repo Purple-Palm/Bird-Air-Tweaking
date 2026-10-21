@@ -121,7 +121,8 @@ class BatteryAdvisorTest {
             assertTrue(cut - low >= 5 * 60_000, "$path: «Заряд на исходе» ${(cut - low) / 1000} s before")
             assertTrue(cut - crit >= 60_000, "$path: «Сейчас отключится» ${(cut - crit) / 1000} s before")
             assertTrue(cut - first(st, BatteryAdvisor.HOT, true)!! >= 5 * 60_000, path)
-            val w = st.last().ws
+            // active at the moment of the cutoff (a re-sent log may go on after it, cooling down)
+            val w = st.last { it.t <= cut }.ws
             assertEquals(listOf(BatteryAdvisor.LOW, BatteryAdvisor.HOT), w.map { it.id })
             assertEquals("Сейчас отключится", w[0].text)
             assertEquals(WarningLevel.CRITICAL, w[0].level)
