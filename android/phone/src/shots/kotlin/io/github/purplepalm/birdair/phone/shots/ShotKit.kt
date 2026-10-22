@@ -294,10 +294,10 @@ class Shooter(private val rule: AndroidComposeTestRule<ActivityScenarioRule<Comp
         }
     }
 
-    /** The other theme, a few frames for it to recompose and draw. */
+    /** The other theme, a few frames for it to recompose and draw (~0,2 s: a text field's border colour animates 150 ms). */
     private fun flip(to: Boolean) {
         rule.runOnIdle { dark = to }
-        repeat(3) { rule.mainClock.advanceTimeBy(16); rule.waitForIdle() }
+        repeat(13) { rule.mainClock.advanceTimeBy(16); rule.waitForIdle() }
     }
 
     /** To 0,2 s into a blink second: a red lamp is on in the picture. */
