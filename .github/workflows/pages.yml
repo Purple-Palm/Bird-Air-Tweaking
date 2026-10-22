@@ -1,0 +1,88 @@
+name: Pages
+
+# Выкладывает сайт после пуша в main или в ветку, выбранную источником Pages
+# (Settings → Pages). Режим «GitHub Actions» — собирает и выкладывает здесь.
+# Режим «Deploy from a branch» — GitHub собирает сам, но не после пушей от
+# приложения (бота); тогда этот workflow просит сборку через API.
+
+on:
+  push:
+    paths-ignore:
+      - 'logs/**'
+      - 'tests/**'
+      - 'tools/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          action=none
+          if cfg=$(gh api "repos/$REPO/pages" 2>/dev/null); then
+            type=$(jq -r '.build_type' <<<"$cfg")
+            source=$(jq -r '.source.branch // ""' <<<"$cfg")
+            echo "Pages: $type, ветка-источник ${source:-—}; пуш в $GITHUB_REF_NAME"
+            if [ "$type" = workflow ] && { [ "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF_NAME" = "$source" ]; }; then
+              action=deploy
+            elif [ "$type" = legacy ] && [ "$GITHUB_REF_NAME" = "$source" ]; then
+              action=rebuild
+            fi
+          else
+            echo "Pages не включён"
+          fi
+          echo "Действие: $action"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: plan
+    if: needs.plan.outputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for committed tokens
+        run: python3 tools/check_secrets.py
+
+      - name: Assemble site
+        run: |
+          mkdir _site
+          cp -r index.html assets decoders _site/
+          sed -i "s/__BUILD__/${GITHUB_SHA::7}/g" _site/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  rebuild:
+    needs: plan
+    if: needs.plan.outputs.action == 'rebuild'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request a Pages build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh api -X POST "repos/$REPO/pages/builds"
