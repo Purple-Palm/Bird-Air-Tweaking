@@ -97,4 +97,15 @@ class DashTextTest {
         assertEquals("11 логов", DashText.logs(11))
         assertEquals("22 лога", DashText.logs(22))
     }
+
+    @Test fun disconnectedSaysWhatAutoSendWillDo() {
+        val on = GhConfig(auto = true)
+        assertEquals("Отключено · лог сохранён и уходит в GitHub", DashText.disconnected(on, hasToken = true))
+        assertEquals("Отключено · лог сохранён", DashText.disconnected(GhConfig(auto = false), hasToken = true))
+        assertEquals("on without a token: nothing goes (LogStore.autoDue)", "Отключено · лог сохранён · для автоотправки нужен токен",
+            DashText.disconnected(on, hasToken = false))
+        assertEquals("Отключено · лог сохранён · для автоотправки заполни «Логи» → «GitHub»", DashText.disconnected(on.copy(branch = " "), hasToken = true))
+        assertFalse(on.copy(owner = "").autoReady(true))
+        assertTrue(on.autoReady(true))
+    }
 }

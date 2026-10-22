@@ -116,5 +116,9 @@ class DashViewsTest {
         assertEquals("a Samsung sleeps apps anyway", SetupStep.BACKGROUND, step(SystemState(samsung = true)))
         assertEquals("«Позже» on background", SetupStep.DONE, step(SystemState(samsung = true, ignoringBattery = false), s.copy(batteryHintHidden = true)))
         assertEquals(SetupStep.DONE, step(SystemState()))
+        // connecting (the service brought back by the update, the old background card never put off): no setup card
+        val samsung = SystemState(samsung = true, ignoringBattery = false, bluetoothOn = false)
+        assertEquals(SetupStep.BLUETOOTH, step(samsung))
+        assertEquals("connecting: «Подключаюсь…» / «Отмена», not the card", SetupStep.DONE, Setup.step(samsung, s, scan, running = true))
     }
 }

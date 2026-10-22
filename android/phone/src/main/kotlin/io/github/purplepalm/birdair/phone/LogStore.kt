@@ -106,7 +106,7 @@ object LogStore {
      */
     fun autoDue(s: Session, p: LogPart, force: Boolean, minGapMs: Long = 0, nowMs: Long = System.currentTimeMillis()): Boolean {
         val cfg = ScooterRepo.gh.value
-        if (!cfg.auto || !cfg.complete || !ScooterRepo.hasToken.value) return false
+        if (!cfg.autoReady(ScooterRepo.hasToken.value)) return false
         if (s.rx.get() == 0L || p.recorder.size == 0) return false
         if (!p.dirtyGh(cfg.dest)) return false
         if (force) return nowMs - p.ghTryAt >= minGapMs

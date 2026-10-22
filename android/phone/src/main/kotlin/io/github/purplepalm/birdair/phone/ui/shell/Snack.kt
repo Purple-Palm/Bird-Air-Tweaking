@@ -48,7 +48,7 @@ sealed interface Snack {
     data class Mark(val marker: Marker, val clock: String) : Snack
 }
 
-/** The screen's one snackbar; a new one replaces the old. Text goes after [TEXT_MS], the marker after [MARK_MS]. */
+/** The screen's one snackbar; a new one replaces the old. Text goes after [TEXT_MS] ([ACTION_MS] with an action), the marker after [MARK_MS]. */
 @Stable
 class SnackState {
     var current: Snack? by mutableStateOf(null)
@@ -66,7 +66,15 @@ class SnackState {
 
     companion object {
         const val TEXT_MS = 3400L
+        /** Long enough to read the line and reach its button in gloves. */
+        const val ACTION_MS = 8000L
         const val MARK_MS = 8000L
+
+        fun showMs(s: Snack): Long = when {
+            s is Snack.Mark -> MARK_MS
+            s is Snack.Text && s.action != null -> ACTION_MS
+            else -> TEXT_MS
+        }
     }
 }
 
@@ -80,7 +88,7 @@ val LocalSnack = staticCompositionLocalOf { SnackState() }
 fun SnackHost(snack: SnackState, modifier: Modifier = Modifier) {
     val s = snack.current ?: return
     LaunchedEffect(s, snack.shownAt) {
-        delay(if (s is Snack.Mark) SnackState.MARK_MS else SnackState.TEXT_MS)
+        delay(SnackState.showMs(s))
         snack.dismiss()
     }
     val c = LocalBal.current

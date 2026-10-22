@@ -50,8 +50,11 @@ class Nav(start: NavStart = NavStart()) {
         if (ScooterRepo.settings.value.lastPage != p.name) ScooterRepo.updateUi { it.copy(lastPage = p.name) }
     }
 
-    /** Back to the dash. */
+    /** Back to the dash: the page and the GitHub screen fold. */
     fun fold() { page = null; sub = null }
+
+    /** The dash with nothing over it (a notification tap): the page, the GitHub screen and the sheet go. */
+    fun home() { fold(); sheet = null }
 
     /** The lamp sheet of [id] ([io.github.purplepalm.birdair.core.TellTales.IDS]). */
     fun lamp(id: String) { lamp = id; sheet = SheetKind.LAMP }

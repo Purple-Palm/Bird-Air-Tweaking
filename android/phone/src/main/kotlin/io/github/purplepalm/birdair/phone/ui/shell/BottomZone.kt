@@ -93,7 +93,11 @@ fun BottomZone(page: Page?, view: DashView, setup: SetupStep) {
 
 // -- tiles
 
-/** «Отправить · 3 лога → GitHub» and the update tile: one tap does the job. Not tappable for [DashViews.TILE_GUARD_MS] after appearing. */
+/**
+ * «Отправить · 3 лога → GitHub» and the update tile: one tap does the job. Not tappable for [DashViews.TILE_GUARD_MS]
+ * after the row changes under the thumb: the view, a tile appearing or going (the other one halves or doubles), a tile
+ * turning into another action («Скачиваю» → «Установить»).
+ */
 @Composable
 fun Tiles(view: DashView) {
     val unsent by ScooterRepo.unsent.collectAsStateWithLifecycle()
@@ -104,7 +108,7 @@ fun Tiles(view: DashView) {
     val logs = DashText.logsTile(unsent, log, System.currentTimeMillis())
     val upd = rememberUpdateTile()
     if (logs == null && upd == null) return
-    val armed = rememberArmed(Triple(view, true, pin))
+    val armed = rememberArmed(listOf(view, pin, logs?.kind, upd))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (logs != null) when (logs.kind) {
             DashText.LogsKind.UNSENT -> Tile(AppIcons.Up, LocalBal.current.draw, "Отправить", DashText.logs(logs.n) + " → GitHub", armed = armed, onClick = ui::sendAll)
@@ -178,7 +182,7 @@ fun ActionRow(view: DashView, setup: SetupStep) {
                 "Отключить", AppIcons.Stop, hold = moving,
                 onConfirm = {
                     ui.disconnect()
-                    snack.text(if (ScooterRepo.gh.value.auto) "Отключено · лог сохранён и уходит в GitHub" else "Отключено · лог сохранён")
+                    snack.text(DashText.disconnected(ScooterRepo.gh.value, ScooterRepo.hasToken.value))
                 },
                 onShortTap = { snack.text("На ходу «Отключить» нужно удержать — так запись не оборвётся случайно") },
                 modifier = Modifier.weight(1f),

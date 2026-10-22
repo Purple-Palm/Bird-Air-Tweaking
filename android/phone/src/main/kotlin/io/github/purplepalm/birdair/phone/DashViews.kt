@@ -75,9 +75,10 @@ object Setup {
     /**
      * PERMS: any of [scanPerms] missing; NOTIF: only POST_NOTIFICATIONS missing and not put off («Позже»); BLUETOOTH: off;
      * BACKGROUND: battery optimisation still on (or a Samsung, which sleeps apps anyway) and not put off; else DONE.
-     * The dash shows it only while nothing runs (IDLE).
+     * Only while nothing runs: [running] (connecting, the IDLE view too) → DONE, so «Подключаюсь…» / «Отмена» show.
      */
-    fun step(sys: SystemState, s: UiSettings, scanPerms: List<String>): SetupStep = when {
+    fun step(sys: SystemState, s: UiSettings, scanPerms: List<String>, running: Boolean = false): SetupStep = when {
+        running -> SetupStep.DONE
         scanPerms.any { it in sys.missingPerms } -> SetupStep.PERMS
         sys.missingPerms.isNotEmpty() && sys.missingPerms.all { it == NOTIFY } && !s.notifHintHidden -> SetupStep.NOTIF
         !sys.bluetoothOn -> SetupStep.BLUETOOTH

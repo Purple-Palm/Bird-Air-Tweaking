@@ -276,6 +276,8 @@ object Scenes {
 class Shooter(private val rule: AndroidComposeTestRule<ActivityScenarioRule<ComponentActivity>, ComponentActivity>) {
     val ui = FakeUi()
     private var dark by mutableStateOf(true)
+    /** The activity's state; a test changes it as the activity would (a notification tap, an install Android held back). */
+    var sys by mutableStateOf(SystemState())
 
     val s21: Boolean get() = rule.activity.resources.configuration.screenWidthDp <= 360
 
@@ -284,7 +286,8 @@ class Shooter(private val rule: AndroidComposeTestRule<ActivityScenarioRule<Comp
     fun setContent(clock: String, start: NavStart, sys: SystemState, threeButtons: Boolean = false, fontScale: Float? = null) {
         rule.mainClock.autoAdvance = false
         t0 = rule.mainClock.currentTime
-        rule.setContent { BirdTheme(dark) { ShotFrame(clock, threeButtons, fontScale) { MainScreen(ui, sys, start) } } }
+        this.sys = sys
+        rule.setContent { BirdTheme(dark) { ShotFrame(clock, threeButtons, fontScale) { MainScreen(ui, this.sys, start) } } }
         settle()
     }
 

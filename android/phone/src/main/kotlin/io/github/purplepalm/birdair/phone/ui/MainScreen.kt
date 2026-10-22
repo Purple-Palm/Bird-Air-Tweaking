@@ -44,7 +44,11 @@ interface UiActions {
     fun allowInstall()
 }
 
-/** Activity-side state the screen shows; [dashTick] goes up on every notification tap (the dash comes forward). */
+/**
+ * Activity-side state the screen shows; [dashTick] goes up on every notification tap (the dash comes forward, sheets
+ * close); [installAsk] on every «Установить» that Android held back for «Установка неизвестных приложений» (the
+ * snackbar with «Разрешить»).
+ */
 data class SystemState(
     val missingPerms: List<String> = emptyList(),
     val permsBlocked: Boolean = false,
@@ -52,6 +56,7 @@ data class SystemState(
     val ignoringBattery: Boolean = true,
     val samsung: Boolean = false,
     val dashTick: Int = 0,
+    val installAsk: Int = 0,
 )
 
 /** The app's screen ([AppShell]); [start] opens a page, a sheet or the GitHub screen right away (the shots). */

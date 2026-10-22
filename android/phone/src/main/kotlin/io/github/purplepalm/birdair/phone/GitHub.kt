@@ -22,6 +22,9 @@ data class GhConfig(
 ) {
     val dest: String get() = "$owner/$repo/$branch/$folder"
     val complete: Boolean get() = owner.isNotBlank() && repo.isNotBlank() && branch.isNotBlank()
+
+    /** «Отправлять лог сам» will really send: on, set up and a token saved. */
+    fun autoReady(hasToken: Boolean): Boolean = auto && complete && hasToken
 }
 
 /** One HTTP request to the GitHub REST API, built without touching the network (unit-tested). */

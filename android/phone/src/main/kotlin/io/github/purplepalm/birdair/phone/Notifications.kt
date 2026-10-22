@@ -15,7 +15,7 @@ import io.github.purplepalm.birdair.core.LampLevel
 import io.github.purplepalm.birdair.core.Telemetry
 
 /**
- * Every notification opens the dash ([MainActivity.EXTRA_DASH]: a page that was pulled up folds down).
+ * Every notification opens the dash ([MainActivity.EXTRA_DASH]: a page that was pulled up folds down, a sheet closes).
  * The «Поездка» channel and the service's ongoing notification (phone only: setLocalOnly, the watch has its app),
  * and the «Предупреждения» channel: the cluster's red and amber lamps (overheat, low battery, traction, overvoltage,
  * consumption), high priority with vibration ([RideAlerts] decides when it buzzes). Warnings reach the watch: mirrored by Wear OS, unless the watch app is active and

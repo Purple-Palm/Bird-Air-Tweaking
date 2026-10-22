@@ -92,7 +92,8 @@ class MainActivity : ComponentActivity(), UiActions {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // a notification: back to the dash
+        // a notification: the dash, nothing over it. singleTop: an instance Android destroyed in the background gets the
+        // tap here too, after onCreate restored its page (getIntent() is not read: it would fold on every recreation)
         if (intent.getBooleanExtra(EXTRA_DASH, false)) sys = sys.copy(dashTick = sys.dashTick + 1)
     }
 
@@ -105,11 +106,10 @@ class MainActivity : ComponentActivity(), UiActions {
         super.onResume()
         refresh()
         ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) }
-        // back from «Установка неизвестных приложений»: go on with the install
-        val f = pendingInstall
-        if (f != null && Updater.canInstall(this)) {
+        // back from «Установка неизвестных приложений»: go on with the install (install() checks again: not while moving)
+        if (pendingInstall != null && Updater.canInstall(this)) {
             pendingInstall = null
-            lifecycleScope.launch { ScooterRepo.beforeInstall(applicationContext); Updater.install(this@MainActivity, f) }
+            install()
         }
     }
 
@@ -237,7 +237,10 @@ class MainActivity : ComponentActivity(), UiActions {
         }
     }
 
-    /** «Установить»: never while moving; the running recording (every part) and the odometer are saved first. */
+    /**
+     * «Установить»: never while moving; the running recording (every part) and the odometer are saved first. Android
+     * wants «Установка неизвестных приложений» first: the screen says so where the tap came from ([SystemState.installAsk]).
+     */
     private fun install() {
         if (ScooterRepo.moving.value) { ScooterRepo.toast("На ходу не ставлю: установка оборвёт связь. Остановись"); return }
         lifecycleScope.launch {
@@ -245,6 +248,7 @@ class MainActivity : ComponentActivity(), UiActions {
             val f = Updater.readyFile(applicationContext) ?: run { ScooterRepo.update.update { it.copy(readyCode = null) }; return@launch }
             pendingInstall = f
             if (Updater.install(this@MainActivity, f)) pendingInstall = null
+            else if (ScooterRepo.update.value.needsPermission) sys = sys.copy(installAsk = sys.installAsk + 1)
         }
     }
 

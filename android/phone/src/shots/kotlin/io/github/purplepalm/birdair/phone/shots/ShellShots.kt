@@ -15,9 +15,11 @@ import io.github.purplepalm.birdair.phone.BuildConfig
 import io.github.purplepalm.birdair.phone.DashViews
 import io.github.purplepalm.birdair.phone.Installed
 import io.github.purplepalm.birdair.phone.ScooterRepo
+import io.github.purplepalm.birdair.phone.UpdateState
 import io.github.purplepalm.birdair.phone.Updater
 import io.github.purplepalm.birdair.phone.ViewPin
 import io.github.purplepalm.birdair.phone.ui.SystemState
+import io.github.purplepalm.birdair.phone.ui.shell.INSTALL_ASK
 import io.github.purplepalm.birdair.phone.ui.shell.NavStart
 import io.github.purplepalm.birdair.phone.ui.shell.Page
 import io.github.purplepalm.birdair.phone.ui.shell.SheetKind
@@ -37,6 +39,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import kotlinx.coroutines.flow.update
 import java.util.TimeZone
 import io.github.purplepalm.birdair.phone.shots.Scenes.Logs
 import io.github.purplepalm.birdair.phone.shots.Scenes.Upd
@@ -197,6 +200,57 @@ abstract class ShellShotsBase {
         shot.both("update-idle-avail")
     }
 
+    /** Nothing newer: what the release had at the last check; a check that never came through does not say «Новее нет». */
+    @Test fun updateNone() {
+        Scenes.idle(); Scenes.update(Upd.NONE); Scenes.logs(Logs.UNSENT)
+        ScooterRepo.update.update { it.copy(message = "Новее нет: v108 — последняя сборка.") }
+        shot.setContent("22:25", NavStart(sheet = SheetKind.UPDATE), sys)
+        shot.both("update-none")
+        rule.onNodeWithText("v108 — она и стоит", substring = true).assertExists()
+        // the start-up check failed (manual = false: no message, no error) and nothing was ever read
+        ScooterRepo.update.value = UpdateState()
+        shot.settle(2)
+        rule.onNodeWithText("ещё не проверено", substring = true).assertExists()
+        rule.onNodeWithText("Новее нет", substring = true).assertDoesNotExist()
+        ScooterRepo.update.value = UpdateState(message = "Не удалось прочитать version.json релиза android-latest: нет сети.", err = true)
+        shot.settle(2)
+        rule.onNodeWithText("Не удалось прочитать", substring = true).assertExists()
+    }
+
+    /** «Установить» before «Установка неизвестных приложений» is allowed: the snackbar right there leads to it. */
+    @Test fun installNeedsPermission() {
+        Scenes.idle(); Scenes.update(Upd.READY); Scenes.logs(Logs.UNSENT)
+        shot.setContent("22:25", NavStart(), sys)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.waitForIdle()
+        rule.onNodeWithText("Установить").performClick()
+        assertTrue("updateStep" in shot.ui.calls)
+        // what MainActivity.install() does when Updater.install says Android wants the permission first
+        ScooterRepo.update.update { it.copy(needsPermission = true) }
+        shot.sys = shot.sys.copy(installAsk = shot.sys.installAsk + 1)
+        shot.settle(3)
+        rule.onNodeWithText(INSTALL_ASK).assertExists()
+        shot.both("home-idle-perm")
+        val snack = rule.onNodeWithTag(TAG_SNACK).fetchSemanticsNode().boundsInRoot
+        val zone = rule.onNodeWithTag(TAG_BOTTOM).fetchSemanticsNode().boundsInRoot
+        assertTrue("the snackbar is above the tiles: ${snack.bottom} > ${zone.top}", snack.bottom <= zone.top + 0.5f)
+        checkTargets()
+        rule.onNodeWithText("Разрешить").performClick()
+        assertTrue("«Разрешить» opens «Установка неизвестных приложений»", "allowInstall" in shot.ui.calls)
+    }
+
+    /** A notification tap shows the dash with nothing over it: the page folds and the sheet closes. */
+    @Test fun notificationShowsTheDash() {
+        Scenes.ride(); Scenes.update(Upd.NONE)
+        shot.setContent("22:12", NavStart(page = Page.LOGS, sheet = SheetKind.CONTROL), sys)
+        rule.onNodeWithText("Разрешить команды").assertExists()
+        shot.sys = shot.sys.copy(dashTick = 1)
+        shot.settle(4)
+        rule.onNodeWithText("Разрешить команды").assertDoesNotExist()
+        rule.onNodeWithContentDescription("Свернуть к поездке").assertDoesNotExist()
+        rule.onNodeWithContentDescription("Вид главного экрана", substring = true).assertExists()
+    }
+
     @Test fun view() {
         Scenes.ride(); Scenes.update(Upd.READY); Scenes.logs(Logs.UNSENT)
         shot.setContent("22:12", NavStart(sheet = SheetKind.VIEW), sys)
@@ -265,6 +319,24 @@ abstract class ShellShotsBase {
         rule.waitForIdle()
         rule.onNodeWithText("Отправить").performClick()
         assertTrue("then it sends", "sendAll" in shot.ui.calls)
+    }
+
+    /** The update tile appearing beside «Отправить» (the start-up check came through) halves it: both wait 0,6 s again. */
+    @Test fun tilesGuardWhenATileAppears() {
+        Scenes.idle(); Scenes.update(Upd.NONE); Scenes.logs(Logs.UNSENT)
+        shot.setContent("22:25", NavStart(), sys)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.waitForIdle()
+        Scenes.update(Upd.AVAILABLE)
+        rule.mainClock.advanceTimeBy(100)
+        rule.waitForIdle()
+        rule.onNodeWithText("Обновить").performClick()
+        rule.onNodeWithText("Отправить").performClick()
+        assertFalse("a tap right after the tile appears goes nowhere", "updateStep" in shot.ui.calls || "sendAll" in shot.ui.calls)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.waitForIdle()
+        rule.onNodeWithText("Обновить").performClick()
+        assertTrue("then it works", "updateStep" in shot.ui.calls)
     }
 
     /** Back closes the sheet, then the GitHub screen, then folds the page. */

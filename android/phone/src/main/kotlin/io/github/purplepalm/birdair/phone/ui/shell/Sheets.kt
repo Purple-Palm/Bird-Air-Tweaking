@@ -63,7 +63,9 @@ import io.github.purplepalm.birdair.phone.Found
 import io.github.purplepalm.birdair.phone.LampText
 import io.github.purplepalm.birdair.phone.Mode
 import io.github.purplepalm.birdair.phone.ScooterRepo
+import io.github.purplepalm.birdair.phone.Fmt
 import io.github.purplepalm.birdair.phone.UpdPhase
+import io.github.purplepalm.birdair.phone.UpdateCardText
 import io.github.purplepalm.birdair.phone.Updater
 import io.github.purplepalm.birdair.phone.ViewPin
 import io.github.purplepalm.birdair.phone.ui.AppIcons
@@ -249,7 +251,10 @@ fun ControlSheet(close: () -> Unit) {
 
 // -- update
 
-/** «Обновление приложения»: the update card (Настройки' own) and the one button under it. */
+/**
+ * «Обновление приложения»: the update card (Настройки' own) and the one button under it. Nothing newer (or checking):
+ * Настройки' lines — what the release had at the last check that came through, then the updater's own word (an error in red).
+ */
 @Composable
 fun UpdateSheet(close: () -> Unit) {
     val c = LocalBal.current
@@ -259,12 +264,20 @@ fun UpdateSheet(close: () -> Unit) {
     val phase = rememberUpdPhase()
     SheetTitle("Обновление приложения", close)
     when (phase) {
-        UpdPhase.NONE -> Text("Новее нет: v${Updater.code} — последняя сборка.", color = c.ink2, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
-        UpdPhase.CHECKING -> Text("Проверяю android-latest…", color = c.ink2, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
+        UpdPhase.NONE, UpdPhase.CHECKING -> {
+            val checked = u.checkedAt.takeIf { it > 0 }?.let { Fmt.dayTime(it) }
+            SheetLine(UpdateCardText.app(Updater.name, Updater.code) + "\n" + UpdateCardText.release(u.latest, Updater.code, checked), c.ink2)
+            if (phase == UpdPhase.CHECKING && !u.err) SheetLine("Проверяю android-latest…", c.ink2)
+            else UpdateCardText.line(phase, u)?.let { (text, err) -> SheetLine(text, if (err) c.critInk else c.goodInk) }
+        }
         else -> UpdateCard(u, phase, st.running, moving)
     }
     UpdateButton(Modifier.fillMaxWidth().padding(top = 14.dp))
 }
+
+@Composable
+private fun SheetLine(text: String, color: androidx.compose.ui.graphics.Color) =
+    Text(text, color = color, fontSize = 13.sp, lineHeight = 18.sp, style = Tnum, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
 
 // -- view
 

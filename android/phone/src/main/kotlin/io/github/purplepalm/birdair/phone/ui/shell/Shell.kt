@@ -76,6 +76,9 @@ const val TAG_BOTTOM = "bottomZone"
 const val TAG_SNACK = "snack"
 const val TAG_MAIN = "main"
 
+/** The snackbar when Android wants «Установка неизвестных приложений» before the first in-app update. */
+const val INSTALL_ASK = "Разреши Bird Air ставить обновления — один раз"
+
 /** System-bar heights to use instead of the window's (the shots draw their own bars: Robolectric has none). */
 data class ShellInsets(val top: Dp, val bottom: Dp)
 
@@ -102,17 +105,23 @@ fun AppShell(ui: UiActions, sys: SystemState, start: NavStart = NavStart()) {
     val settings by ScooterRepo.settings.collectAsStateWithLifecycle()
     val scan by ScooterRepo.scan.collectAsStateWithLifecycle()
     val view = DashViews.of(st.running, st.link, streaming, streamed, moving, pin)
-    val setup = Setup.step(sys, settings, Perms.scan())
+    val setup = Setup.step(sys, settings, Perms.scan(), running = st.running)
 
-    // starting the service shows the dash; so does a tap on a notification
+    // starting the service shows the dash; a tap on a notification shows it with nothing over it
     var wasRunning by rememberSaveable { mutableStateOf(st.running) }
     LaunchedEffect(st.running) {
         if (st.running && !wasRunning) nav.fold()
         if (!st.running) snack.dismissMark()
         wasRunning = st.running
     }
-    LaunchedEffect(sys.dashTick) { if (sys.dashTick > 0) nav.fold() }
+    LaunchedEffect(sys.dashTick) {
+        if (sys.dashTick > 0) { nav.home(); if (ScooterRepo.scan.value.shown) ui.closeScan() }
+    }
     LaunchedEffect(Unit) { ScooterRepo.toasts.collect { snack.text(it) } }
+    // «Установить» held back by Android: the way on, right where the tap was (the update sheet has its own button)
+    LaunchedEffect(sys.installAsk) {
+        if (sys.installAsk > 0 && nav.sheet != SheetKind.UPDATE) snack.text(INSTALL_ASK, "Разрешить") { ui.allowInstall() }
+    }
 
     val fake = LocalShellInsets.current
     val top = fake?.top ?: WindowInsets.statusBars.asPaddingValues().calculateTopPadding()

@@ -81,6 +81,14 @@ object DashText {
 
     const val SENT_SHOW_MS = 5 * 60_000L
 
+    /** The snackbar after «Отключить»: «уходит в GitHub» only when the auto-send will really go ([GhConfig.autoReady]). */
+    fun disconnected(gh: GhConfig, hasToken: Boolean): String = "Отключено · лог сохранён" + when {
+        gh.autoReady(hasToken) -> " и уходит в GitHub"
+        !gh.auto -> ""
+        !hasToken -> " · для автоотправки нужен токен"
+        else -> " · для автоотправки заполни «Логи» → «GitHub»"
+    }
+
     /** «3 лога», «1 лог», «5 логов». */
     fun logs(n: Int): String = "$n " + plural(n, "лог", "лога", "логов")
 
