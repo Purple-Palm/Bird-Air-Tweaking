@@ -20,6 +20,12 @@ data class UiSettings(
     val smooth: Boolean = true,
     /** The chart window, [ChartWindow]. */
     val chartWindow: String = "300",
+    /** «Скачивать обновления сам»: a newer release is downloaded after the check; installing is always the owner's tap. */
+    val autoDownload: Boolean = true,
+    /** «Позже» on the first-launch notifications step. */
+    val notifHintHidden: Boolean = false,
+    /** The page the dock handle pulls up ([io.github.purplepalm.birdair.phone.ui.shell.Page] name). */
+    val lastPage: String = "LAMPS",
 )
 
 /** Private SharedPreferences. The GitHub token has a file of its own and is never logged or shown. */
@@ -52,11 +58,15 @@ class Prefs(ctx: Context) {
             fastPower = main.getBoolean("fastPower", true),
             smooth = main.getBoolean("smooth", true),
             chartWindow = ChartWindow.norm(main.getString("chartWindow", "300")),
+            autoDownload = main.getBoolean("autoDownload", true),
+            notifHintHidden = main.getBoolean("notifHintHidden", false),
+            lastPage = main.getString("lastPage", "LAMPS") ?: "LAMPS",
         )
         set(v) = main.edit {
             putString("units", v.units); putBoolean("keepScreenOn", v.keepScreenOn)
             putString("theme", v.theme); putBoolean("batteryHintHidden", v.batteryHintHidden)
             putBoolean("fastPower", v.fastPower); putBoolean("smooth", v.smooth); putString("chartWindow", v.chartWindow)
+            putBoolean("autoDownload", v.autoDownload); putBoolean("notifHintHidden", v.notifHintHidden); putString("lastPage", v.lastPage)
         }
 
     /** The app odometer ([AppOdometer.State]); null before the first frame ever. */
@@ -68,6 +78,11 @@ class Prefs(ctx: Context) {
     var watchFace: FaceChoice?
         get() = FaceChoice.of(main.getString("watchFace", null), main.getLong("watchFaceAt", 0L), FaceChoice.PHONE)
         set(v) = main.edit { if (v == null) { remove("watchFace"); remove("watchFaceAt") } else { putString("watchFace", v.face.key); putLong("watchFaceAt", v.atMs) } }
+
+    /** The last recording, for the idle dash. */
+    var lastRide: LastRide?
+        get() = LastRide.decode(main.getString("lastRide", null))
+        set(v) = main.edit { if (v == null) remove("lastRide") else putString("lastRide", v.encode()) }
 
     /** «Описание лога»: carried over to the next recording until changed. */
     var logNote: String

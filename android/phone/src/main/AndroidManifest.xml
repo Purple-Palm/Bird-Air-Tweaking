@@ -68,6 +68,15 @@
             </intent-filter>
         </service>
 
+        <!-- after an in-app update: the kept APK goes, the link comes back if it was up -->
+        <receiver
+            android:name=".UpdatedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.logs"

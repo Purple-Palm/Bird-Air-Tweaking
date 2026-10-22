@@ -22,13 +22,16 @@ data class GhConfig(
 ) {
     val dest: String get() = "$owner/$repo/$branch/$folder"
     val complete: Boolean get() = owner.isNotBlank() && repo.isNotBlank() && branch.isNotBlank()
+
+    /** «Отправлять лог сам» will really send: on, set up and a token saved. */
+    fun autoReady(hasToken: Boolean): Boolean = auto && complete && hasToken
 }
 
 /** One HTTP request to the GitHub REST API, built without touching the network (unit-tested). */
 class GhRequest(val method: String, val url: String, val headers: Map<String, String>, val body: String?)
 
-/** What a PUT gave back: the blob sha (needed to overwrite the file next time) and the page link. */
-data class GhPut(val path: String, val sha: String?, val htmlUrl: String?)
+/** What a PUT gave back: the blob sha (needed to overwrite the file next time), the page link, the commit it made. */
+data class GhPut(val path: String, val sha: String?, val htmlUrl: String?, val commitSha: String? = null, val commitUrl: String? = null)
 
 class GhError(message: String, val status: Int, val ghMessage: String) : Exception(message)
 
@@ -92,10 +95,14 @@ object GitHubApi {
     fun getBranch(cfg: GhConfig, token: String) =
         GhRequest("GET", repoUrl(cfg) + "/branches/" + enc(cfg.branch.trim()), headers(token, false), null)
 
-    /** sha and html_url of "content" in a PUT response. */
+    /** sha and html_url of "content" and of "commit" in a PUT response. */
     fun parsePut(path: String, body: String?): GhPut {
-        val c = try { body?.let { JSON.parseToJsonElement(it).jsonObject["content"]?.jsonObject } } catch (e: Exception) { null }
-        return GhPut(path, c?.get("sha")?.jsonPrimitive?.contentOrNull, c?.get("html_url")?.jsonPrimitive?.contentOrNull)
+        val o = try { body?.let { JSON.parseToJsonElement(it).jsonObject } } catch (e: Exception) { null }
+        fun obj(k: String): JsonObject? = try { o?.get(k)?.jsonObject } catch (e: Exception) { null }
+        fun str(x: JsonObject?, k: String): String? = try { x?.get(k)?.jsonPrimitive?.contentOrNull } catch (e: Exception) { null }
+        val c = obj("content")
+        val k = obj("commit")
+        return GhPut(path, str(c, "sha"), str(c, "html_url"), str(k, "sha"), str(k, "html_url"))
     }
 
     /** "sha" of a contents GET response. */

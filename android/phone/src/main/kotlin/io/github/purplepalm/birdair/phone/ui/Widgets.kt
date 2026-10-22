@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -188,15 +189,15 @@ fun rememberSpring(target: Float, smooth: Boolean): State<Float> {
  * in −1…1 (read while drawing: [rememberSpring] moves it per display frame).
  */
 @Composable
-fun PowerBar(frac: State<Float>, live: Boolean, modifier: Modifier = Modifier) {
+fun PowerBar(frac: State<Float>, live: Boolean, modifier: Modifier = Modifier, height: Dp = 52.dp) {
     val c = LocalBal.current
     val draw = if (live) c.draw else c.draw.copy(alpha = 0.35f)
     val flow = if (live) c.flow else c.flow.copy(alpha = 0.35f)
-    Canvas(modifier.fillMaxWidth().height(52.dp).semantics { contentDescription = "Полоса мощности" }) {
+    Canvas(modifier.fillMaxWidth().height(height).semantics { contentDescription = "Полоса мощности" }) {
         val a = frac.value.coerceIn(-1f, 1f)
         val w = size.width
         val h = size.height
-        val r = CornerRadius(10.dp.toPx())
+        val r = CornerRadius(minOf(10.dp.toPx(), h / 2))
         val track = Path().apply { addRoundRect(RoundRect(0f, 0f, w, h, r)) }
         val cx = w / 2
         clipPath(track) {

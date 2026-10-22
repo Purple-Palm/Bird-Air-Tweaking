@@ -85,7 +85,8 @@ jobs:
           mkdir -p out
           cp phone/build/outputs/apk/debug/phone-debug.apk out/bird-air-phone.apk
           cp wear/build/outputs/apk/debug/wear-debug.apk out/bird-air-watch.apk
-          # sizes and SHA-256 let the watch (WatchUpdater) check the APK it downloads; jq keeps it valid JSON
+          # sizes and SHA-256 let the watch (WatchUpdater) and the phone (Updater) check the APK they download; notes: the
+          # commit's subject, the phone's «Что нового»; jq keeps it valid JSON
           sha() { sha256sum "$1" | cut -d' ' -f1; }
           size() { stat -c %s "$1"; }
           jq -n \
@@ -96,7 +97,8 @@ jobs:
             --argjson watchSize "$(size out/bird-air-watch.apk)" \
             --arg phoneSha256 "$(sha out/bird-air-phone.apk)" \
             --argjson phoneSize "$(size out/bird-air-phone.apk)" \
-            '{$versionCode, $versionName, $sha, $watchSha256, $watchSize, $phoneSha256, $phoneSize}' \
+            --arg notes "$(git log -1 --format=%s)" \
+            '{$versionCode, $versionName, $sha, $watchSha256, $watchSize, $phoneSha256, $phoneSize, $notes}' \
             > out/version.json
           cat out/version.json
           jq -e '.versionCode > 0 and .watchSize > 0 and .phoneSize > 0

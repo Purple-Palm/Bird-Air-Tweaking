@@ -25,7 +25,7 @@ val decoderAsset = tasks.register<DecoderAsset>("decoderAsset") {
     source.set(rootProject.layout.projectDirectory.file("../decoders/current.json"))
 }
 
-// -Pshots: also render the main screen to PNG with Robolectric (src/shots, see Shots.kt)
+// -Pshots: also render the screens to PNG with Robolectric (src/shots, see ShotKit.kt)
 val shots = providers.gradleProperty("shots").isPresent
 
 // CI: -PversionCode=<run number> -PversionName=<…> -PgitSha=<commit>; the in-app update compares versionCode

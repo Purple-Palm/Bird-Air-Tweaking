@@ -24,6 +24,19 @@ class VersionsTest {
         assertTrue(Versions.PHONE_APK_URL.endsWith("/releases/download/android-latest/bird-air-phone.apk"))
     }
 
+    @Test fun versionJsonOfCi() {
+        val sha = "0123456789abcdef".repeat(4)
+        val v = Versions.parse("""{"versionCode": 109, "versionName": "9-c3f19d2", "sha": "c3f19d2", "watchSha256": "x", "watchSize": 25722553,
+            "phoneSha256": "${sha.uppercase()}", "phoneSize": 19293798, "notes": "Phone: ride-first shell"}""")!!
+        assertEquals(UpdateInfo(109, "9-c3f19d2", "c3f19d2", 19_293_798, sha, "Phone: ride-first shell"), v)
+        // a build from before these fields, or broken ones
+        assertEquals(UpdateInfo(57, "0.57", "abc"), Versions.parse("""{"versionCode": 57, "versionName": "0.57", "sha": "abc"}"""))
+        val bad = Versions.parse("""{"versionCode": 57, "phoneSha256": "not-a-hash", "phoneSize": -1, "notes": " "}""")!!
+        assertNull(bad.phoneSha256)
+        assertNull(bad.phoneSize)
+        assertNull(bad.notes)
+    }
+
     @Test fun newerByVersionCodeOnly() {
         val r = UpdateInfo(42, "0.42", "abc")
         assertTrue(Versions.isNewer(r, 41))

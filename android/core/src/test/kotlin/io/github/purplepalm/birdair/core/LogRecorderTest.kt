@@ -78,6 +78,29 @@ class LogRecorderTest {
         assertEquals("scooter", dev(true)["id"]!!.jsonPrimitive.content)
     }
 
+    @Test fun relabelAMarker() {
+        val r = LogRecorder(1_792_000_000_000L)
+        r.rx("ffe0", "ffe1", byteArrayOf(0x3A), 100)
+        r.mk("Метка 1", 1_000)
+        r.mk("Метка 1", 2_000)
+        val before = r.pushed
+        assertTrue(r.relabel(1_000, "Метка 1", "Тормоз"))
+        assertEquals(before + 1, r.pushed, "a change: the next save and upload carry it")
+        assertEquals(3, r.size)
+        val mk = entries(r.toJson()).filter { it["k"]!!.jsonPrimitive.content == "mk" }.map { it["t"]!!.jsonPrimitive.long to it["n"]!!.jsonPrimitive.content }
+        assertEquals(listOf(1_000L to "Тормоз", 2_000L to "Метка 1"), mk, "the one at that time, the other kept")
+        assertFalse(r.relabel(1_000, "Метка 1", "Газ"), "no such marker")
+        assertFalse(r.relabel(3_000, "Метка 1", "Газ"))
+        assertEquals(before + 1, r.pushed)
+        assertTrue(r.relabel(2_000, "Метка 1", "x".repeat(80)), "cut to 60 like mk")
+        assertTrue(r.toJson().contains("\"n\":\"" + "x".repeat(60) + "\"}"))
+        // a later part: its own clock offset
+        val n = r.rotate(5_000).next
+        n.mk("Метка 2", 6_000)
+        assertTrue(n.relabel(6_000, "Метка 2", "Газ"))
+        assertTrue(n.toJson().contains("{\"t\":1000,\"k\":\"mk\",\"n\":\"Газ\"}"))
+    }
+
     @Test fun fileNames() {
         val r = LogRecorder(start)
         assertEquals("20261015-015422-moya-poezdka", r.fileBase("Моя поездка!", ZoneOffset.UTC))
