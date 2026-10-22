@@ -121,4 +121,35 @@ class ChartDataTest {
         assertEquals(300, ChartWindow.relStepS(900.0))
         assertEquals(1800, ChartWindow.clockStepS(7200.0))
     }
+
+    /** The prototype's axes: 20.10 at 1800 s, 5 min (−430…380 W, 0…27 km/h, 31,1…37,0 V), and the whole ride. */
+    @Test fun axesLikeThePrototype() {
+        assertEquals(listOf(-500.0, -250.0, 0.0, 250.0, 500.0) to 250.0, ChartAxis.power(-430.0, 380.0))
+        assertEquals("the whole ride: over 900 W of span, 500 W steps", listOf(-1000.0, -500.0, 0.0, 500.0, 1000.0) to 500.0, ChartAxis.power(-560.0, 610.0))
+        assertEquals("standing: one step either side of zero", listOf(-250.0, 0.0, 250.0), ChartAxis.power(0.0, 3.0).first)
+        assertEquals(listOf(-250.0, 0.0, 250.0), ChartAxis.power(Double.NaN, Double.NaN).first)
+        assertEquals(1000.0, ChartAxis.power(-200.0, 3100.0).second, 0.0)
+        assertEquals(listOf(0.0, 10.0, 20.0, 30.0), ChartAxis.speed(27.0).first)
+        assertEquals("at least 0…10", listOf(0.0, 10.0), ChartAxis.speed(0.0).first)
+        assertEquals(listOf(30.0, 35.0, 40.0), ChartAxis.volts(31.1, 37.0).first)
+        assertEquals(listOf(30.0, 35.0, 40.0, 45.0), ChartAxis.volts(31.2, 42.4).first)
+        assertEquals("at least 5 V wide", listOf(30.0, 35.0), ChartAxis.volts(34.9, 35.0).first)
+        assertEquals(listOf(30.0, 35.0), ChartAxis.volts(Double.NaN, 1.0).first)
+    }
+
+    @Test fun markerLabelsNeverOverlap() {
+        assertEquals("11% еду домой", MarkerLabels.text("11% еду домой"))
+        assertEquals("55%, возвращ…", MarkerLabels.text("55%, возвращаюсь домой"))
+        assertEquals("дома, 23%. в…", MarkerLabels.text("дома, 23%. в гараже"))
+        assertEquals("trailing space trimmed before «…»", "Газ в горку…", MarkerLabels.text("Газ в горку 25 %"))
+        // right of the line; at the right edge left of it; one too close to a placed label is left out
+        val at = MarkerLabels.place(floatArrayOf(10f, 40f, 150f, 290f), floatArrayOf(50f, 50f, 50f, 50f), right = 300f, pad = 3f, gap = 6f)
+        assertEquals(13f, at[0], 0f)
+        assertTrue("overlaps the first", at[1].isNaN())
+        assertEquals(153f, at[2], 0f)
+        assertEquals("left of its line at the edge", 237f, at[3], 0f)
+        val close = MarkerLabels.place(floatArrayOf(150f, 290f), floatArrayOf(50f, 50f), right = 300f, pad = 3f, gap = 40f)
+        assertTrue("within the gap of the one before", close[1].isNaN())
+        assertTrue(MarkerLabels.place(FloatArray(0), FloatArray(0), 100f, 3f, 6f).isEmpty())
+    }
 }
