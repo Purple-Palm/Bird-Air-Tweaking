@@ -49,6 +49,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -67,11 +68,11 @@ fun SectionHeader(text: String, modifier: Modifier = Modifier, trailing: String?
         modifier.fillMaxWidth().padding(top = if (first) 4.dp else 20.dp, bottom = 8.dp).heightIn(min = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, color = c.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.3.sp, style = Tnum,
-            modifier = Modifier.weight(1f, fill = false))
+        // the title first; the trailing text takes the rest, right-aligned (a weighted title got only half of it)
+        Text(text, color = c.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.3.sp, style = Tnum)
         if (trailing != null) {
-            Spacer(Modifier.weight(1f).width(8.dp))
-            Text(trailing, color = c.muted, fontSize = 13.sp, style = Tnum, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(trailing, color = c.muted, fontSize = 13.sp, style = Tnum, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.End, modifier = Modifier.weight(1f).padding(start = 8.dp))
         }
     }
 }
@@ -296,7 +297,8 @@ fun TextField56(
             keyboardType = when { password -> KeyboardType.Password; decimal -> KeyboardType.Decimal; else -> KeyboardType.Text },
             imeAction = ImeAction.Done, autoCorrectEnabled = !password,
         ),
-        keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
+        // no onDone: the default Done (hides the keyboard)
+        keyboardActions = if (onDone != null) KeyboardActions(onDone = { onDone() }) else KeyboardActions.Default,
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = c.focus, unfocusedBorderColor = c.base, focusedLabelColor = c.focus, unfocusedLabelColor = c.muted,
             cursorColor = c.focus, focusedTextColor = c.ink, unfocusedTextColor = c.ink,

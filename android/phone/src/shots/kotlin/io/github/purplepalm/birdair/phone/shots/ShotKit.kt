@@ -268,7 +268,11 @@ object Scenes {
     fun allWindow() { ScooterRepo.updateUi { it.copy(chartWindow = ChartWindow.ALL) } }
 }
 
-/** Renders [MainScreen] in [ShotFrame], dark then light, into build/shots/<name>[-s21]-dark|light.png at xhdpi. */
+/**
+ * Renders [MainScreen] in [ShotFrame], dark then light, into build/shots/<name>[-s21]-dark|light.png at xhdpi.
+ * The frame clock is manual (autoAdvance = false): performScrollTo() then spins forever, as the scroll animation gets no
+ * frames. Below the fold tap with performSemanticsAction(SemanticsActions.OnClick), or turn autoAdvance on around a scroll.
+ */
 class Shooter(private val rule: AndroidComposeTestRule<ActivityScenarioRule<ComponentActivity>, ComponentActivity>) {
     val ui = FakeUi()
     private var dark by mutableStateOf(true)

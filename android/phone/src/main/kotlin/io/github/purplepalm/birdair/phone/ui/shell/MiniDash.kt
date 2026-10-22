@@ -49,7 +49,7 @@ import kotlin.math.abs
 
 /**
  * Over an open page, 56 dp: speed, mode, power with a short bar, battery % (red when the top lamp is); a red line under
- * it while a red lamp burns. A tap folds the page down to the dash. Idle: «Не подключено · scooter».
+ * it while a red lamp burns (recording only). A tap folds the page down to the dash. Idle: «Не подключено · scooter».
  */
 @Composable
 fun MiniDash(onClick: () -> Unit) {
@@ -58,7 +58,8 @@ fun MiniDash(onClick: () -> Unit) {
     val st by ScooterRepo.status.collectAsStateWithLifecycle()
     val s by ScooterRepo.settings.collectAsStateWithLifecycle()
     val bulb = rememberBulbCheck()
-    val crit = !bulb && TellTales.top(t.lamps)?.level == LampLevel.RED
+    // only while recording: idle, the last snapshot's lamps are not live
+    val crit = st.running && !bulb && TellTales.top(t.lamps)?.level == LampLevel.RED
     Row(
         Modifier.fillMaxWidth().height(56.dp).background(c.bg)
             .drawBehind { if (crit) drawRect(c.crit, topLeft = Offset(0f, size.height - 3.dp.toPx()), size = size.copy(height = 3.dp.toPx())) }
