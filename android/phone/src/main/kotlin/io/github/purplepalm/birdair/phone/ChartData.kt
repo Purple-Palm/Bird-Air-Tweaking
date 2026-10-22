@@ -250,6 +250,68 @@ object Ticks {
     fun decimals(step: Double): Int = if (step >= 1) 0 else if (step >= 0.1) 1 else 2
 }
 
+/**
+ * The y axes of «Графики» (the prototype's drawChart): power in 250 W steps (500 W once the window spans over 900 W,
+ * 1000 W over 2700 W), at least one step either side of zero; speed from 0 in steps of 10 (at least 0…10); volts in
+ * steps of 5 around the window (at least 5 wide). The ticks, lowest first, and the step.
+ */
+object ChartAxis {
+    fun power(min: Double, max: Double): Pair<List<Double>, Double> {
+        val mn = if (min.isFinite()) min else 0.0
+        val mx = if (max.isFinite()) max else 0.0
+        val span = mx - mn
+        val step = if (span > 2700) 1000.0 else if (span > 900) 500.0 else 250.0
+        return between(minOf(-step, floor(mn / step) * step), maxOf(step, ceil(mx / step) * step), step) to step
+    }
+
+    fun speed(max: Double): Pair<List<Double>, Double> {
+        val mx = if (max.isFinite()) max else 0.0
+        return between(0.0, maxOf(10.0, ceil(mx / 10) * 10), 10.0) to 10.0
+    }
+
+    fun volts(min: Double, max: Double): Pair<List<Double>, Double> {
+        if (!min.isFinite() || !max.isFinite()) return between(30.0, 35.0, 5.0) to 5.0
+        val lo = floor(min / 5) * 5
+        return between(lo, maxOf(lo + 5, ceil(max / 5) * 5), 5.0) to 5.0
+    }
+
+    private fun between(lo: Double, hi: Double, step: Double): List<Double> {
+        val out = ArrayList<Double>()
+        var k = 0
+        while (k <= 40) {
+            val x = lo + k * step
+            if (x > hi + step * 1e-6) break
+            out.add(if (abs(x) < step * 1e-6) 0.0 else x)
+            k++
+        }
+        return out
+    }
+}
+
+/**
+ * The marker labels on the power chart (the prototype's): a label longer than 13 characters is cut to 12 and «…»;
+ * it goes right of its line, left of it where it would cross the plot's right edge; one that would come within [gap] of
+ * a label already placed is left out (its line stays).
+ */
+object MarkerLabels {
+    fun text(label: String): String = if (label.length > 13) label.take(12).trim() + "…" else label
+
+    /** Lines at [xs] (time order) with label widths [ws], [pad] between line and label, a plot ending at [right]: each
+     *  label's left edge, NaN where it is left out. */
+    fun place(xs: FloatArray, ws: FloatArray, right: Float, pad: Float, gap: Float): FloatArray {
+        val out = FloatArray(xs.size) { Float.NaN }
+        val taken = ArrayList<FloatArray>()
+        for (i in xs.indices) {
+            val w = ws[i]
+            val x0 = if (xs[i] + pad + w > right) xs[i] - pad - w else xs[i] + pad
+            if (taken.any { x0 < it[1] + gap && x0 + w > it[0] - gap }) continue
+            out[i] = x0
+            taken.add(floatArrayOf(x0, x0 + w))
+        }
+        return out
+    }
+}
+
 /** The chart windows: «1 мин / 5 мин / 15 мин / вся поездка». */
 object ChartWindow {
     const val ALL = "all"

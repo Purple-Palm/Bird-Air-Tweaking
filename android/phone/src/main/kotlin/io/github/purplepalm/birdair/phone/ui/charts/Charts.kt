@@ -1,28 +1,22 @@
 package io.github.purplepalm.birdair.phone.ui.charts
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +26,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -43,30 +38,38 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.purplepalm.birdair.phone.ChartAxis
 import io.github.purplepalm.birdair.phone.ChartWindow
+import io.github.purplepalm.birdair.phone.ChartsText
 import io.github.purplepalm.birdair.phone.Downsample
 import io.github.purplepalm.birdair.phone.EnergySummary
 import io.github.purplepalm.birdair.phone.Envelope
 import io.github.purplepalm.birdair.phone.Fmt
 import io.github.purplepalm.birdair.phone.Marker
+import io.github.purplepalm.birdair.phone.MarkerLabels
 import io.github.purplepalm.birdair.phone.Samples
 import io.github.purplepalm.birdair.phone.ScooterRepo
 import io.github.purplepalm.birdair.phone.Ticks
 import io.github.purplepalm.birdair.phone.Units
+import io.github.purplepalm.birdair.phone.ui.AppIcons
+import io.github.purplepalm.birdair.phone.ui.IconButton48
 import io.github.purplepalm.birdair.phone.ui.LocalBal
-import io.github.purplepalm.birdair.phone.ui.Metric
-import io.github.purplepalm.birdair.phone.ui.Msg
-import io.github.purplepalm.birdair.phone.ui.Panel
+import io.github.purplepalm.birdair.phone.ui.SectionHeader
 import io.github.purplepalm.birdair.phone.ui.Tnum
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -80,8 +83,6 @@ private class ChartFrame(
     val power: Envelope, val speed: Envelope, val volt: Envelope,
     val x: Samples, val summary: EnergySummary, val markers: List<Marker>,
 ) {
-    val empty: Boolean get() = power.empty && speed.empty && volt.empty
-
     companion object {
         fun build(window: String, columns: Int, fast: Boolean, markers: List<Marker>): ChartFrame {
             val s = ScooterRepo.session
@@ -104,112 +105,94 @@ private class ChartFrame(
 private val PAD_L = 46.dp
 private val PAD_R = 8.dp
 private val PAD_T = 14.dp
-private val PAD_B = 20.dp
+
+/** The three charts: their height, whether the time axis is under them, the room under the plot. */
+private enum class Series(val heightDp: Int, val timeAxis: Boolean, val padBottomDp: Int) {
+    POWER(170, true, 20), SPEED(96, false, 6), VOLT(112, true, 20)
+}
 
 /**
- * «Графики», like the page's: power over time (traction above zero in --draw, regen below in --flow, zero line),
- * speed and voltage under it on the same time axis; «1 мин / 5 мин / 15 мин / вся поездка»; touch and drag for the
- * values at a moment (the readout stays until «×»); the window's energy. Redrawn at most 5 times a second
- * ([ScooterRepo.CHART_EVERY_MS]), off the main thread up to the drawing.
+ * «Графики» (the prototype's tabCharts): the readout row at a fixed height, power over time (traction above zero in
+ * --draw, regen below in --flow), speed and voltage under it on the same time axis, the markers as lines (labelled on
+ * the power chart); touch and drag sideways for the values at a moment, on all three (the readout stays until «×» or
+ * Back, a new window drops it); then the window's energy. Redrawn at most 5 times a second ([ScooterRepo.CHART_EVERY_MS]),
+ * off the main thread up to the drawing.
  */
 @Composable
-fun ChartsCard(units: String, fast: Boolean, window: String) {
-    val c = LocalBal.current
+fun ChartsBlock(units: String, fast: Boolean, window: String) {
     val rev by ScooterRepo.chartRev.collectAsStateWithLifecycle()
     val markers by ScooterRepo.markers.collectAsStateWithLifecycle()
     var widthPx by remember { mutableIntStateOf(0) }
-    var hoverT by remember { mutableStateOf<Long?>(null) }
-    val padPx = with(androidx.compose.ui.platform.LocalDensity.current) { (PAD_L + PAD_R).toPx() }
+    var hoverT by remember(window) { mutableStateOf<Long?>(null) }
+    BackHandler(hoverT != null) { hoverT = null }
+    val padPx = with(LocalDensity.current) { (PAD_L + PAD_R).toPx() }
     val frame by produceState<ChartFrame?>(null, rev, window, widthPx, fast, markers) {
         if (widthPx <= 0) return@produceState
         value = withContext(Dispatchers.Default) { ChartFrame.build(window, (widthPx - padPx).roundToInt(), fast, markers) }
     }
+    val f = frame
+    // a moment that slid out of a following window goes with it
+    LaunchedEffect(f?.start) { val h = hoverT; if (f != null && h != null && h < f.start) hoverT = null }
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val k = if (units == Units.MPH) (1 / Units.MILE).toFloat() else 1f
-    Panel("Графики") {
-        WindowTabs(window) { w -> hoverT = null; ScooterRepo.updateUi { it.copy(chartWindow = w) } }
-        val f = frame
-        Readout(f, hoverT, units, fast) { hoverT = null }
-        val onHover: (Long?) -> Unit = { hoverT = it }
-        Box(Modifier.fillMaxWidth().onSizeChanged { widthPx = it.width }) {
-            SeriesCanvas(f, 170, measurer, signed = true, color = c.draw, colorNeg = c.flow, minSpan = 100.0, timeAxis = true,
-                pick = { it.power }, hoverT = hoverT, onHover = onHover, label = "Мощность, Вт", fast = fast, which = 0)
-        }
-        SeriesCanvas(f, 96, measurer, signed = false, color = c.ink2, colorNeg = null, minSpan = 5.0, timeAxis = false, zeroBase = true, k = k,
-            pick = { it.speed }, hoverT = hoverT, onHover = onHover, label = "Скорость, " + Units.speedLabel(units), fast = fast, which = 1)
-        SeriesCanvas(f, 112, measurer, signed = false, color = c.ink2, colorNeg = null, minSpan = 1.0, timeAxis = true,
-            pick = { it.volt }, hoverT = hoverT, onHover = onHover, label = "Напряжение, В", fast = fast, which = 2)
-        Summary(f, window, units)
+    val i = if (f != null && hoverT != null) f.x.nearest(hoverT!!) else -1
+    ReadoutRow(if (f != null && i >= 0) ChartsText.readout(f.x, i, f.startedAtMs, fast, units) else null) { hoverT = null }
+    val onHover: (Long?) -> Unit = { hoverT = it }
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp).onSizeChanged { widthPx = it.width }) {
+        SeriesCanvas(f, Series.POWER, measurer, "Мощность, Вт", 1f, fast, hoverT, onHover)
+        SeriesCanvas(f, Series.SPEED, measurer, "Скорость, " + Units.speedLabel(units), k, fast, hoverT, onHover, Modifier.padding(top = 4.dp))
+        SeriesCanvas(f, Series.VOLT, measurer, "Напряжение, В", 1f, fast, hoverT, onHover, Modifier.padding(top = 4.dp))
     }
+    Energy(f?.summary ?: EnergySummary.EMPTY, window, units)
 }
 
-/** «1 мин / 5 мин / 15 мин / вся поездка»: one row, the last one wider so its label fits on a phone. */
+/** Under the finger: «22:12:06 · 254 Вт тяга» and «8,1 А · 31,41 В · 22,5 км/ч», «×»; before a touch, how to get it. */
 @Composable
-private fun WindowTabs(selected: String, onPick: (String) -> Unit) {
+private fun ReadoutRow(r: ChartsText.Readout?, onClose: () -> Unit) {
     val c = LocalBal.current
     val shape = RoundedCornerShape(10.dp)
-    Row(Modifier.fillMaxWidth().height(40.dp).border(1.dp, c.base, shape).clip(shape)) {
-        ChartWindow.OPTIONS.forEachIndexed { i, (key, label) ->
-            val on = key == selected
-            if (i > 0) Box(Modifier.width(1.dp).fillMaxHeight().background(c.base))
-            Box(
-                Modifier
-                    .weight(if (key == ChartWindow.ALL) 1.7f else 1f)
-                    .fillMaxHeight()
-                    .background(if (on) c.flow.copy(alpha = 0.18f) else Color.Transparent)
-                    .selectable(selected = on, role = Role.Tab) { onPick(key) },
-                contentAlignment = Alignment.Center,
-            ) { Text(label, color = c.ink, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1) }
+    Row(
+        Modifier.fillMaxWidth().height(52.dp).clip(shape).background(c.well).border(1.dp, c.hair, shape).padding(start = 12.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (r == null) {
+            Text(ChartsText.HINT, color = c.ink2, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            return@Row
         }
-    }
-}
-
-@Composable
-private fun Readout(f: ChartFrame?, hoverT: Long?, units: String, fast: Boolean, onClose: () -> Unit) {
-    val c = LocalBal.current
-    if (f == null || hoverT == null) {
-        Text(if (f == null || f.empty) "" else "Коснись графика и веди пальцем — покажу значения в тот момент.", color = c.muted, fontSize = 12.sp)
-        return
-    }
-    val i = f.x.nearest(hoverT)
-    if (i < 0) return
-    val p = f.x.p(fast)[i]
-    val cur = f.x.i(fast)[i]
-    val v = f.x.v[i]
-    val s = f.x.s[i]
-    fun num(x: Float, d: Int) = if (x.isNaN()) "—" else Fmt.n(x.toDouble(), d)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(10.dp).background(if (!p.isNaN() && p < 0) c.flow else c.draw, CircleShape))
-        Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
+            val bold = SpanStyle(color = c.ink, fontWeight = FontWeight.SemiBold)
             Text(
-                (if (p.isNaN()) "—" else Fmt.n(abs(p).toDouble()) + " Вт " + if (p < 0) "в батарею" else "из батареи") + " · " + Fmt.clock(f.startedAtMs + f.x.t[i]),
-                color = c.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, style = Tnum,
+                buildAnnotatedString {
+                    withStyle(bold) { append(r.time) }
+                    append(" · ")
+                    withStyle(bold) { append(r.watts) }
+                    if (r.word.isNotEmpty()) append(" " + r.word)
+                },
+                color = c.ink2, fontSize = 13.sp, lineHeight = 17.sp, style = Tnum, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                "ток " + num(cur, 1) + " А · " + num(v, 1) + " В · " + (if (s.isNaN()) "—" else Fmt.n(Units.speed(s.toDouble(), units), 1)) + " " + Units.speedLabel(units),
-                color = c.ink2, fontSize = 13.sp, style = Tnum,
-            )
+            Text(r.line2, color = c.ink2, fontSize = 13.sp, lineHeight = 17.sp, style = Tnum, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        TextButton(onClick = onClose) { Text("×", fontSize = 18.sp) }
+        IconButton48(AppIcons.Close, "Убрать", onClose)
     }
 }
 
 @Composable
 private fun SeriesCanvas(
-    f: ChartFrame?, heightDp: Int, measurer: TextMeasurer, signed: Boolean, color: Color, colorNeg: Color?, minSpan: Double,
-    timeAxis: Boolean, pick: (ChartFrame) -> Envelope, hoverT: Long?, onHover: (Long?) -> Unit, label: String, fast: Boolean,
-    which: Int, zeroBase: Boolean = false, k: Float = 1f,
+    f: ChartFrame?, series: Series, measurer: TextMeasurer, label: String, k: Float, fast: Boolean, hoverT: Long?,
+    onHover: (Long?) -> Unit, modifier: Modifier = Modifier,
 ) {
     val c = LocalBal.current
+    // the gesture outlives compositions: it reads the frame and the callback of the latest one
     val cur by rememberUpdatedState(f)
+    val hover by rememberUpdatedState(onHover)
     val tick = TextStyle(color = c.muted, fontSize = 10.sp, fontFeatureSettings = "tnum")
     val title = TextStyle(color = c.ink2, fontSize = 11.sp)
     val markStyle = TextStyle(color = c.ink2, fontSize = 10.sp)
+    val power = series == Series.POWER
     Canvas(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .height(heightDp.dp)
+            .height(series.heightDp.dp)
             .semantics { contentDescription = "График: $label" }
             .pointerInput(Unit) {
                 val slop = viewConfiguration.touchSlop
@@ -220,7 +203,7 @@ private fun SeriesCanvas(
                         val left = PAD_L.toPx()
                         val w = size.width - left - PAD_R.toPx()
                         if (w <= 0) return
-                        onHover(fr.start + ((x - left) / w * (fr.end - fr.start)).toLong().coerceIn(0, fr.end - fr.start))
+                        hover(fr.start + ((x - left) / w * (fr.end - fr.start)).toLong().coerceIn(0, fr.end - fr.start))
                     }
                     at(down.position.x)
                     var horizontal = false
@@ -235,18 +218,15 @@ private fun SeriesCanvas(
                 }
             },
     ) {
-        val plot = Rect(PAD_L.toPx(), PAD_T.toPx(), size.width - PAD_R.toPx(), size.height - (if (timeAxis) PAD_B else 4.dp).toPx())
-        drawText(measurer, label, Offset(plot.left, 0f), title)
+        val plot = Rect(PAD_L.toPx(), PAD_T.toPx(), size.width - PAD_R.toPx(), size.height - series.padBottomDp.dp.toPx())
+        // the measurer's cache keys on layout only, not colour: every text is drawn in its colour (a theme flip)
+        drawText(measurer.measure(label, title), title.color, Offset(plot.left + 4.dp.toPx(), 0f))
         val fr = f
         if (fr == null || plot.width <= 0 || plot.height <= 0) return@Canvas
-        val env = pick(fr)
-        // y domain
-        var lo = if (env.min.isNaN()) 0.0 else env.min.toDouble() * k
-        var hi = if (env.max.isNaN()) 1.0 else env.max.toDouble() * k
-        if (signed) { lo = minOf(0.0, lo); hi = maxOf(0.0, hi); if (hi - lo < minSpan) hi = lo + minSpan }
-        else if (zeroBase) { lo = 0.0; if (hi < minSpan) hi = minSpan }
-        else if (hi - lo < minSpan) { val m = (hi + lo) / 2; lo = m - minSpan / 2; hi = m + minSpan / 2 }
-        val (ticks, step) = Ticks.ticks(lo, hi, if (heightDp >= 150) 4 else 3)
+        val env = when (series) { Series.POWER -> fr.power; Series.SPEED -> fr.speed; Series.VOLT -> fr.volt }
+        val mn = env.min.toDouble() * k
+        val mx = env.max.toDouble() * k
+        val (ticks, step) = when (series) { Series.POWER -> ChartAxis.power(mn, mx); Series.SPEED -> ChartAxis.speed(mx); Series.VOLT -> ChartAxis.volts(mn, mx) }
         val y0 = ticks.first()
         val y1 = ticks.last()
         val span = maxOf(1L, fr.end - fr.start).toFloat()
@@ -256,29 +236,28 @@ private fun SeriesCanvas(
         val dec = Ticks.decimals(step)
         for (tk in ticks) {
             val y = Y(tk)
-            drawLine(if (signed && tk == 0.0) c.base else c.hair, Offset(plot.left, y), Offset(plot.right, y), 1.dp.toPx())
+            drawLine(c.hair, Offset(plot.left, y), Offset(plot.right, y), 1.dp.toPx())
             val txt = measurer.measure(Fmt.n(tk, dec), tick)
-            drawText(txt, topLeft = Offset(plot.left - 6.dp.toPx() - txt.size.width, y - txt.size.height / 2f))
+            drawText(txt, tick.color, Offset(plot.left - 6.dp.toPx() - txt.size.width, y - txt.size.height / 2f))
         }
-        if (timeAxis) timeLabels(fr, plot, measurer, tick, ::X)
-        // markers
-        for (m in fr.markers) {
-            val x = X(m.t)
-            drawLine(c.ink2.copy(alpha = 0.35f), Offset(x, plot.top), Offset(x, plot.bottom), 1.dp.toPx())
-            if (which == 0) {
-                val txt = measurer.measure(m.label.take(18), markStyle)
-                val lx = if (x + 3.dp.toPx() + txt.size.width > plot.right) x - 3.dp.toPx() - txt.size.width else x + 3.dp.toPx()
-                drawText(txt, topLeft = Offset(lx, plot.top))
-            }
+        if (series.timeAxis) timeLabels(fr, plot, measurer, tick, ::X)
+        // markers: a line on each chart, the label on the power chart (never over another label)
+        val xs = FloatArray(fr.markers.size) { X(fr.markers[it].t) }
+        for (x in xs) drawLine(c.ink2.copy(alpha = 0.35f), Offset(x, plot.top), Offset(x, plot.bottom), 1.dp.toPx())
+        if (power && xs.isNotEmpty()) {
+            val txts = fr.markers.map { measurer.measure(MarkerLabels.text(it.label), markStyle) }
+            val left = MarkerLabels.place(xs, FloatArray(txts.size) { txts[it].size.width.toFloat() }, plot.right, 3.dp.toPx(), 6.dp.toPx())
+            for (j in txts.indices) if (!left[j].isNaN()) drawText(txts[j], markStyle.color, Offset(left[j], plot.top + 2.dp.toPx()))
         }
         if (env.empty) {
-            if (which == 0) {
+            if (power) {
                 val txt = measurer.measure(if (ScooterRepo.session == null) "Подключи самокат — здесь пойдёт мощность" else "Нет данных в этом окне", TextStyle(color = c.muted, fontSize = 13.sp))
-                drawText(txt, topLeft = Offset(plot.center.x - txt.size.width / 2f, plot.center.y - txt.size.height / 2f))
+                drawText(txt, c.muted, Offset(plot.center.x - txt.size.width / 2f, plot.center.y - txt.size.height / 2f))
             }
             return@Canvas
         }
-        val base = if (signed) Y(0.0) else plot.bottom
+        val base = if (power) Y(0.0) else plot.bottom
+        val stroke = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         clipRect(plot.left, 0f, plot.right, size.height) {
             for (run in env.runs) {
                 val line = Path()
@@ -294,48 +273,48 @@ private fun SeriesCanvas(
                     lineTo(X(run.t[0]), base)
                     close()
                 }
-                fun paint(top: Float, bottom: Float, col: Color) = clipRect(plot.left, top, plot.right, bottom) {
-                    drawPath(area, col.copy(alpha = 0.12f))
-                    drawPath(line, col, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                fun paint(top: Float, bottom: Float, col: Color, fill: Float) = clipRect(plot.left, top, plot.right, bottom) {
+                    drawPath(area, col.copy(alpha = fill))
+                    drawPath(line, col, style = stroke)
                 }
-                if (signed && colorNeg != null) { paint(0f, base, color); paint(base, size.height, colorNeg) } else paint(0f, size.height, color)
+                if (power) { paint(0f, base, c.draw, 0.14f); paint(base, size.height, c.flow, 0.14f) } else paint(0f, size.height, c.ink2, 0.12f)
             }
         }
-        // crosshair
+        if (power) drawLine(c.base, Offset(plot.left, base), Offset(plot.right, base), 1.dp.toPx())
+        // crosshair, the same moment on all three
         val ht = hoverT
-        if (ht != null) {
+        if (ht != null && ht in fr.start..fr.end) {
             val i = fr.x.nearest(ht)
             if (i >= 0) {
-                val tx = fr.x.t[i]
-                val x = X(tx)
-                drawLine(c.ink2.copy(alpha = 0.7f), Offset(x, plot.top), Offset(x, plot.bottom), 1.dp.toPx())
-                val yv = when (which) { 0 -> fr.x.p(fast)[i]; 1 -> fr.x.s[i]; else -> fr.x.v[i] }
+                val x = X(fr.x.t[i])
+                drawLine(c.ink, Offset(x, plot.top), Offset(x, plot.bottom), 1.dp.toPx())
+                val yv = when (series) { Series.POWER -> fr.x.p(fast)[i]; Series.SPEED -> fr.x.s[i]; Series.VOLT -> fr.x.v[i] }
                 if (!yv.isNaN()) {
                     val y = Y(yv.toDouble() * k)
-                    drawCircle(c.surface, 6.dp.toPx(), Offset(x, y))
-                    drawCircle(if (signed && colorNeg != null && yv < 0) colorNeg else color, 4.dp.toPx(), Offset(x, y))
+                    drawCircle(c.surface, 5.5.dp.toPx(), Offset(x, y))
+                    drawCircle(if (power) (if (yv < 0) c.flow else c.draw) else c.ink, 3.5.dp.toPx(), Offset(x, y))
                 }
             }
         }
     }
 }
 
-/** «−1 мин … сейчас» while the window follows the ride, clock times otherwise (the page's drawSeries). */
+/** «−5 мин … −1 мин сейчас» while the window follows the ride, clock times otherwise (the prototype's drawChart). */
 private fun DrawScope.timeLabels(fr: ChartFrame, plot: Rect, measurer: TextMeasurer, style: TextStyle, X: (Long) -> Float) {
     val spanS = (fr.end - fr.start) / 1000.0
     val y = plot.bottom + 4.dp.toPx()
     if (fr.rel) {
         val st = ChartWindow.relStepS(spanS)
-        val gap = 6.dp.toPx()
+        val gap = 3.dp.toPx()
+        val minX = plot.left + 12.dp.toPx()
         var leftmost = Float.MAX_VALUE   // labels go right to left; one that would touch its right neighbour is skipped
         var s = 0
         while (s <= spanS + 0.001) {
-            val x = X(fr.end - s * 1000L)
             val lab = if (s == 0) "сейчас" else if (spanS <= 90) "−$s с" else "−${s / 60} мин"
             val txt = measurer.measure(lab, style)
-            val lx = if (s == 0) minOf(x, plot.right) - txt.size.width else x - txt.size.width / 2f
-            if (lx >= plot.left - 4.dp.toPx() && lx + txt.size.width <= leftmost - gap) {
-                drawText(txt, topLeft = Offset(lx, y))
+            val lx = if (s == 0) plot.right - txt.size.width else maxOf(X(fr.end - s * 1000L), minX) - txt.size.width / 2f
+            if (lx + txt.size.width <= leftmost - gap) {
+                drawText(txt, style.color, Offset(lx, y))
                 leftmost = lx
             }
             s += st
@@ -350,35 +329,42 @@ private fun DrawScope.timeLabels(fr: ChartFrame, plot: Rect, measurer: TextMeasu
             val x = X(wall - fr.startedAtMs)
             if (x >= plot.left + 14.dp.toPx() && x <= plot.right - 14.dp.toPx()) {
                 val txt = measurer.measure(Fmt.clock(wall, seconds = st < 60), style)
-                drawText(txt, topLeft = Offset(x - txt.size.width / 2f, y))
+                drawText(txt, style.color, Offset(x - txt.size.width / 2f, y))
             }
             s += st
         }
     }
 }
 
-/** The window's energy: «Потрачено / Возвращено / Расход / Средняя». */
+/** «ЭНЕРГИЯ ЗА ОКНО · 5 МИН»: Потрачено / Возвращено / Расход за окно / Средняя мощность, what the window holds. */
 @Composable
-private fun Summary(f: ChartFrame?, window: String, units: String) {
+private fun Energy(e: EnergySummary, window: String, units: String) {
     val c = LocalBal.current
-    val e = f?.summary ?: EnergySummary.EMPTY
     val d = Units.distLabel(units)
-    val perKm = e.whPerKm?.let { if (units == Units.MPH) it * Units.MILE else it }
-    Text(if (window == ChartWindow.ALL) "Энергия за поездку" else "Энергия за окно", color = c.ink2, fontSize = 14.sp)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row {
-            Metric("Потрачено", Fmt.n(e.outWh, 1), "Вт·ч", Modifier.weight(1f))
-            Metric("Возвращено", Fmt.n(e.inWh, 1), "Вт·ч", Modifier.weight(1f))
-        }
-        Row {
-            Metric("Расход", Fmt.n(perKm, 1), "Вт·ч/$d", Modifier.weight(1f))
-            Metric("Средняя мощность", Fmt.n(e.avgW), "Вт", Modifier.weight(1f))
-        }
+    SectionHeader(ChartsText.energyTitle(window))
+    Row(Modifier.fillMaxWidth()) {
+        Met("Потрачено", Fmt.n(e.outWh, 1), "Вт·ч", Modifier.weight(1f))
+        Spacer(Modifier.width(14.dp))
+        Met("Возвращено", Fmt.n(e.inWh, 1), "Вт·ч", Modifier.weight(1f))
     }
-    if (e.seconds > 0) Msg("Данные за " + duration(e.seconds) + (e.km?.let { " · " + Fmt.n(Units.dist(it, units), 2) + " " + d } ?: "") + " · по графику мощности")
+    Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        Met("Расход за окно", Fmt.n(ChartsText.perDist(e.whPerKm, units), 1), "Вт·ч/$d", Modifier.weight(1f))
+        Spacer(Modifier.width(14.dp))
+        Met("Средняя мощность", Fmt.n(e.avgW), "Вт", Modifier.weight(1f))
+    }
+    Text(ChartsText.energyNote(e, units), color = c.ink2, fontSize = 13.sp, lineHeight = 18.sp, style = Tnum, modifier = Modifier.padding(top = 10.dp))
 }
 
-private fun duration(s: Double): String {
-    val m = (s / 60).toInt()
-    return if (m >= 60) "${m / 60} ч ${m % 60} мин" else if (m >= 1) "$m мин ${(s % 60).toInt()} с" else "${s.toInt()} с"
+/** A figure of the page's .met grid: the label (12 sp, muted), the value (22 sp) and its unit on one baseline. */
+@Composable
+internal fun Met(label: String, value: String, unit: String, modifier: Modifier = Modifier, color: Color? = null) {
+    val c = LocalBal.current
+    Column(modifier) {
+        Text(label, color = c.muted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(bottom = 1.dp))
+        Row {
+            Text(value, color = color ?: c.ink, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, style = Tnum, maxLines = 1,
+                modifier = Modifier.alignByBaseline())
+            if (unit.isNotEmpty()) Text(unit, color = c.ink2, fontSize = 13.sp, maxLines = 1, modifier = Modifier.alignByBaseline().padding(start = 3.dp))
+        }
+    }
 }
