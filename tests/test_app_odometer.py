@@ -26,7 +26,8 @@ class RealLogsTest(unittest.TestCase):
         # (1464.6 at the cutoff, 1455.0 after the reboot)
         self.assertAlmostEqual(rows[-1][3], 1455.3, places=6)
         st = od.state
-        self.assertEqual((st['base_km'], st['trip_km']), (1455.0, 0.3))
+        # 20.10 ends on the charger: the dash switched on again at 2792.9 s (trip 0.0, odo 1455.3), nothing ridden
+        self.assertEqual((st['base_km'], st['trip_km']), (1455.3, 0.0))
         # the app restarted between the logs: the state goes out and comes back in
         ev = lambda lg: rl.events(os.path.basename(lg['_files'][0]))  # noqa: E731
         a, _ = ao.replay(logs[:3], events=ev)

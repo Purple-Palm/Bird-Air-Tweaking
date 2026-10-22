@@ -1,6 +1,7 @@
 package io.github.purplepalm.birdair.wear
 
 import io.github.purplepalm.birdair.core.LampLevel
+import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.dial.ChipEl
 import io.github.purplepalm.birdair.dial.Kind
 import io.github.purplepalm.birdair.dial.StackCheck
@@ -16,7 +17,7 @@ import org.junit.Test
  * lamp and nothing overlaps; between changes the face asks for no frames.
  */
 class StackReplayTest {
-    private class Tally(var frames: Int = 0, var still: Int = 0, var idle: Int = 0, var reds: Int = 0, var mains: Int = 0, val texts: HashSet<String> = HashSet())
+    private class Tally(var frames: Int = 0, var still: Int = 0, var calm: Int = 0, var idle: Int = 0, var reds: Int = 0, var mains: Int = 0, val texts: HashSet<String> = HashSet())
 
     private fun ride(path: String): Tally {
         RideReplay.assume(path)
@@ -34,6 +35,8 @@ class StackReplayTest {
                 assertTrue("$path at $at: $out", out.isEmpty())
                 if (at == s.nowMs && StackCheck.settled(tl, at)) {
                     n.still++
+                    // a red lamp breathes at 1 Hz: those seconds draw by design
+                    if (s.lamps.lit.none { it.level == LampLevel.RED && it.lamp.id !in TellTales.QUIET }) n.calm++
                     val bad = StackCheck.overlaps(sc, s)
                     assertTrue("$path at $at: $bad", bad.isEmpty())
                     if (tl.wakeAt(s, at, calm = false) == null) n.idle++
@@ -55,8 +58,9 @@ class StackReplayTest {
         assertTrue(n.frames > 3_000)
         assertTrue("reds ${n.reds}", n.reds > 0)
         assertTrue(n.texts.any { it.startsWith("BMS отключает") })
-        // most still seconds draw nothing: no frame loop while nothing moves
-        assertTrue("idle ${n.idle} of ${n.still}", n.idle > n.still / 3)
+        // most calm still seconds draw nothing: no frame loop while nothing moves (from 1680 s to the end the red «Заряд»
+        // breathes, 17 min of it parked and on the charger after the cut)
+        assertTrue("idle ${n.idle} of ${n.calm} calm (${n.still} still)", n.idle > n.calm / 3)
     }
 
     /** 15.10, two-up to the thermal cutoff: the temperature climbs to red. */

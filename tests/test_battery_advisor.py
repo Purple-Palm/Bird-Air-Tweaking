@@ -47,8 +47,10 @@ class RealLogsTest(unittest.TestCase):
         lg, ev = rl.log(rl.TO_ZERO), rl.events(rl.TO_ZERO)
         st = steps(rl.TO_ZERO)
         ons = ba.power_on_times(ev)
-        self.assertEqual(len(ons), 1)
+        self.assertEqual(len(ons), 2)
         self.assertTrue(2162000 <= ons[0] <= 2163000, ons)              # boot C, the first frame after 350 s
+        # and once more on the charger after 10 min parked and the link lost (1.8 A in, the pack at 35.6 V)
+        self.assertTrue(2792000 <= ons[1] <= 2793000, ons)
         t, km = ba.end_of_traction(st, events=ev)
         self.assertEqual(t, rl.CUTOFF_T[rl.TO_ZERO])
         self.assertEqual(ba.end_of_traction(st), (t, km))                 # without the trip: the 350 s frame gap

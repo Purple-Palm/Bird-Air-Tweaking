@@ -74,6 +74,8 @@ class TellTalesTest {
         const val CHARGE = "20261016-205717-log-app.json.gz"
         /** Solo FLY 100 % → the BMS cut the pack off (1812.4 s), the dash rebooted twice with the BMS silent. */
         const val TO_ZERO = "20261020-214221-do-otsechki-do-nulya-app.json.gz"
+        /** 21.10 afternoon from 99 %; regen at 83 % (−6 A) touched 42.4–42.6 V. */
+        const val AFTERNOON_2110 = "20261021-163714-do-otsechki-do-nulya-app.json.gz"
         val TWO_UP = listOf(CUTOFF_HOT, TWO_UP_HALF, TWO_UP_EMPTY, CUTOFF, EVENING)
         val SOLOS = listOf(SOLO, TO_ZERO)
         val RIDES = SOLOS + TWO_UP
@@ -151,16 +153,22 @@ class TellTalesTest {
 
     /** Regen on a full pack: the BMS's over-voltage warning (b5 0x08, from 42.23 V) and protection (0x04, regen cut),
      *  else regen above 42.3 V. 19.10 to 43.5 V (afternoon) and 44.0 V (evening), 20.10 at 98 % (135–139 s, 42.5 V),
-     *  16.10 one warning at 42.25 V; never on the charger (≤ 41.9 V). */
+     *  16.10 one warning at 42.25 V, 21.10 warnings at 83 % (410 s and 474 s, to 42.59 V); never on the charger (≤ 41.9 V). */
     @Test fun overvoltOnAFullPack() {
         for (name in NAMES) {
             val ps = periods(replay(name), TellTales.OVERVOLT)
-            assertEquals(name in listOf(TWO_UP_HALF, CUTOFF, EVENING, TO_ZERO), ps.isNotEmpty(), name)
+            assertEquals(name in listOf(TWO_UP_HALF, CUTOFF, EVENING, TO_ZERO, AFTERNOON_2110), ps.isNotEmpty(), name)
         }
+        // 21.10: the BMS's warning twice on regen at 83 % (b5 0x08 at 409.9 s and 474.5 s), no protection
+        val a = periods(replay(AFTERNOON_2110), TellTales.OVERVOLT)
+        assertEquals(listOf(LampLevel.AMBER, LampLevel.AMBER), a.map { it.level })
+        assertTrue(a[0].t0 in 409_000..411_000 && a[1].t0 in 474_000..476_000, a.joinToString { "${it.t0}" })
+        assertEquals("Полная — тормози мягко", replay(AFTERNOON_2110).first { it.t == a[0].t0 }.lamps.getValue(TellTales.OVERVOLT).text)
         val peak = { name: String -> replay(name).mapNotNull { it.lamps[TellTales.OVERVOLT]?.value }.max() }
         assertEquals(43.5, peak(CUTOFF), 0.05)
         assertEquals(44.04, peak(EVENING), 0.01)
         assertEquals(42.53, peak(TO_ZERO), 0.01)
+        assertEquals(42.585, peak(AFTERNOON_2110), 0.001)
         // 20.10: the protection from 135.6 s (the warning's single frame at 135.2 s falls between two snapshots)
         val z = periods(replay(TO_ZERO), TellTales.OVERVOLT).single()
         assertTrue(z.t0 in 135_000..137_000 && z.t1 in 139_000..145_000 && z.level == LampLevel.RED, "${z.t0}–${z.t1} ${z.level}")
