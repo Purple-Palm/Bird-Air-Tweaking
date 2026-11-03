@@ -1,0 +1,158 @@
+package io.github.purplepalm.birdair.phone
+
+import io.github.purplepalm.birdair.core.Decoder
+import io.github.purplepalm.birdair.core.Decoders
+import io.github.purplepalm.birdair.core.Frames
+import io.github.purplepalm.birdair.core.Link
+import io.github.purplepalm.birdair.core.PowerState
+import io.github.purplepalm.birdair.core.Telemetry
+import io.github.purplepalm.birdair.core.TelemetryTracker
+import io.github.purplepalm.birdair.core.Uuids
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.File
+
+class TextsTest {
+    private val nb = Fmt.NBSP
+
+    @Test fun numbersTheRussianWay() {
+        assertEquals("25,6", Fmt.n(25.6, 1))
+        assertEquals("25,7", Fmt.n(25.65000001, 1))
+        assertEquals("1433,3", Fmt.n(1433.3, 1))
+        assertEquals("14${nb}333,3", Fmt.n(14333.3, 1))
+        assertEquals("1${nb}234${nb}567", Fmt.n(1234567.0))
+        assertEquals("0,0", Fmt.n(-0.04, 1))
+        assertEquals("${Fmt.MINUS}150", Fmt.n(-150.4))
+        assertEquals("320", Fmt.n(319.6))
+        assertEquals("—", Fmt.n(null))
+        assertEquals("—", Fmt.n(Double.NaN, 1))
+        assertEquals("320 Вт", Fmt.watts(320.0))
+        assertEquals("12,5 кВт", Fmt.watts(12_480.0))
+        assertEquals("±300 Вт", Fmt.scale(300.0))
+        assertEquals("±1,2 кВт", Fmt.scale(1210.0))
+    }
+
+    @Test fun flowLikeThePage() {
+        assertEquals(Flow.NONE, Flow.of(null, null, null))
+        assertEquals(Flow.IDLE, Flow.of(0.1, 4.0, 0.0))
+        assertEquals(Flow.IDLE, Flow.of(-0.1, -4.0, 0.0))
+        assertEquals(Flow.DRIVE, Flow.of(0.7, 28.0, 0.0))
+        assertEquals(Flow.DRIVE, Flow.of(0.0, 0.0, 2.0))
+        assertEquals(Flow.DRIVE, Flow.of(null, 25.0, null))
+        assertEquals(Flow.REGEN, Flow.of(-0.2, -8.0, 5.0))
+        assertEquals(Flow.CHARGE, Flow.of(-0.2, -8.0, 0.0))
+        assertEquals(Flow.INTO, Flow.of(-0.2, null, null))
+        assertEquals(Flow.INTO, Flow.of(null, -10.0, null))
+        assertEquals("Тяга", Flow.DRIVE.label)
+        assertEquals("Рекуперация", Flow.REGEN.label)
+        assertEquals("Стоит", Flow.IDLE.label)
+        // riding, the tracker's state: −0.2 A on letting go is coasting; standing it does not matter
+        assertEquals(Flow.COAST, Flow.of(-0.2, -8.0, 20.0, PowerState.COAST))
+        assertEquals(Flow.REGEN, Flow.of(-3.0, -110.0, 20.0, PowerState.REGEN))
+        assertEquals(Flow.DRIVE, Flow.of(0.2, 8.0, 20.0, PowerState.TRACTION))
+        assertEquals(Flow.CHARGE, Flow.of(-1.7, -66.0, 0.0, PowerState.COAST))
+        assertEquals("Накат", Flow.COAST.label)
+        val t = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = 20.0, currentA = -0.2, powerW = -8.0, powerState = PowerState.COAST)
+        assertEquals("20,0 км/ч · накат", StatusText.notification(t))
+        assertEquals(false, Flow.COAST.intoBattery)
+    }
+
+    /** 20.10 through the pipeline, the power card's line on each BMS frame above 6 km/h (fast power, as the bar). */
+    @Test fun coastingIsNotRegenOnTheRide() {
+        var lastAt: Long? = null
+        var coastFrames = 0
+        var coastShownRegen = 0
+        var coastShownCoast = 0
+        var braking = 0
+        var brakingShownRegen = 0
+        TestLogs.publish(TestLogs.TO_ZERO) { t ->
+            val at = t.powerAtMs
+            if (at == null || at == lastAt) return@publish
+            lastAt = at
+            val a = Power.amps(t, true) ?: return@publish
+            if ((t.speedKmh ?: 0.0) <= 6.0) return@publish
+            val f = Flow.of(t, fast = true)
+            if (a < -0.15 && a >= -0.5) {
+                coastFrames++
+                assertEquals("without the state the page's rule says regen", Flow.REGEN, Flow.of(a, Power.watts(t, true), t.speedKmh))
+                if (f == Flow.REGEN) coastShownRegen++
+                if (f == Flow.COAST) coastShownCoast++
+                assertEquals("t=${t.t}: «${StatusText.notification(t, true)}»", f == Flow.COAST, StatusText.notification(t, true).endsWith("накат"))
+            }
+            if (a <= -3.0) { braking++; if (f == Flow.REGEN) brakingShownRegen++ }
+        }
+        println("20.10 coasting at −0.15…−0.5 A above 6 km/h: $coastFrames frames, «Накат» $coastShownCoast, «Рекуперация» $coastShownRegen; braking ≤ −3 A: $brakingShownRegen of $braking regen")
+        assertTrue("$coastFrames", coastFrames > 120)
+        assertTrue("$coastShownRegen of $coastFrames read «Рекуперация»", coastShownRegen * 4 < coastFrames)
+        assertTrue("$coastShownCoast", coastShownCoast * 2 > coastFrames)
+        assertTrue("$brakingShownRegen of $braking", brakingShownRegen * 10 >= braking * 8)
+    }
+
+    @Test fun modes() {
+        assertEquals(Mode.FLY, Mode.of(3))
+        assertNull(Mode.of(0))
+        assertEquals("16 mph", Mode.FLY.limit(Units.MPH))
+        assertEquals("12,5 mph", Mode.GLIDE.limit(Units.MPH))
+        assertEquals("14,5 км/ч", Mode.TAKEOFF.limit(Units.KMH))
+        assertEquals("25,7 км/ч", Mode.FLY.limit(Units.KMH))
+    }
+
+    @Test fun notificationText() {
+        val base = Telemetry(link = Link.CONNECTED, streaming = true, speedKmh = 25.6, batteryPct = 75.0, voltage = 40.0, currentA = 8.0, powerW = 320.0)
+        assertEquals("25,6 км/ч · 75 % · тяга 320 Вт", StatusText.notification(base))
+        assertEquals("from mAh, to 0,1 %", "25,6 км/ч · 56,3 % · тяга 320 Вт", StatusText.notification(base.copy(batteryPctFine = 56.3)))
+        assertEquals("56,3 %", StatusText.battery(base.copy(batteryPctFine = 56.3)))
+        assertNull(StatusText.battery(Telemetry()))
+        assertEquals("20,0 км/ч · 74 % · рекуперация 150 Вт",
+            StatusText.notification(base.copy(speedKmh = 20.0, batteryPct = 74.0, currentA = -3.75, powerW = -150.0)))
+        assertEquals("0,0 км/ч · 75 % · стоит", StatusText.notification(base.copy(speedKmh = 0.0, currentA = 0.05, powerW = 2.0)))
+        assertEquals("15,9 mph · 75 % · тяга 320 Вт", StatusText.notification(base.copy(units = "mph")))
+        assertEquals("нет связи — переподключаюсь", StatusText.notification(base.copy(link = Link.RECONNECTING)))
+        assertEquals("подключаюсь…", StatusText.notification(base.copy(link = Link.CONNECTING)))
+        assertEquals("подключено — жду данные от руля", StatusText.notification(base.copy(streaming = false)))
+        assertEquals("не подключено", StatusText.notification(Telemetry()))
+        assertEquals("Bird Air · FLY", StatusText.title(base.copy(mode = 3)))
+        assertEquals("Bird Air", StatusText.title(base))
+        assertEquals("На связи", StatusText.pill(Link.CONNECTED, true, false))
+        assertEquals("Подключено — жду данные", StatusText.pill(Link.CONNECTED, false, false))
+        assertEquals("Ищу самокат…", StatusText.pill(Link.IDLE, false, true))
+    }
+
+    /** Real decoder v5 on frames built like the dash's: decode → snapshot → the notification line. */
+    @Test fun fromFramesThroughDecoderV5() {
+        val root = File(System.getProperty("repoRoot") ?: "../..")
+        val tr = TelemetryTracker(Decoder(Decoders.parse(File(root, "decoders/current.json").readText())))
+        tr.link = Link.CONNECTED
+        // 3A 17 00 0D: avg 20,0 km/h, speed 25,6 km/h, mode FLY (0x0B), trip 8,5 km, odometer 1433,3 km
+        val f17 = Frames.make(0x17, 0x00, byteArrayOf(0, 200.toByte(), 0x01, 0x00, 0, 0x0B, 0, 85, 0x00, 0x37, 0xFD.toByte(), 1, 1))
+        // 3A 18 20 10: 40,000 V, −8000 mA raw (= 8 A from the battery), 3287 / 4363 mAh, 75 %, temps 30/31, motor bit
+        val f18 = Frames.make(0x18, 0x20, byteArrayOf(
+            3, 0x20, 0, 30, 31, 0x40, 0x9C.toByte(), 0xC0.toByte(), 0xE0.toByte(),
+            (3287 and 0xFF).toByte(), (3287 shr 8).toByte(), (4363 and 0xFF).toByte(), (4363 shr 8).toByte(), 75, 0x69, 0,
+        ))
+        // split into 20-byte notifications like the BLE bridge
+        for ((i, f) in listOf(f17, f18).withIndex()) {
+            f.toList().chunked(20).forEach { tr.onNotification(Uuids.SERVICE, Uuids.CHAR, it.toByteArray(), 1000L + i * 100) }
+        }
+        val t = tr.snapshot(1500)
+        assertEquals(25.6, t.speedKmh!!, 1e-9)
+        assertEquals(3, t.mode)
+        assertEquals(320.0, t.powerW!!, 1e-6)
+        assertEquals(true, t.motorOn)
+        // 3287 / 4363 mAh = 75,34 %: the BMS says 75, the app 75,3
+        assertEquals(75.3, t.batteryPctFine!!, 1e-9)
+        assertEquals("25,6 км/ч · 75,3 % · тяга 320 Вт", StatusText.notification(t))
+        assertEquals("Bird Air · FLY", StatusText.title(t))
+        assertEquals(Flow.DRIVE, Flow.of(t))
+        // 4 s later without frames: no longer live
+        assertEquals("подключено — жду данные от руля", StatusText.notification(tr.snapshot(5000)))
+    }
+
+    @Test fun whPerKm() {
+        assertEquals(11.4, Trip.whPerKm(103.0, 5.8, 1424.8, 1433.3)!!, 0.05)
+        assertNull(Trip.whPerKm(1.0, 0.0, 1424.8, 1424.82))
+        assertNull(Trip.whPerKm(1.0, 0.0, null, 1424.8))
+    }
+}

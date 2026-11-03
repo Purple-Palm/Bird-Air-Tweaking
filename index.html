@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bird Air Lab</title>
+<meta name="description" content="Телеметрия и разбор Bluetooth-протокола самоката Bird Air (VA00020) через Web Bluetooth.">
+<meta name="theme-color" content="#eef1f0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c100f" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/app.css?v=__BUILD__">
+<script>
+/* Shows script failures on the page itself: a phone has no devtools. Runs before app.js, so it also catches app.js failing to load or parse. */
+(function () {
+  function show(msg) {
+    var b = document.getElementById('problem');
+    if (!b) return;
+    document.getElementById('problemText').textContent = 'Ошибка в странице: ' + msg + '. Перезагрузи страницу; если повторяется — пришли этот текст.';
+    b.hidden = false;
+  }
+  addEventListener('error', function (e) { if (e.message) show(e.message + (e.filename ? ' (' + e.filename.split('/').pop().split('?')[0] + ':' + e.lineno + ')' : '')); });
+  addEventListener('unhandledrejection', function (e) { var r = e.reason; show(String(r && r.message || r)); });
+})();
+</script>
+</head>
+<body>
+<header class="strip">
+  <div class="wrap">
+    <div class="strip-top">
+      <div class="brand">
+        <h1>Bird Air Lab</h1>
+        <small>VA00020 · Bluetooth 4.2 LE</small>
+      </div>
+      <div class="conn">
+        <span class="pill" id="connPill" data-tone="neutral" role="status" aria-live="polite"><span class="ico" aria-hidden="true">○</span><span class="txt">Не подключено</span></span>
+        <button class="btn btn-primary" id="btnConnect" type="button">Подключить самокат</button>
+        <button class="btn" id="btnDisconnect" type="button" hidden>Отключить</button>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Разделы">
+      <button class="tab" role="tab" id="t-dash" data-tab="dash" aria-controls="v-dash" aria-selected="true" type="button">Приборы</button>
+      <button class="tab" role="tab" id="t-data" data-tab="data" aria-controls="v-data" aria-selected="false" type="button">Данные</button>
+      <button class="tab" role="tab" id="t-control" data-tab="control" aria-controls="v-control" aria-selected="false" type="button">Управление</button>
+      <button class="tab" role="tab" id="t-decoder" data-tab="decoder" aria-controls="v-decoder" aria-selected="false" type="button">Декодер</button>
+      <button class="tab" role="tab" id="t-guide" data-tab="guide" aria-controls="v-guide" aria-selected="false" type="button">Инструкция</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="banner top problem" id="problem" role="alert" hidden>
+    <span id="problemText"></span>
+    <button class="btn btn-sm" id="problemHide" type="button" onclick="this.parentNode.hidden = true">Скрыть</button>
+  </div>
+  <div class="banner top" id="decUpd" role="status" hidden>
+    <span id="decUpdText"></span>
+    <span class="row">
+      <button class="btn btn-sm btn-primary" id="decUpdApply" type="button">Применить</button>
+      <button class="btn btn-sm" id="decUpdLater" type="button">Не сейчас</button>
+    </span>
+  </div>
+  <!-- ===================== DASHBOARD ===================== -->
+  <section class="view" id="v-dash" role="tabpanel" aria-labelledby="t-dash">
+    <div class="banner" id="demoBanner" hidden>
+      <span><b>Демо-данные.</b> Так приборы будут выглядеть, когда протокол самоката расшифрован. Цифры выдуманы.</span>
+      <button class="btn btn-sm" id="btnDemoStop" type="button">Выключить демо</button>
+    </div>
+    <div class="banner" id="idleBanner" hidden>
+      <span id="idleText">Подключи самокат, загрузи записанный лог или включи демо.</span>
+      <button class="btn btn-sm" id="btnDemoStart" type="button">Показать демо</button>
+    </div>
+    <div class="banner warn" id="wakeBanner" role="status" hidden>
+      <span id="wakeText">Руль молчит: данные он начинает слать после команды с телефона.</span>
+      <span class="row">
+        <button class="btn btn-sm btn-primary" id="btnWake" type="button">Живые данные</button>
+        <label class="check"><input type="checkbox" id="wakeAuto"><span>Включать сами при подключении</span></label>
+      </span>
+      <p class="msg" id="wakeMsg"></p>
+    </div>
+    <div class="banner" id="liveBar" role="status" hidden>
+      <span>Живые данные: каждые 2,5 с телефон шлёт рулю безопасный запрос <code>+SVGT=?</code> — без него руль замолкает через ~4,5 с.</span>
+      <span class="row">
+        <button class="btn btn-sm" id="btnLiveOff" type="button">Выключить</button>
+        <label class="check"><input type="checkbox" id="gpsSpeed"><span>Скорость по GPS в лог (без координат)</span></label>
+      </span>
+      <p class="msg" id="gpsMsg"></p>
+    </div>
+    <div class="banner" id="rawBanner" hidden>
+      <span id="rawText"></span>
+      <button class="btn btn-sm btn-primary" id="btnRawSend" type="button">Отправить лог</button>
+    </div>
+
+    <div class="cluster">
+      <div class="tile big" id="tBattery">
+        <div class="lbl"><span>Заряд батареи</span><span id="batState"></span></div>
+        <div class="val" id="batVal">—</div>
+        <div class="meter" id="batMeter" data-tone="good"><i style="width:0%"></i></div>
+        <div class="sub" id="batSub">36 В · 10S2P · 5,2 А·ч</div>
+      </div>
+      <div class="tile big" id="tPower">
+        <div class="lbl"><span>Мощность</span><span class="pill" id="pwrState" data-tone="neutral"><span class="txt">Нет данных</span></span></div>
+        <div class="val" id="pwrVal">—</div>
+        <div class="bimeter" id="pwrMeter" role="img" aria-label="Поток энергии"><i class="neg" style="width:0%"></i><i class="pos" style="width:0%"></i></div>
+        <div class="bilbl"><span>← в батарею</span><span>из батареи →</span></div>
+        <div class="sub" id="pwrSub"></div>
+      </div>
+      <div class="tile speed" id="tSpeed">
+        <div class="lbl"><span>Скорость</span><span class="mode" id="modeChip" data-m="0" hidden><i aria-hidden="true"></i><span id="modeName">—</span></span></div>
+        <div class="val" id="spdVal">—</div>
+        <div class="sub" id="spdSub"></div>
+      </div>
+      <div class="tile side">
+        <div class="minis">
+          <div class="mini" id="mCurrent"><div class="lbl">Ток</div><div class="val">—</div><div class="sub">+ из батареи, − в батарею</div></div>
+          <div class="mini" id="mVoltage"><div class="lbl">Напряжение</div><div class="val">—</div><div class="sub">полная 42 В, пустая ~30 В</div></div>
+          <div class="mini" id="mTemp"><div class="lbl">Контроллер</div><div class="val">—</div><div class="sub">температура</div></div>
+          <div class="mini" id="mOdo"><div class="lbl">Пробег</div><div class="val">—</div><div class="sub">одометр</div></div>
+          <div class="mini" id="mEnergy"><div class="lbl">Энергия за сессию</div><div class="val">—</div><div class="sub" id="mEnergySub"></div></div>
+          <div class="mini" id="mRate"><div class="lbl">Поток данных</div><div class="val">—</div><div class="sub" id="mRateSub"></div></div>
+        </div>
+        <div class="customs" id="customs" hidden></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="row"><h2>Мощность</h2>
+          <div class="legend" aria-label="Легенда">
+            <span><i style="background:var(--draw)"></i>Тяга (из батареи)</span>
+            <span><i style="background:var(--flow)"></i>Рекуперация и зарядка (в батарею)</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="seg" role="group" aria-label="Окно графика" id="winSeg">
+            <button type="button" data-win="60" aria-pressed="true">60 с</button>
+            <button type="button" data-win="300" aria-pressed="false">5 мин</button>
+            <button type="button" data-win="all" aria-pressed="false">Вся сессия</button>
+          </div>
+          <button class="btn btn-sm" id="btnTable" type="button" aria-pressed="false">Таблица</button>
+        </div>
+      </div>
+      <div class="chartbox" id="chartBox">
+        <canvas id="chart" tabindex="0" aria-label="График мощности: стрелками влево-вправо можно двигать перекрестие"></canvas>
+        <div class="tip" id="chartTip" hidden></div>
+      </div>
+      <div class="scroll-x" id="chartTableWrap" hidden>
+        <table class="data" id="chartTable"></table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Метки</h3>
+      <p class="hint">Жми в момент действия. Потом в разделе «Данные» видно, какие байты поменялись именно в этот момент.</p>
+      <div class="markers" data-markers></div>
+    </div>
+  </section>
+
+  <!-- ===================== DATA ===================== -->
+  <section class="view" id="v-data" role="tabpanel" aria-labelledby="t-data" hidden>
+    <div class="cols">
+      <div class="card">
+        <div class="card-head"><h2>Сервисы самоката</h2><span class="empty" id="devName"></span></div>
+        <div id="explorer" class="view"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Лог пакетов</h2>
+          <div class="row">
+            <select id="logFilter" aria-label="Фильтр лога"><option value="">Все</option></select>
+            <label class="check"><input type="checkbox" id="logCollapse"> склеивать повторы</label>
+          </div>
+        </div>
+        <div class="markers" data-markers></div>
+        <div class="log" id="log" aria-live="off"></div>
+        <div class="row">
+          <button class="btn btn-sm" id="btnExport" type="button">Скачать лог (JSON)</button>
+          <button class="btn btn-sm" id="btnCopyLog" type="button">Копировать</button>
+          <label class="btn btn-sm" for="fileImport">Загрузить лог…</label>
+          <input type="file" id="fileImport" accept=".json,.gz,application/json,application/gzip" multiple hidden>
+          <button class="btn btn-sm btn-danger" id="btnClear" type="button">Очистить</button>
+        </div>
+        <p class="msg" id="logMsg"></p>
+        <div class="field" id="ghBox">
+          <h3>Отправить в GitHub</h3>
+          <label class="f">Подпись в имени файла<input id="ghLabel" placeholder="например: газ и тормоз" maxlength="40" autocomplete="off"></label>
+          <p class="empty mono" id="ghName"></p>
+          <label class="check"><input type="checkbox" id="ghAnon" checked><span>Обезличить<small>Имя и id устройства → «scooter», значения Device Name, Serial Number и System ID стираются. Репозиторий публичный — не снимай без причины.</small></span></label>
+          <div class="row">
+            <button class="btn btn-primary btn-sm" id="btnGhSend" type="button">Отправить лог в GitHub</button>
+            <button class="btn btn-sm" id="btnGhSetup" type="button">Настройки GitHub</button>
+          </div>
+          <p class="msg" id="ghMsg" role="status"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="frameCard" hidden>
+      <div class="card-head"><h2>Кадры контроллера</h2><span class="empty" id="frameNote"></span></div>
+      <p class="hint">Руль пересылает по 0xFFE1 кадры контроллера: <code>3A</code>, адрес, команда, длина, данные, сумма (2 байта), <code>0D 0A</code>. Ниже — данные последнего кадра каждого типа; подсвечены байты, которые менялись за последние 5 с. Номер байта — как в декодере: от <code>3A</code>, данные начинаются с байта 4.</p>
+      <div id="frameList" class="frames"></div>
+    </div>
+
+    <div class="card" id="anCard">
+      <div class="card-head"><h2>Разбор байтов</h2></div>
+      <div class="fgrid">
+        <label class="f">Характеристика<select id="anChar"></select></label>
+        <label class="f">Начало пакета (фильтр)<input id="anPat" class="mono" placeholder="например 5A A5 ?? 25" autocomplete="off"></label>
+      </div>
+      <p class="hint">Колонки — номера байтов в пакете, новые пакеты сверху. Чем заметнее подсветка колонки, тем чаще этот байт меняется. Нажми на номер байта, чтобы построить его график.</p>
+      <p class="msg" id="anMsg"></p>
+      <div class="scroll-x"><table class="bytes" id="anGrid"></table></div>
+      <div id="anSel" class="view" hidden>
+        <div class="row">
+          <b id="anSelTitle">Байт</b>
+          <select id="anType" aria-label="Как читать байты">
+            <option value="u8">u8 — 1 байт</option>
+            <option value="s8">s8 — 1 байт со знаком</option>
+            <option value="u16le">u16le — 2 байта, младший первый</option>
+            <option value="s16le">s16le — 2 байта со знаком</option>
+            <option value="u16be">u16be — 2 байта, старший первый</option>
+            <option value="s16be">s16be — 2 байта со знаком, BE</option>
+            <option value="u32le">u32le — 4 байта</option>
+          </select>
+          <span class="empty" id="anStats"></span>
+          <button class="btn btn-sm" id="anToDecoder" type="button">→ В декодер</button>
+        </div>
+        <div class="plotbox"><canvas id="anPlot" aria-label="График выбранного байта"></canvas></div>
+      </div>
+      <h3>Что поменялось вокруг метки</h3>
+      <div class="fgrid">
+        <label class="f">Метка<select id="anMk"></select></label>
+        <label class="f">Окно до и после, с<input id="anWin" type="number" min="1" max="30" step="1" value="3"></label>
+      </div>
+      <ol class="diff" id="anDiff"></ol>
+    </div>
+
+    <div class="card" id="writeCard" hidden>
+      <h2>Отправка команд</h2>
+      <div class="warnbox">Запись меняет состояние самоката. Случайные байты могут сбить настройки или перевести Bluetooth-модуль в режим обновления прошивки, и руль перестанет работать. Отправляй только команды, которые видел в логе приложения Bird. Характеристики обновления прошивки (OTA) заблокированы. Байты <code>AE 4B 45 59</code> («KEY?») тоже заблокированы: после них руль теряет связь с контроллером, показывает гаечный ключ и ошибку 37 до выключения самоката.</div>
+      <div class="fgrid">
+        <label class="f">Куда<select id="wrChar"></select></label>
+        <label class="f">Байты (hex)<input id="wrHex" class="mono" placeholder="2B 53 56 47 54 3D 3F" autocomplete="off"></label>
+      </div>
+      <div class="row">
+        <button class="btn" id="wrSend" type="button">Отправить</button>
+        <label class="check"><input type="checkbox" id="wrRepeat"> повторять каждые</label>
+        <input id="wrEvery" type="number" min="200" step="100" value="1000" style="width:90px" aria-label="Интервал, мс"> мс
+      </div>
+      <p class="msg" id="wrMsg"></p>
+    </div>
+
+    <div class="card">
+      <h2>Настройки</h2>
+      <label class="f">Свои UUID сервисов — по одному в строке (из nRF Connect)
+        <textarea id="setUuids" spellcheck="false" placeholder="например:&#10;0000ffe0-0000-1000-8000-00805f9b34fb&#10;fff0"></textarea>
+      </label>
+      <p class="msg" id="setUuidsMsg"></p>
+      <div class="fgrid">
+        <label class="f">Показывать только устройства, чьё имя начинается с<input id="setName" placeholder="пусто — показать все" autocomplete="off"></label>
+        <label class="f">Скорость и пробег в<select id="setUnits"><option value="mph">милях (mph)</option><option value="kmh">километрах (км/ч)</option></select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="setSub"><span>Подписываться на все уведомления сразу после подключения</span></label>
+      <label class="check"><input type="checkbox" id="setReconnect"><span>Переподключаться, если связь оборвалась<small>Чинит главную беду приложения Bird: соединение держится, пока открыта страница.</small></span></label>
+      <label class="check"><input type="checkbox" id="setWake"><span>Не гасить экран, пока самокат подключён</span></label>
+      <label class="check"><input type="checkbox" id="setWrite"><span>Разрешить отправку команд в самокат<small>Только для разбора протокола. По умолчанию выключено.</small></span></label>
+      <label class="check"><input type="checkbox" id="setGps"><span>Скорость по GPS в лог<small>Пока идёт запись с самоката, в лог пишется скорость телефона по GPS (только скорость и точность, без координат) — по ней найдём байт скорости. До этого она же на спидометре. По умолчанию выключено.</small></span></label>
+      <label class="check"><input type="checkbox" id="setAutoWake"><span>Живые данные сами при подключении<small>Руль шлёт данные ~4,5 с после каждой команды с телефона. Через секунду после подключения страница включит «Живые данные»: каждые 2,5 с безопасный запрос версии <code>+SVGT=?</code>. По умолчанию выключено.</small></span></label>
+    </div>
+
+    <div class="card" id="ghCard">
+      <h2>GitHub: куда отправлять логи</h2>
+      <div class="fgrid4">
+        <label class="f">Владелец (owner)<input id="ghOwner" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+        <label class="f">Репозиторий<input id="ghRepo" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+        <label class="f">Ветка<input id="ghBranch" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+        <label class="f">Папка<input id="ghFolder" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+      </div>
+      <label class="check"><input type="checkbox" id="ghAuto"><span>Отправлять лог сам<small>Пока самокат на связи — раз в 5 минут и сразу при отключении. Один файл на поездку, он дописывается. Демо и логи из файла не отправляются.</small></span></label>
+      <label class="f">Fine-grained personal access token<input id="ghToken" type="password" class="mono" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="вставь токен"></label>
+      <p class="hint">Создай токен на <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>: Repository access → Only select repositories → этот репозиторий; Permissions → Contents: Read and write. Токен хранится только в этом браузере и не попадает ни в логи, ни в экспорт.</p>
+      <div class="row">
+        <button class="btn btn-sm" id="ghCheck" type="button">Проверить доступ</button>
+        <button class="btn btn-sm btn-danger" id="ghForget" type="button">Забыть токен</button>
+      </div>
+      <p class="msg" id="ghSetMsg" role="status"></p>
+    </div>
+  </section>
+
+  <!-- ===================== DECODER ===================== -->
+  <section class="view" id="v-decoder" role="tabpanel" aria-labelledby="t-decoder" hidden>
+    <div class="card" id="decSource">
+      <div class="card-head">
+        <h2>Какой декодер работает</h2>
+        <div class="seg" role="group" aria-label="Источник декодера" id="decSrcSeg">
+          <button type="button" data-src="mine" aria-pressed="true">Мой</button>
+          <button type="button" data-src="repo" aria-pressed="false">Из репозитория</button>
+        </div>
+      </div>
+      <p class="hint" id="decSrcText"></p>
+      <p class="msg" id="decRepoText"></p>
+      <div class="row">
+        <button class="btn btn-sm btn-primary" id="decRepoApply" type="button" hidden>Применить</button>
+        <span class="row" id="decBackupBox" hidden>
+          <label class="f">Резервные копии «моего»<select id="decBackupSel"></select></label>
+          <button class="btn btn-sm" id="decBackup" type="button">Вернуть эту копию</button>
+        </span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Декодер</h2><span class="empty" id="decNote"></span></div>
+      <p class="hint">Декодер превращает байты в цифры на приборах. Для каждого показателя укажи: из какой характеристики брать пакет, с чего он начинается, с какого байта читать и как пересчитать в единицы. Изменения сразу применяются ко всему, что уже записано.</p>
+      <div class="row">
+        <button class="btn" id="decAdd" type="button">Добавить поле</button>
+        <button class="btn" id="decLoadDemo" type="button">Взять демо-конфиг как пример</button>
+        <button class="btn btn-danger" id="decClear" type="button">Удалить все поля</button>
+      </div>
+      <label class="check"><input type="checkbox" id="decJson"><span>Поток JSON от своей платы (ESP32)<small>Строки вида {"v":38.2,"i":-2.1,"spd":18.5,"soc":64}. Ключи: v, i, p, soc, spd (км/ч) или mph, t, mode, odo.</small></span></label>
+      <label class="check"><input type="checkbox" id="decFraming"><span>UART-кадры «: … CR LF» (сумма16)<small>Руль Bird Air шлёт кадры контроллера <code>3A</code> адрес команда длина данные сумма16 <code>0D 0A</code>, порезанные на уведомления по 20 байт. С галочкой поля читаются из целого кадра с верной суммой, байт 0 — <code>3A</code>; «Начало пакета» — начало кадра, например <code>3A 18 20 10</code>.</small></span></label>
+      <div id="decFields" class="view"></div>
+      <details>
+        <summary>Конфиг текстом</summary>
+        <div class="view" style="margin-top:10px">
+          <textarea id="decText" spellcheck="false"></textarea>
+          <div class="row">
+            <button class="btn btn-sm" id="decCopy" type="button">Скопировать</button>
+            <button class="btn btn-sm" id="decApply" type="button">Применить из текста</button>
+          </div>
+          <p class="msg" id="decMsg"></p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ===================== CONTROL ===================== -->
+  <section class="view" id="v-control" role="tabpanel" aria-labelledby="t-control" hidden>
+    <div class="banner" id="ctlGate">
+      <span id="ctlGateText"></span>
+      <span class="row" id="ctlGateBtns"></span>
+    </div>
+
+    <div class="card ctl" id="ctlCard">
+      <div class="card-head"><h2>Режим</h2><span class="empty" id="ctlModeNote">команда уйдёт в самокат по нажатию</span></div>
+      <div class="bigbtns" id="ctlModes">
+        <button class="bigbtn" data-mode="1" type="button"><b>TAKEOFF</b><small>до 9 mph</small></button>
+        <button class="bigbtn" data-mode="2" type="button"><b>GLIDE</b><small>до 12,5 mph</small></button>
+        <button class="bigbtn" data-mode="3" type="button"><b>FLY</b><small>до 16 mph</small></button>
+      </div>
+
+      <h2>Фара</h2>
+      <div class="bigbtns two">
+        <button class="bigbtn" id="ctlLightOn" type="button"><b>Фара вкл</b></button>
+        <button class="bigbtn" id="ctlLightOff" type="button"><b>Фара выкл</b></button>
+      </div>
+      <p class="msg" id="ctlMsg" role="status"></p>
+    </div>
+
+    <div class="card" id="ctlProbeCard">
+      <div class="card-head"><h2>Диагностика</h2></div>
+      <p class="hint">Руль молчит, пока телефон не пришлёт ему команду «+…»; после неё он начинает пересылать кадры контроллера. Запрос версии — безопасный: он только спрашивает, ничего не меняет. Руль отвечает строкой вроде «+SVGT=0» — она появится ниже и в логе. Если кадров так и нет, нажми свой текущий режим выше: после команды режима поток точно идёт.</p>
+      <div class="row">
+        <button class="btn" id="ctlVer" type="button">Запросить версию (+SVGT=?)</button>
+      </div>
+      <p class="msg" id="ctlProbeMsg" role="status"></p>
+    </div>
+
+    <p class="hint" id="ctlWarn">Эти кнопки меняют состояние самоката и шлют только задокументированные команды приложения Bird (переключение заводских режимов и фара). Характеристики обновления прошивки (OTA) не трогаются никогда. «Рукопожатие» KEY? (<code>AE 4B 45 59 …</code>) отсюда убрано и заблокировано везде: на этом самокате оно рвёт связь руля с контроллером — гаечный ключ и ошибка 37 до выключения, а на ходу так может пропасть тяга.</p>
+  </section>
+
+  <!-- ===================== GUIDE ===================== -->
+  <section class="view" id="v-guide" role="tabpanel" aria-labelledby="t-guide" hidden>
+    <div class="card guide">
+      <h2>Проверка браузера</h2>
+      <div class="checks" id="checks"></div>
+      <p class="hint">Web Bluetooth есть в Chrome на Android и в Chrome или Edge на компьютере. Samsung Internet и любые браузеры на iPhone его не поддерживают. Страницу нужно открыть по https или с localhost. Внутри чата Claude Bluetooth заблокирован, поэтому это отдельная страница.</p>
+      <details>
+        <summary>Как открыть страницу на телефоне по https</summary>
+        <ol style="margin-top:8px">
+          <li>Страница живёт на GitHub Pages: <code>https://purple-palm.github.io/Bird-Air-Tweaking/</code>. Открой адрес в Chrome на телефоне и добавь на главный экран (меню ⋮ → «Добавить на главный экран»).</li>
+          <li>Каждый пуш в ветку <code>main</code> выкладывает новую версию за минуту-две. Номер сборки — внизу страницы.</li>
+          <li>На компьютере: в папке репозитория запусти <code>python3 -m http.server 8000</code> и открой <code>http://localhost:8000/</code>.</li>
+        </ol>
+      </details>
+    </div>
+
+    <div class="card guide">
+      <h2>Шаг 1. Узнать, что у самоката внутри</h2>
+      <ol>
+        <li>Поставь <b>nRF Connect for Mobile</b> (Nordic Semiconductor) из Google Play.</li>
+        <li>Полностью закрой приложение Bird: самокат держит только одно подключение.</li>
+        <li>Включи самокат. В nRF Connect на вкладке Scanner найди его: самый сильный сигнал рядом, имя может начинаться на Bird или быть серийником BA593…</li>
+        <li>Нажми Connect. Каждый «Unknown Service» — то, что нам нужно. Сделай скриншоты всех сервисов и характеристик вместе с их свойствами (READ, WRITE, NOTIFY).</li>
+        <li>У характеристик с NOTIFY нажми значок с тремя стрелками. Если побежали значения, самокат шлёт данные без приложения Bird, и дальше всё просто.</li>
+        <li>UUID сервисов, которых нет в стандартном списке, впиши в «Данные → Настройки → Свои UUID», иначе Chrome их не покажет.</li>
+      </ol>
+    </div>
+
+    <div class="card guide">
+      <h2>Шаг 2. Записать лог с метками</h2>
+      <ol>
+        <li>Нажми «Подключить самокат» и выбери его в списке. Подписка на все уведомления включится сама.</li>
+        <li>Проделай по порядку, каждый раз нажимая метку: постой 10 секунд, плавно дай газ до упора, отпусти, притормози, смени режим двойным нажатием кнопки питания, включи и выключи фару.</li>
+        <li>Если Bluetooth не гаснет на зарядке, подключи зарядку и нажми «Зарядка вкл».</li>
+        <li>«Данные» → «Отправить в GitHub» (токен вставляется один раз в карточке «GitHub: куда отправлять логи») и напиши мне «новый лог». Я найду, где лежат заряд, скорость и ток, и выложу декодер в репозиторий.</li>
+        <li>Когда декодер готов, при открытии страницы появится баннер «В репозитории новый декодер» — нажми «Применить». Твои ручные правки декодера сохраняются отдельно.</li>
+      </ol>
+    </div>
+
+    <div class="card guide">
+      <h2>Если самокат молчит</h2>
+      <p class="hint">Руль Bird Air начинает слать данные только после команды с телефона. На «Приборах» появится баннер «Руль молчит» — нажми в нём «Запросить данные (+SVGT=?)». Если и после этого тихо, открой «Управление» и нажми свой текущий режим: после команды режима поток идёт. Если и это не помогло, нужно подсмотреть, что пишет самокату приложение Bird. Android умеет записывать весь Bluetooth-обмен:</p>
+      <ol>
+        <li>Настройки → Сведения о телефоне → Сведения о ПО → 7 раз нажми «Номер сборки». Появятся «Параметры разработчика».</li>
+        <li>В «Параметрах разработчика» включи журнал HCI Bluetooth (Enable Bluetooth HCI snoop log) в полном режиме «Включено», не «Отфильтрованный». Выключи и снова включи Bluetooth.</li>
+        <li>Если самокат уже сопряжён, «забудь» его в настройках Bluetooth: иначе Android возьмёт список сервисов из кэша и в журнале не будет, какой handle что значит.</li>
+        <li>Закрой вкладку Bird Air Lab (или нажми «Отключить»): самокат держит одно подключение, и пока страница подключена или переподключается, приложение Bird его не увидит.</li>
+        <li>Открой приложение Bird и подключись к самокату. Подожди 30 секунд на главном экране, смени режим, включи и выключи фару.</li>
+        <li>Выключи журнал. В «Параметрах разработчика» нажми «Отчёт об ошибке» (Take bug report) → полный отчёт и сохрани zip.</li>
+        <li>Внутри найди <code>btsnoop_hci.log</code> (обычно в <code>FS/data/log/bt/</code> или <code>FS/data/misc/bluetooth/logs/</code>). На компьютере разбери его: <code>python3 tools/parse_btsnoop.py btsnoop_hci.log --label bird-app</code> — обезличенный лог ляжет в <code>logs/</code>, закоммить его и напиши мне «новый лог». Сам <code>btsnoop_hci.log</code> в репозиторий не клади: в нём адреса всех твоих Bluetooth-устройств.</li>
+        <li>Найденные команды запроса можно будет отправлять отсюда (раздел «Отправка команд»), но только после разбора и по договорённости.</li>
+      </ol>
+    </div>
+
+    <div class="card guide">
+      <h2>Чего ждать</h2>
+      <ul>
+        <li><b>Скорость и заряд</b> почти наверняка ходят по проводам: их показывает экран на руле. Вопрос в том, выпускает ли их Bluetooth-модуль наружу.</li>
+        <li><b>Ток, мощность, рекуперация и ток зарядки</b> появятся, только если контроллер их передаёт. Многие дешёвые контроллеры шлют лишь скорость, заряд и коды ошибок.</li>
+        <li><b>Если тока нет</b>, ставим свою плату: ESP32 и датчик тока INA228 на провод батареи. Она меряет вольты и амперы напрямую, включая рекуперацию и зарядку, и шлёт строки JSON. Эта страница уже умеет их показывать: «Декодер → Поток JSON».</li>
+        <li>Запись в самокат по умолчанию выключена. Характеристики обновления прошивки (OTA) страница не трогает никогда.</li>
+      </ul>
+    </div>
+  </section>
+</main>
+<footer class="wrap">Bird Air VA00020 · Bluetooth-модуль Wi-linktech WLT8266BM, Bluetooth 4.2 LE — по данным FCC ID 2AWV7029757739. Батарея 36 В 10S2P 5,2 А·ч. · <span id="build" data-build="__BUILD__"></span></footer>
+
+<script src="assets/app.js?v=__BUILD__"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks commits that contain GitHub tokens. Enable once per clone:
+#   git config core.hooksPath .githooks
+exec python3 tools/check_secrets.py --staged
