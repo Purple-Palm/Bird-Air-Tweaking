@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity(), UiActions {
     private var afterPerms: Pair<List<String>, () -> Unit>? = null
     /** A downloaded update waiting for «Установка неизвестных приложений». */
     private var pendingInstall: java.io.File? = null
+    /** The system installer was opened from here. Replacing the app kills the process: back in [onResume], it did not. */
+    private var installerOpen = false
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
@@ -106,6 +108,8 @@ class MainActivity : ComponentActivity(), UiActions {
         super.onResume()
         refresh()
         ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) }
+        // back from the installer with this process alive: cancelled or failed, nothing to bring back after a later update
+        if (installerOpen) { installerOpen = false; ScooterRepo.installNotDone() }
         // back from «Установка неизвестных приложений»: go on with the install (install() checks again: not while moving)
         if (pendingInstall != null && Updater.canInstall(this)) {
             pendingInstall = null
@@ -243,15 +247,19 @@ class MainActivity : ComponentActivity(), UiActions {
     /**
      * «Установить»: never while moving; the running recording (every part) and the odometer are saved first. Android
      * wants «Установка неизвестных приложений» first: the screen says so where the tap came from ([SystemState.installAsk]).
+     * No installer, or back from it in [onResume]: [ScooterRepo.installNotDone].
      */
     private fun install() {
         if (ScooterRepo.moving.value) { ScooterRepo.toast("На ходу не ставлю: установка оборвёт связь. Остановись"); return }
         lifecycleScope.launch {
             ScooterRepo.beforeInstall(applicationContext)
-            val f = Updater.readyFile(applicationContext) ?: run { ScooterRepo.update.update { it.copy(readyCode = null) }; return@launch }
+            val f = Updater.readyFile(applicationContext)
+            if (f == null) { ScooterRepo.update.update { it.copy(readyCode = null) }; ScooterRepo.installNotDone(); return@launch }
             pendingInstall = f
-            if (Updater.install(this@MainActivity, f)) pendingInstall = null
-            else if (ScooterRepo.update.value.needsPermission) sys = sys.copy(installAsk = sys.installAsk + 1)
+            installerOpen = Updater.install(this@MainActivity, f)
+            if (installerOpen) { pendingInstall = null; return@launch }
+            ScooterRepo.installNotDone()
+            if (ScooterRepo.update.value.needsPermission) sys = sys.copy(installAsk = sys.installAsk + 1)
         }
     }
 

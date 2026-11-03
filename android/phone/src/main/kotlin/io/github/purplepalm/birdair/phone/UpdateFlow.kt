@@ -44,9 +44,19 @@ object UpdateFlow {
 
     /**
      * After the update went in (MY_PACKAGE_REPLACED): the saved scooter to connect to again, only if a recording ran
-     * when the install began ([recording], [Prefs.resumeAfterUpdate]) and the permission is there; else null.
+     * when the install began and the permission is there; else null. [at] ([Prefs.resumeAfterUpdateAt]): when an install
+     * began with a recording running, good for [RESUME_WINDOW_MS] — the installer goes in a minute or two after, and an
+     * attempt that never did (cancelled, the process killed before it came back) must not start a recording for an
+     * update put on later by hand with nothing running; 0: none ran. null: begun by v111, which kept nothing — its own
+     * rule, [wanted], this once.
      */
-    fun resumeTo(recording: Boolean, address: String?, canConnect: Boolean): String? = address?.takeIf { recording && canConnect }
+    fun resumeTo(at: Long?, wanted: Boolean, nowMs: Long, address: String?, canConnect: Boolean): String? {
+        val recording = if (at == null) wanted else at > 0 && nowMs - at in 0..RESUME_WINDOW_MS
+        return address?.takeIf { recording && canConnect }
+    }
+
+    /** How long after [ScooterRepo.beforeInstall] an update still brings the link back ([resumeTo]). */
+    const val RESUME_WINDOW_MS = 15 * 60_000L
 
     /** 0…1 of the download, by bytes when the size is known. */
     fun fraction(u: UpdateState): Float? {

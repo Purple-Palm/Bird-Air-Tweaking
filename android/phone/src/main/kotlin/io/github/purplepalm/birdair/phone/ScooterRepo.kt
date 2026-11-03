@@ -368,18 +368,27 @@ object ScooterRepo {
 
     /**
      * Right before the system installer replaces this app: Android kills the process without onDestroy and does not
-     * restart the service, so the running recording (every changed part) and the app odometer are saved now. Whether one
-     * runs goes to [Prefs.resumeAfterUpdate], at every attempt: [UpdatedReceiver] brings the link back only then.
+     * restart the service, so the running recording (every changed part) and the app odometer are saved now. When one
+     * runs goes to [Prefs.resumeAfterUpdateAt], at every attempt: [UpdatedReceiver] brings the link back only then.
      */
     suspend fun beforeInstall(ctx: Context) {
         val running = status.value.running
-        prefs.resumeAfterUpdate = running
+        prefs.resumeAfterUpdateAt = if (running) System.currentTimeMillis() else 0L
         saveOdometer(true)
         val s = session ?: return
         if (running) {
             sys("Обновление: сохраняю лог перед установкой, связь с самокатом прервётся")
             LogStore.saveAll(ctx.applicationContext, s)
         }
+    }
+
+    /**
+     * The install after [beforeInstall] did not go in: the installer did not open, or came back with this process alive
+     * (it kills the process when it replaces the app). An update put on later by hand, with nothing running, must not
+     * start a recording.
+     */
+    fun installNotDone() {
+        prefs.resumeAfterUpdateAt = 0L
     }
 
     /** A service line: into the log and onto the screen. */

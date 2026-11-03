@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -366,13 +367,21 @@ abstract class ShellShotsBase {
 
     /**
      * «Управление» opens right under the thumb: for 0,6 s after it opens (every time) its switch, modes and headlight take
-     * no taps — a double tap or a glove's bounce on «Управление» while riding sends nothing — then they work.
+     * no taps — a double tap or a glove's bounce on «Управление» while riding sends nothing, nor a press that went down
+     * then and lifts after — then they work.
      */
     @Test fun controlSheetGuard() {
         Scenes.ride()
         ScooterRepo.setAllowCommands(true)
         shot.setContent("22:12", NavStart(), sys)
         fun open() { rule.onNodeWithText("Управление").performClick(); rule.mainClock.advanceTimeByFrame() }
+        // down at ~450 ms, up at ~700 ms: clickable fires on the up, by then armed
+        fun straddle(n: SemanticsNodeInteraction) {
+            n.performTouchInput { down(center) }
+            rule.mainClock.advanceTimeBy(250)
+            n.performTouchInput { up() }
+            rule.waitForIdle()
+        }
         open()
         rule.onNodeWithText("Разрешить команды").assertIsDisplayed().performClick()
         assertTrue("0 ms: the switch stays on", ScooterRepo.control.value.allow)
@@ -382,6 +391,9 @@ abstract class ShellShotsBase {
         rule.onNodeWithText("Фара выкл").assertIsDisplayed().performClick()
         assertEquals("0–300 ms: nothing reached ScooterRepo.command", "", ScooterRepo.control.value.message)
         assertTrue(ScooterRepo.control.value.allow)
+        rule.mainClock.advanceTimeBy(150)
+        straddle(rule.onNodeWithText("Фара выкл"))
+        assertEquals("a press that went down at 450 ms and lifted at 700 ms sends nothing", "", ScooterRepo.control.value.message)
         rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
         rule.onNodeWithText("Фара выкл").performClick()
         // no service in a shot: ScooterRepo.command refuses for want of a link, so the tap did get there
@@ -393,12 +405,15 @@ abstract class ShellShotsBase {
         open()
         rule.onNodeWithText("Разрешить команды").assertIsDisplayed().performClick()
         assertFalse("a bounce does not allow commands", ScooterRepo.control.value.allow)
+        rule.mainClock.advanceTimeBy(450)
+        straddle(rule.onNodeWithText("Разрешить команды"))
+        assertFalse("nor a press that went down in the guard", ScooterRepo.control.value.allow)
         rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
         rule.onNodeWithText("Разрешить команды").performClick()
         assertTrue("then the switch works", ScooterRepo.control.value.allow)
     }
 
-    /** Tiles that just appeared (the view switched to «Стою») ignore taps for 0,6 s. */
+    /** Tiles that just appeared (the view switched to «Стою») ignore taps for 0,6 s, and a press that went down then. */
     @Test fun tilesGuard() {
         Scenes.parked(); Scenes.logs(Logs.UNSENT)
         ScooterRepo.setViewPin(ViewPin.RIDE)
@@ -408,6 +423,13 @@ abstract class ShellShotsBase {
         rule.waitForIdle()
         rule.onNodeWithText("Отправить").performClick()
         assertFalse("a tap right after the tiles appear goes nowhere", "sendAll" in shot.ui.calls)
+        rule.mainClock.advanceTimeBy(200)
+        val send = rule.onNodeWithText("Отправить")
+        send.performTouchInput { down(center) }
+        rule.mainClock.advanceTimeBy(400)
+        send.performTouchInput { up() }
+        rule.waitForIdle()
+        assertFalse("down at 300 ms, up at 700 ms: still nothing", "sendAll" in shot.ui.calls)
         rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
         rule.waitForIdle()
         rule.onNodeWithText("Отправить").performClick()

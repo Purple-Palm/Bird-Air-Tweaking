@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -97,7 +99,7 @@ fun BottomZone(page: Page?, view: DashView, setup: SetupStep) {
 /**
  * «Отправить · 3 лога → GitHub» and the update tile: one tap does the job. Not tappable for [DashViews.TILE_GUARD_MS]
  * after the row changes under the thumb: the view, a tile appearing or going (the other one halves or doubles), a tile
- * turning into another action («Скачиваю» → «Установить»).
+ * turning into another action («Скачиваю» → «Установить»); nor by a press that went down then ([pressGuard]).
  */
 @Composable
 fun Tiles(view: DashView) {
@@ -130,9 +132,10 @@ fun RowScope.Tile(
 ) {
     val c = LocalBal.current
     val shape = RoundedCornerShape(14.dp)
+    val armedNow = rememberUpdatedState(armed)
     Box(
         Modifier.weight(1f).height(60.dp).clip(shape).background(c.surface).border(1.dp, c.hair, shape)
-            .then(if (onClick != null) Modifier.clickable(enabled = armed, role = Role.Button, onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.pressGuard(armedNow).clickable(enabled = armed, role = Role.Button, onClick = onClick) else Modifier)
             .semantics(mergeDescendants = true) { contentDescription = "$title, $sub" },
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -150,13 +153,30 @@ fun RowScope.Tile(
 
 /**
  * False for [ms] after [key] changes (the tiles appeared, the view switched, «Управление» opened): taps go nowhere,
- * nothing changes visually.
+ * nothing changes visually. With [pressGuard]: clickable reads it only when the finger lifts.
  */
 @Composable
 fun rememberArmed(key: Any?, ms: Long = DashViews.TILE_GUARD_MS): Boolean {
     var armed by remember(key) { mutableStateOf(false) }
     LaunchedEffect(key) { armed = false; delay(ms); armed = true }
     return armed
+}
+
+/**
+ * Swallows, whole, a press that goes down while not [armed]: clickable and toggleable fire when the finger lifts and
+ * look only at their state then, so a press begun inside the guard and lifted after it would still go. Judged at the
+ * down, on the Initial pass: the children never see it. Their own check stays for TalkBack and keys.
+ */
+fun Modifier.pressGuard(armed: State<Boolean>): Modifier = pointerInput(armed) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        if (armed.value) return@awaitEachGesture
+        down.consume()
+        do {
+            val e = awaitPointerEvent(PointerEventPass.Initial)
+            e.changes.forEach { it.consume() }
+        } while (e.changes.any { it.pressed })
+    }
 }
 
 // -- the action row

@@ -74,13 +74,28 @@ class UpdateFlowTest {
         assertFalse("checking ends", UpdateFlow.checked(u, v109, 108, manual = false, nowMs = 1).checking)
     }
 
-    /** MY_PACKAGE_REPLACED connects again only when a recording ran as the install began — not on a «wanted» left on. */
+    /**
+     * MY_PACKAGE_REPLACED connects again only when a recording ran as the install began, at most 15 min ago — not on a
+     * «wanted» left on (but for the update from v111, which kept nothing else).
+     */
     @Test fun afterTheUpdate() {
         val a = "AA:BB:CC:DD:EE:FF"
-        assertEquals(a, UpdateFlow.resumeTo(recording = true, address = a, canConnect = true))
-        assertNull("nothing ran: no service, no new recording, no wake lock", UpdateFlow.resumeTo(recording = false, address = a, canConnect = true))
-        assertNull("no scooter saved", UpdateFlow.resumeTo(recording = true, address = null, canConnect = true))
-        assertNull("no «Устройства поблизости»", UpdateFlow.resumeTo(recording = true, address = a, canConnect = false))
+        val now = 1_761_600_000_000L
+        fun to(at: Long?, wanted: Boolean = false, address: String? = a, canConnect: Boolean = true) =
+            UpdateFlow.resumeTo(at, wanted, now, address, canConnect)
+        assertEquals("the installer went in a minute and a half after beforeInstall", a, to(now - 90_000, wanted = true))
+        assertEquals("not by wanted", a, to(now - 90_000, wanted = false))
+        assertNull("nothing ran: no service, no new recording, no wake lock", to(0L, wanted = true))
+        assertNull("no scooter saved", to(now - 90_000, address = null))
+        assertNull("no «Устройства поблизости»", to(now - 90_000, canConnect = false))
+        // an attempt that never went in (cancelled, the process killed before it came back) goes stale
+        assertEquals("15 min after it, still", a, to(now - UpdateFlow.RESUME_WINDOW_MS))
+        assertNull("later: an update put on by hand with nothing running starts no recording", to(now - UpdateFlow.RESUME_WINDOW_MS - 1, wanted = true))
+        assertNull("a clock set back since", to(now + 60_000))
+        // begun by v111, which kept nothing: its rule, wanted, this once
+        assertEquals(a, to(null, wanted = true))
+        assertNull(to(null, wanted = false))
+        assertNull(to(null, wanted = true, canConnect = false))
     }
 
     @Test fun theInstallerOpensItselfOnlyAfterATapAndOffTheRide() {

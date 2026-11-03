@@ -50,12 +50,15 @@ class Prefs(ctx: Context) {
         set(v) = main.edit { putBoolean("wanted", v) }
 
     /**
-     * A recording ran when the in-app install began ([ScooterRepo.beforeInstall]; «Отключить» clears it): after the
-     * update ([UpdatedReceiver]) the link comes back only then, once. Not [wanted]: a service the system ended leaves that on.
+     * When the in-app install began with a recording running (wall clock, [ScooterRepo.beforeInstall], at every
+     * attempt); 0: none ran, or cleared since («Отключить», the system ending the recording, back on screen with the
+     * install not done, the receiver). null: never written, the install was begun by v111, which kept nothing here (null
+     * is written as 0). After the update ([UpdatedReceiver], [UpdateFlow.resumeTo]) the link comes back only by it,
+     * once. Not [wanted]: a service the system ended leaves that on.
      */
-    var resumeAfterUpdate: Boolean
-        get() = main.getBoolean("resumeAfterUpdate", false)
-        set(v) = main.edit { putBoolean("resumeAfterUpdate", v) }
+    var resumeAfterUpdateAt: Long?
+        get() = if (main.contains("resumeAfterUpdateAt")) main.getLong("resumeAfterUpdateAt", 0L) else null
+        set(v) = main.edit { putLong("resumeAfterUpdateAt", v ?: 0L) }
 
     var ui: UiSettings
         get() = UiSettings(

@@ -117,7 +117,7 @@ class ScooterService : Service() {
     private fun stopAll() {
         ScooterRepo.prefs.wanted = false
         // nothing runs now: after an install cancelled earlier, an update put on later by hand must not bring the link back
-        ScooterRepo.prefs.resumeAfterUpdate = false
+        ScooterRepo.prefs.resumeAfterUpdateAt = 0L
         val was = ScooterRepo.status.value.running
         if (was) ScooterRepo.ended(EndCause.OWNER)
         link.stop()
@@ -163,7 +163,9 @@ class ScooterService : Service() {
         if (ScooterRepo.link === link) ScooterRepo.link = null
         if (ScooterRepo.watchLink === watch) ScooterRepo.watchLink = null
         if (ScooterRepo.status.value.running) {
-            // ended by the system, not by «Отключить»
+            // ended by the system, not by «Отключить» (an update's installer kills the process without onDestroy): nothing
+            // runs now, a later update must not bring the link back
+            ScooterRepo.prefs.resumeAfterUpdateAt = 0L
             ScooterRepo.ended(EndCause.SYSTEM)
             ScooterRepo.status.update { it.copy(running = false) }
             ScooterRepo.setLink(Link.IDLE, "Фоновая работа остановлена системой", true)
