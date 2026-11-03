@@ -529,6 +529,56 @@ class TellTalesTest {
         assertEquals("Руль молчит", td.lamps(13_000, null, emptyList(), Link.CONNECTED, false).single { it.id == TellTales.LINK }.text)
     }
 
+    /**
+     * «Связь» out stays out 5 s: on the charger (21.10 from 1505 s) the dash sent for 3–6 s and went quiet again, and the
+     * lamp went out for 1 s and back on. Still quiet when the 5 s are up: lit again; quiet for a moment within them: not.
+     */
+    @Test fun linkStaysOutAWhile() {
+        val tt = TellTales()
+        fun link(t: Long, streaming: Boolean) = tt.lamps(t, null, emptyList(), Link.CONNECTED, streaming).firstOrNull { it.id == TellTales.LINK }?.text
+        assertNull(link(0, true))
+        assertEquals("Руль молчит", link(5_000, false))
+        assertEquals("Руль молчит", link(8_000, true), "held 3 s after the stream is back")
+        assertNull(link(8_001, true))
+        assertNull(link(9_000, false), "quiet again 1 s later: still out")
+        assertNull(link(12_999, false))
+        assertEquals("Руль молчит", link(13_000, false), "5 s after it went out, still quiet")
+        assertEquals("Руль молчит", link(16_000, true))
+        assertNull(link(16_001, true))
+        assertNull(link(17_000, false))
+        assertNull(link(18_000, true), "a quiet second within the 5 s, then the stream: nothing")
+        assertNull(link(20_999, true))
+        assertEquals("Руль молчит", link(25_000, false), "quiet after the 5 s: at once")
+        // quiet all along, the snapshots far apart (the app away): lit all along, not out in between
+        assertEquals("Руль молчит", link(40_000, false))
+        assertEquals("Связь рвётся", tt.lamps(41_000, null, emptyList(), Link.RECONNECTING, false).single { it.id == TellTales.LINK }.text)
+    }
+
+    /**
+     * «Зарядка» over a flaky link (21.10 on the charger): a gap of the BMS frames (a new stream) and a short silence of the
+     * dash do not unplug it; no frame for 10 s and it goes out, back only 5 s after the frames are back.
+     */
+    @Test fun chargingOverAFlakyLink() {
+        val tt = TellTales()
+        fun bms(t: Long) = tt.onBms(t, BmsFrame(40.0, -1.7, false, 30, 30, 2000, 3936, 50, 0x43, 0, 0, 110), FastPower.Sample(-1.7, -68.0), 0.25, 30)
+        fun lamp(t: Long, streaming: Boolean) = tt.lamps(t, null, emptyList(), Link.CONNECTED, streaming).firstOrNull { it.id == TellTales.CHARGING }?.text
+        tt.onMotion(0, MotionFrame(0.0, 0.0, 3, 0.0, 1460.0))
+        for (k in 0..20) bms(k * 300L)
+        assertEquals("Зарядка 1,7 А", lamp(6_000, true))
+        bms(8_700)
+        assertEquals("Зарядка 1,7 А", lamp(8_700, true), "2.7 s after the last BMS frame: a new stream, still charging")
+        assertEquals("Зарядка 1,7 А", lamp(15_000, false), "the dash quiet for 6.3 s")
+        assertEquals("Зарядка 1,7 А", lamp(18_700, false), "… for 10 s")
+        assertNull(lamp(18_701, false))
+        bms(30_000)
+        assertNull(lamp(30_000, true), "the frames back: not at once")
+        bms(34_999)
+        assertNull(lamp(34_999, true))
+        bms(35_000)
+        assertEquals("Зарядка 1,7 А", lamp(35_000, true), "5 s of charging frames again")
+        assertNull(tt.lamps(35_100, null, emptyList(), Link.IDLE, false).firstOrNull { it.id == TellTales.CHARGING }, "disconnected: none")
+    }
+
     @Test fun helpers() {
         assertEquals(TellTales.IDS, TellTales.bulbCheck().map { it.id })
         assertEquals(TellTales.IDS.toSet(), TellTales.NAMES.keys)

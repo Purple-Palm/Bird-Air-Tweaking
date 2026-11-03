@@ -100,6 +100,7 @@ class TellTales(val params: Params = Params()) {
         val chargeA: Double = 0.3,         // «зарядка»: current into the pack at standstill (the CV tail ~0.3 A)
         val chargeOffA: Double = 0.1,
         val chargeMs: Long = 5_000,
+        val chargeQuietMs: Long = 10_000,  // … shown through a silence of the dash up to this (21.10: quiet for 1–55 s)
         val waitA: Double = 0.1,           // «ждёт остывания»: charger in and the hot-charge latch, |I| below this, still,
         val waitMs: Long = 3_000,          // … this long (BMS flags: steady, no need to wait as long)
         val serviceRatio: Double = 0.85,   // «сервис»: BMS full capacity below this share of the rating
@@ -107,6 +108,9 @@ class TellTales(val params: Params = Params()) {
         val holdMs: Long = 5_000,
         val silentMs: Long = TelemetryTracker.STREAMING_MS,
         val linkHoldMs: Long = 3_000,
+        val darkMs: Long = 5_000,          // «Связь», «ждёт остывания» once out stay out this long: on the charger the dash
+                                           // sent and went quiet every few seconds (21.10 from 1505 s), «Руль молчит» went
+                                           // out for 1 s and back
         val dashMs: Long = 5_000,          // «Руль на связи, BMS молчит»: FFE1 bytes outside frames within this (the
         val dashRepeatMs: Long = 2_000,    // dash answers +SVGT=? every 2.5 s), again this long after the first since a
         val framesQuietMs: Long = 5_000,   // frame (not its boot lines alone), and no frame for longer than this
@@ -114,26 +118,26 @@ class TellTales(val params: Params = Params()) {
     )
 
     /** Lights once the condition has held [onMs], stays while it holds and [holdMs] after; true again within the hold
-     *  relights at once. */
-    private class Latch(val onMs: Long, var holdMs: Long) {
+     *  relights at once. Once out it stays out [darkMs]: the condition back sooner lights it then, if it still holds. */
+    private class Latch(val onMs: Long, var holdMs: Long, val darkMs: Long = 0) {
         private var since: Long? = null
         private var last = 0L
         private var lit = false
+        private var outAt = Long.MIN_VALUE / 2
         var cond = false
             private set
 
-        fun reset() { since = null; lit = false; cond = false }
+        fun reset() { since = null; lit = false; cond = false; outAt = Long.MIN_VALUE / 2 }
 
         fun update(t: Long, c: Boolean) {
+            // the hold ran out since the last update, the condition gone at it: out from then (held at both: it never was)
+            if (lit && !cond && t - last > holdMs) { lit = false; outAt = last + holdMs }
             cond = c
             if (c) {
                 val s = since ?: t.also { since = it }
-                lit = (lit && t - last <= holdMs) || t - s >= onMs
+                if (!lit) lit = t - s >= onMs && t - outAt >= darkMs
                 if (lit) last = t
-            } else {
-                since = null
-                if (lit && t - last > holdMs) lit = false
-            }
+            } else since = null
         }
 
         fun on(now: Long) = lit && (cond || now - last <= holdMs)
@@ -183,13 +187,13 @@ class TellTales(val params: Params = Params()) {
     private val limit = Latch(p.limitMs, p.holdMs)
     private val sag = Latch(p.sagMs, p.holdMs)
     private val charge = Latch(p.chargeMs, p.holdMs)
-    private val chargeWait = Latch(p.waitMs, p.holdMs)
+    private val chargeWait = Latch(p.waitMs, p.holdMs, p.darkMs)
     private val eco = Latch(p.ecoOnMs, p.ecoHoldMs)
     private val overspeed = Latch(0, p.overspeedHoldMs)
     private val overvolt = Latch(0, p.holdMs)
     private val rise = Latch(0, p.riseHoldMs)
     private val consumption = Latch(0, p.holdMs)
-    private val link = Latch(0, p.linkHoldMs)
+    private val link = Latch(0, p.linkHoldMs, p.darkMs)
 
     /** 100 · remaining / full mAh of the last BMS frame, floored to 0.1 % like the BMS floors to 1 % (56.3 → BMS 56):
      *  1 mAh ≈ 0.025 %, so one decimal is worth showing. */
@@ -203,13 +207,15 @@ class TellTales(val params: Params = Params()) {
         mode = null
         r = null; high = false; weak = false; consumption.reset(); link.reset(); connectedSince = null
         uvT = null; code = 0; noBmsT = null; frameT = null
+        chargingNow = false; charge.reset(); chargeWait.reset()
     }
 
     /** A new stream of frames (a reconnection, a gap): the windows of what the scooter does now start over. The BMS's
-     *  under-voltage and the controller's 0x26 stay (the charge lamp keeps the last state seen). */
+     *  under-voltage, the controller's 0x26 and the charger stay: a gap of the frames does not unplug it (21.10 on the
+     *  charger: the BMS frames 2.6 s apart, «Зарядка» reset each time and lit for 1–2 s). */
     fun restartStreams() {
-        win.clear(); lastT = null; ecoNow = false; overNow = false; overVNow = false; chargingNow = false
-        for (l in listOf(limit, sag, charge, chargeWait, eco, overspeed, overvolt)) l.reset()
+        win.clear(); lastT = null; ecoNow = false; overNow = false; overVNow = false
+        for (l in listOf(limit, sag, eco, overspeed, overvolt)) l.reset()
         ovWarnT = null; ovCutT = null; codeT = null; dashT = null; dashFirstT = null
     }
 
@@ -360,6 +366,12 @@ class TellTales(val params: Params = Params()) {
             }
             if (eco.on(nowMs) && TRACTION !in on) lit(ECO, LampLevel.GREEN, "ECO", ecoShownW)
             if (overspeed.on(nowMs)) lit(OVERSPEED, LampLevel.BLUE, T_OVERSPEED, speed)
+        }
+        // the charger, a state that lasts: through a short silence of the dash or a reconnection too (on the charger it
+        // sends and goes quiet every few seconds). No frame for chargeQuietMs: gone, out after its hold, back only after
+        // chargeMs of frames again — over a flaky link it goes out for a while, not for a second (21.10)
+        if (nowMs - (frameT ?: Long.MIN_VALUE / 2) > p.chargeQuietMs) { charge.update(nowMs, false); chargeWait.update(nowMs, false) }
+        if (link == Link.CONNECTED || link == Link.RECONNECTING) {
             if (charge.on(nowMs)) lit(CHARGING, LampLevel.GREEN, "Зарядка " + fmt1(chargeShownA) + " А", chargeShownA)
             else if (chargeWait.on(nowMs)) lit(CHARGING, LampLevel.AMBER, T_CHARGE_WAIT, tempC)
         }
