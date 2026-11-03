@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,6 +58,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.purplepalm.birdair.phone.DashText
 import io.github.purplepalm.birdair.phone.DashView
@@ -99,7 +102,8 @@ fun BottomZone(page: Page?, view: DashView, setup: SetupStep) {
 /**
  * «Отправить · 3 лога → GitHub» and the update tile: one tap does the job. Not tappable for [DashViews.TILE_GUARD_MS]
  * after the row changes under the thumb: the view, a tile appearing or going (the other one halves or doubles), a tile
- * turning into another action («Скачиваю» → «Установить»); nor by a press that went down then ([pressGuard]).
+ * turning into another action («Скачиваю» → «Установить»), the app back on screen; nor by a press that went down then
+ * ([pressGuard]).
  */
 @Composable
 fun Tiles(view: DashView) {
@@ -152,13 +156,18 @@ fun RowScope.Tile(
 }
 
 /**
- * False for [ms] after [key] changes (the tiles appeared, the view switched, «Управление» opened): taps go nowhere,
- * nothing changes visually. With [pressGuard]: clickable reads it only when the finger lifts.
+ * False for [ms] after [key] changes (the tiles appeared, the view switched, «Управление» opened) and after the app is
+ * back on screen (unlocked, back from a call or another app, a system dialog gone: what is under the thumb now was not
+ * there a moment ago): taps go nowhere, nothing changes visually. With [pressGuard]: clickable reads it only when the
+ * finger lifts.
  */
 @Composable
 fun rememberArmed(key: Any?, ms: Long = DashViews.TILE_GUARD_MS): Boolean {
-    var armed by remember(key) { mutableStateOf(false) }
-    LaunchedEffect(key) { armed = false; delay(ms); armed = true }
+    // each return counts (a state would fold pause and resume into «resumed» when no frame comes between them)
+    var resumes by remember { mutableIntStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { resumes++ }
+    var armed by remember(key, resumes) { mutableStateOf(false) }
+    LaunchedEffect(key, resumes) { armed = false; delay(ms); armed = true }
     return armed
 }
 

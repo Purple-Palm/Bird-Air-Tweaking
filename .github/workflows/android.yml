@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # the history too: «Что нового» compares the push with the commit before it
+          # all branches' history: «Что нового» compares the push with the build android-latest serves now (any branch)
           fetch-depth: 0
 
       - uses: actions/setup-java@v4
@@ -87,19 +87,25 @@ jobs:
         env:
           # the branch's tip before this push: all zeros for a new branch, empty for a manual run
           BEFORE: ${{ github.event.before }}
+          # what the phone reads (Versions.kt): the build it is offered now
+          LATEST: ${{ github.server_url }}/${{ github.repository }}/releases/download/android-latest/version.json
         run: |
           mkdir -p out
           cp phone/build/outputs/apk/debug/phone-debug.apk out/bird-air-phone.apk
           cp wear/build/outputs/apk/debug/wear-debug.apk out/bird-air-watch.apk
           # sizes and SHA-256 let the watch (WatchUpdater) and the phone (Updater) check the APK they download; notes: the
-          # phone's «Что нового» — the first non-empty line of android/WHATSNEW.txt (Russian, for the owner) when this push
-          # changed the file, else the commit's subject (the file stays in the tree: a later build, a decoder or logs, must
-          # not show the line again); jq keeps it valid JSON
+          # phone's «Что нового» — the first non-empty line of android/WHATSNEW.txt (Russian, for the owner) when it
+          # differs from the build in android-latest now, else the commit's subject (the file stays in the tree: a later
+          # build, a decoder or logs, a merge into main, must not show the line again; a failed or cancelled build
+          # published nothing, so the next one still shows it); jq keeps it valid JSON
           sha() { sha256sum "$1" | cut -d' ' -f1; }
           size() { stat -c %s "$1"; }
-          base=$BEFORE
+          base=$(curl -fsSL --max-time 20 --retry 2 "$LATEST" | jq -r '.sha // empty' || true)
+          # no release, its commit not in this clone, or this very commit (a re-run): the branch's tip before this push
+          if [ -z "$base" ] || [ "$base" = "$GITHUB_SHA" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=$BEFORE; fi
           # a new branch, a manual run, a tip gone after a force push: the last commit alone
           if [ -z "${base//0/}" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=HEAD~1; fi
+          echo "«Что нового»: WHATSNEW.txt against $base"
           changed=0
           git diff --quiet "$base" HEAD -- WHATSNEW.txt || changed=$?
           notes=

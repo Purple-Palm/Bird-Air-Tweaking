@@ -67,7 +67,8 @@ fun UpdateButton(modifier: Modifier = Modifier) {
         UpdPhase.CHECKING -> BigButton(label, {}, modifier, style = BtnStyle.OUTLINED, enabled = false)
         UpdPhase.AVAILABLE -> BigButton(label, ui::updateStep, modifier, icon = AppIcons.Dl)
         UpdPhase.DOWNLOADING -> BigButton(label, {}, modifier, enabled = false, progress = UpdateFlow.fraction(u) ?: 0f)
-        UpdPhase.READY -> BigButton(label, ui::updateStep, modifier, icon = AppIcons.Dl, enabled = !moving)
+        UpdPhase.READY -> if (u.saving) BigButton(label, {}, modifier, enabled = false)
+            else BigButton(label, ui::updateStep, modifier, icon = AppIcons.Dl, enabled = !moving)
     }
 }
 
@@ -129,7 +130,10 @@ fun Ring(f: Float, dia: Dp) {
 @Composable
 fun rememberUpdateTile(): UpdPhase? = rememberUpdPhase().takeIf { it == UpdPhase.AVAILABLE || it == UpdPhase.DOWNLOADING || it == UpdPhase.READY }
 
-/** The dash's update tile: «Обновить · до v109 · 18,4 МБ» → «Скачиваю · 63 % · 11,6 МБ» → «Установить · связь оборвётся». */
+/**
+ * The dash's update tile: «Обновить · до v109 · 18,4 МБ» → «Скачиваю · 63 % · 11,6 МБ» → «Установить · связь оборвётся»
+ * → «Установить · сохраняю лог…» (a spinner, no tap) until the installer opens.
+ */
 @Composable
 fun RowScope.UpdateTile(phase: UpdPhase, armed: Boolean) {
     val c = LocalBal.current
@@ -144,8 +148,9 @@ fun RowScope.UpdateTile(phase: UpdPhase, armed: Boolean) {
             val f = UpdateFlow.fraction(u) ?: 0f
             Tile(AppIcons.Dl, c.flow, "Скачиваю", "${UpdateFlow.percent(u) ?: 0} %" + (UpdateFlow.mb(u.gotBytes)?.let { " · $it" } ?: ""), armed, progress = f)
         }
-        else -> Tile(AppIcons.Dl, c.goodInk, "Установить", if (st.running) "связь оборвётся" else "v$v · скачано", armed, onClick = ui::updateStep,
-            subColor = if (st.running) c.warnInk else null)
+        else -> if (u.saving) Tile(null, c.goodInk, "Установить", "сохраняю лог…", armed, spinner = true)
+            else Tile(AppIcons.Dl, c.goodInk, "Установить", if (st.running) "связь оборвётся" else "v$v · скачано", armed, onClick = ui::updateStep,
+                subColor = if (st.running) c.warnInk else null)
     }
 }
 

@@ -34,6 +34,7 @@ import io.github.purplepalm.birdair.phone.ui.MainScreen
 import io.github.purplepalm.birdair.phone.ui.SystemState
 import io.github.purplepalm.birdair.phone.ui.UiActions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -46,6 +47,8 @@ class MainActivity : ComponentActivity(), UiActions {
     private var pendingInstall: java.io.File? = null
     /** The system installer was opened from here. Replacing the app kills the process: back in [onResume], it did not. */
     private var installerOpen = false
+    /** «Установить» under way: the save, then the installer ([install], one at a time). */
+    private var installJob: Job? = null
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
@@ -245,21 +248,31 @@ class MainActivity : ComponentActivity(), UiActions {
     }
 
     /**
-     * «Установить»: never while moving; the running recording (every part) and the odometer are saved first. Android
-     * wants «Установка неизвестных приложений» first: the screen says so where the tap came from ([SystemState.installAsk]).
-     * No installer, or back from it in [onResume]: [ScooterRepo.installNotDone].
+     * «Установить»: never while moving; the running recording (every part) and the odometer are saved first
+     * ([UpdateState.saving] meanwhile: «Сохраняю лог…»). One at a time, until back from the installer: a second tap
+     * during the save, or before the installer covers the screen, would open a second one, and coming back from either
+     * would undo what the other's [ScooterRepo.beforeInstall] wrote. Android wants «Установка неизвестных приложений»
+     * first: the screen says so where the tap came from ([SystemState.installAsk]). No installer, or back from it in
+     * [onResume]: [ScooterRepo.installNotDone].
      */
     private fun install() {
+        if (installJob?.isActive == true || installerOpen) return
         if (ScooterRepo.moving.value) { ScooterRepo.toast("На ходу не ставлю: установка оборвёт связь. Остановись"); return }
-        lifecycleScope.launch {
-            ScooterRepo.beforeInstall(applicationContext)
-            val f = Updater.readyFile(applicationContext)
-            if (f == null) { ScooterRepo.update.update { it.copy(readyCode = null) }; ScooterRepo.installNotDone(); return@launch }
-            pendingInstall = f
-            installerOpen = Updater.install(this@MainActivity, f)
-            if (installerOpen) { pendingInstall = null; return@launch }
-            ScooterRepo.installNotDone()
-            if (ScooterRepo.update.value.needsPermission) sys = sys.copy(installAsk = sys.installAsk + 1)
+        installJob = lifecycleScope.launch {
+            val saving = ScooterRepo.status.value.running
+            if (saving) ScooterRepo.update.update { it.copy(saving = true) }
+            try {
+                ScooterRepo.beforeInstall(applicationContext)
+                val f = Updater.readyFile(applicationContext)
+                if (f == null) { ScooterRepo.update.update { it.copy(readyCode = null) }; ScooterRepo.installNotDone(); return@launch }
+                pendingInstall = f
+                installerOpen = Updater.install(this@MainActivity, f)
+                if (installerOpen) { pendingInstall = null; return@launch }
+                ScooterRepo.installNotDone()
+                if (ScooterRepo.update.value.needsPermission) sys = sys.copy(installAsk = sys.installAsk + 1)
+            } finally {
+                if (saving) ScooterRepo.update.update { it.copy(saving = false) }
+            }
         }
     }
 

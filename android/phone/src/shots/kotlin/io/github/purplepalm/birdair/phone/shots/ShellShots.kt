@@ -14,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.lifecycle.Lifecycle
+import io.github.purplepalm.birdair.core.Link
 import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.phone.BuildConfig
 import io.github.purplepalm.birdair.phone.DashViews
@@ -285,6 +287,31 @@ abstract class ShellShotsBase {
         assertTrue("«Разрешить» opens «Установка неизвестных приложений»", "allowInstall" in shot.ui.calls)
     }
 
+    /**
+     * «Установить» tapped with a recording running: the tile and the sheet's button say «Сохраняю лог…» until the
+     * installer opens, and take no second tap (MainActivity does not run a second install either: [InstallShots]).
+     */
+    @Test fun installSaving() {
+        Scenes.parked(); Scenes.update(Upd.READY); Scenes.logs(Logs.UNSENT)
+        ScooterRepo.update.update { it.copy(saving = true) }
+        shot.setContent("22:06", NavStart(), sys)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.waitForIdle()
+        rule.onNodeWithText("сохраняю лог…").assertIsDisplayed()
+        shot.both("home-parked-saving")
+        rule.onNodeWithText("сохраняю лог…").performClick()
+        assertFalse("no second install while it saves", "updateStep" in shot.ui.calls)
+        checkLayout()
+        rule.onNodeWithContentDescription("Обновление v109 скачано").performClick()
+        shot.settle(4)
+        rule.onNodeWithText("Сохраняю лог…").assertIsDisplayed().performClick()
+        assertFalse("nor from the sheet", "updateStep" in shot.ui.calls)
+        // saved: «Установить» again (the installer is up by then; back from it, a tap is a new attempt)
+        ScooterRepo.update.update { it.copy(saving = false) }
+        shot.settle(2)
+        rule.onNodeWithText("Установить v109").assertExists()
+    }
+
     /** A notification tap shows the dash with nothing over it: the page folds and the sheet closes. */
     @Test fun notificationShowsTheDash() {
         Scenes.ride(); Scenes.update(Upd.NONE)
@@ -411,6 +438,58 @@ abstract class ShellShotsBase {
         rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
         rule.onNodeWithText("Разрешить команды").performClick()
         assertTrue("then the switch works", ScooterRepo.control.value.allow)
+    }
+
+    /**
+     * «Управление» left open, the app off the screen and back (the screen timed out and is unlocked, a call): what is
+     * under the thumb now was not there a moment ago — no taps for 0,6 s from the return, then live.
+     */
+    @Test fun controlSheetGuardOnReturn() {
+        Scenes.ride()
+        ScooterRepo.setAllowCommands(true)
+        shot.setContent("22:12", NavStart(sheet = SheetKind.CONTROL), sys)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.onNodeWithText("Фара выкл").performClick()
+        assertEquals("open a while: the tap goes", "Нет связи с самокатом.", ScooterRepo.control.value.message)
+        ScooterRepo.control.update { it.copy(message = "") }
+        rule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        rule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        rule.mainClock.advanceTimeByFrame()
+        rule.onNodeWithText("Фара выкл").assertIsDisplayed().performClick()
+        rule.mainClock.advanceTimeBy(150)
+        rule.onNodeWithContentDescription("Режим GLIDE").performClick()
+        assertEquals("0–150 ms after the return: nothing reached ScooterRepo.command", "", ScooterRepo.control.value.message)
+        rule.mainClock.advanceTimeBy(150)
+        rule.onNodeWithText("Разрешить команды").performClick()
+        assertTrue("300 ms: the switch stays on", ScooterRepo.control.value.allow)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.onNodeWithText("Фара выкл").performClick()
+        assertEquals("then it goes", "Нет связи с самокатом.", ScooterRepo.control.value.message)
+    }
+
+    /**
+     * The link dropped with «Управление» open: a press that went down on a grey headlight or mode button sends nothing
+     * when the link comes back before it lifts; once live, a tap goes.
+     */
+    @Test fun controlSheetGreyPress() {
+        Scenes.ride()
+        ScooterRepo.setAllowCommands(true)
+        shot.setContent("22:12", NavStart(sheet = SheetKind.CONTROL), sys)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        for (n in listOf(rule.onNodeWithText("Фара выкл"), rule.onNodeWithContentDescription("Режим TAKEOFF"))) {
+            Scenes.bluetoothOff()
+            shot.settle(2)
+            n.performTouchInput { down(center) }
+            rule.mainClock.advanceTimeBy(200)
+            ScooterRepo.setLink(Link.CONNECTED)
+            rule.mainClock.advanceTimeBy(200)
+            n.performTouchInput { up() }
+            rule.waitForIdle()
+            assertEquals("down while grey, up after the link came back: nothing", "", ScooterRepo.control.value.message)
+        }
+        rule.mainClock.advanceTimeBy(100)
+        rule.onNodeWithText("Фара выкл").performClick()
+        assertEquals("live: the tap goes", "Нет связи с самокатом.", ScooterRepo.control.value.message)
     }
 
     /** Tiles that just appeared (the view switched to «Стою») ignore taps for 0,6 s, and a press that went down then. */

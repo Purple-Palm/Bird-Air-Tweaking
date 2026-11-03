@@ -51,10 +51,11 @@ class Prefs(ctx: Context) {
 
     /**
      * When the in-app install began with a recording running (wall clock, [ScooterRepo.beforeInstall], at every
-     * attempt); 0: none ran, or cleared since («Отключить», the system ending the recording, back on screen with the
-     * install not done, the receiver). null: never written, the install was begun by v111, which kept nothing here (null
-     * is written as 0). After the update ([UpdatedReceiver], [UpdateFlow.resumeTo]) the link comes back only by it,
-     * once. Not [wanted]: a service the system ended leaves that on.
+     * attempt), moved along by the service while it runs on ([UpdateFlow.attemptAt]); 0: none ran, or cleared since
+     * («Отключить», the system ending the recording, back on screen with the install not done, the receiver). null:
+     * never written, the install was begun by v111, which kept nothing here (null is written as 0). After the update
+     * ([UpdatedReceiver], [UpdateFlow.resumeTo]) the link comes back only by it, once. Not [wanted]: a service the
+     * system ended leaves that on.
      */
     var resumeAfterUpdateAt: Long?
         get() = if (main.contains("resumeAfterUpdateAt")) main.getLong("resumeAfterUpdateAt", 0L) else null

@@ -45,17 +45,24 @@ object UpdateFlow {
     /**
      * After the update went in (MY_PACKAGE_REPLACED): the saved scooter to connect to again, only if a recording ran
      * when the install began and the permission is there; else null. [at] ([Prefs.resumeAfterUpdateAt]): when an install
-     * began with a recording running, good for [RESUME_WINDOW_MS] — the installer goes in a minute or two after, and an
-     * attempt that never did (cancelled, the process killed before it came back) must not start a recording for an
-     * update put on later by hand with nothing running; 0: none ran. null: begun by v111, which kept nothing — its own
-     * rule, [wanted], this once.
+     * began with a recording running, moved along while it still ran ([attemptAt]), good for [RESUME_WINDOW_MS] after —
+     * the installer kills the process as it goes in, and an attempt that never did (cancelled, the process killed before
+     * it came back) must not start a recording for an update put on later by hand with nothing running; 0: none ran.
+     * null: begun by v111, which kept nothing — its own rule, [wanted], this once.
      */
     fun resumeTo(at: Long?, wanted: Boolean, nowMs: Long, address: String?, canConnect: Boolean): String? {
         val recording = if (at == null) wanted else at > 0 && nowMs - at in 0..RESUME_WINDOW_MS
         return address?.takeIf { recording && canConnect }
     }
 
-    /** How long after [ScooterRepo.beforeInstall] an update still brings the link back ([resumeTo]). */
+    /**
+     * [Prefs.resumeAfterUpdateAt] at the service's periodic tick: while the recording runs, an install attempt's time
+     * moves along with it — the system installer waits any time for «Обновить» (the phone in its mount, a call), and the
+     * window counts from the last moment the recording ran, not from the tap. 0 (none) and null (v111's) stay.
+     */
+    fun attemptAt(at: Long?, running: Boolean, nowMs: Long): Long? = if (running && at != null && at > 0) nowMs else at
+
+    /** How long after the recording last ran ([ScooterRepo.beforeInstall], then [attemptAt]) an update still brings the link back ([resumeTo]). */
     const val RESUME_WINDOW_MS = 15 * 60_000L
 
     /** 0…1 of the download, by bytes when the size is known. */
@@ -67,14 +74,18 @@ object UpdateFlow {
     /** The download in whole percent («63»). */
     fun percent(u: UpdateState): Int? = fraction(u)?.let { Math.round(it * 100) }
 
-    /** The one button: «Проверить обновления» / «Проверяю…» / «Обновить до v109» / «Скачиваю 63 %» / «Установить v109». */
+    /**
+     * The one button: «Проверить обновления» / «Проверяю…» / «Обновить до v109» / «Скачиваю 63 %» / «Установить v109»
+     * («Сохраняю лог…» while [UpdateState.saving]: the tap went through, the installer comes next).
+     */
     fun button(phase: UpdPhase, latest: UpdateInfo?, u: UpdateState): String = when (phase) {
         UpdPhase.NONE -> "Проверить обновления"
         UpdPhase.CHECKING -> "Проверяю…"
         UpdPhase.AVAILABLE -> "Обновить до v" + (latest?.versionCode ?: "")
         UpdPhase.DOWNLOADING -> "Скачиваю" + (percent(u)?.let { " $it %" } ?: "…")
-        UpdPhase.READY -> "Установить v" + (u.readyCode ?: latest?.versionCode ?: "")
+        UpdPhase.READY -> if (u.saving) SAVING else "Установить v" + (u.readyCode ?: latest?.versionCode ?: "")
     }
+    const val SAVING = "Сохраняю лог…"
 
     /** «18,4 МБ» */
     fun mb(bytes: Long?): String? = bytes?.takeIf { it > 0 }?.let { Fmt.n(it / 1048576.0, 1) + " МБ" }

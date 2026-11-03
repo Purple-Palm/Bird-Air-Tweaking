@@ -207,8 +207,10 @@ private inline fun androidx.compose.ui.text.AnnotatedString.Builder.withStyleSpa
  * its colour) and the headlight. Everything grey unless allowed and connected; only [Commands.mode] / [Commands.light]
  * through [ScooterRepo.command] (WriteGuard behind it). The sheet opens right under the thumb: the switch and the
  * buttons take taps only [io.github.purplepalm.birdair.phone.DashViews.TILE_GUARD_MS] after it [open]s (again at every
- * opening; nothing changes visually), and a press that went down before then does not go when it lifts after
- * ([pressGuard]), so a glove's bounce or a double tap on «Управление» does not land on «Фара выкл» or a mode.
+ * opening, and when the app is back on screen with it open; nothing changes visually), and a press that went down
+ * before then does not go when it lifts after ([pressGuard]), so a glove's bounce or a double tap on «Управление» does
+ * not land on «Фара выкл» or a mode. Nor a press that went down on a grey mode or headlight button: the link coming
+ * back while the finger is on it does not send it.
  */
 @Composable
 fun ControlSheet(open: Boolean, close: () -> Unit) {
@@ -221,13 +223,15 @@ fun ControlSheet(open: Boolean, close: () -> Unit) {
     // sliding in or out, nothing here takes a tap; a press counts by when it went down (pressGuard), not when it lifts
     val armed = rememberArmed(open) && open
     val armedNow = rememberUpdatedState(armed)
+    // the commands also by whether they were live then: grey under the finger, still nothing when the link comes back
+    val liveNow = rememberUpdatedState(armed && can)
     SheetTitle("Управление", close)
     Box(Modifier.fillMaxWidth().pressGuard(armedNow).clip(RoundedCornerShape(12.dp)).background(c.well).border(1.dp, c.hair, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 2.dp)) {
         SettingSwitch("Разрешить команды", ctl.allow, { if (armed) ScooterRepo.setAllowCommands(it) },
             hint = "Только команды приложения Bird: +MODE и +HLGT. Выключается при каждом запуске.")
     }
     SectionHeader("РЕЖИМ")
-    Row(Modifier.fillMaxWidth().pressGuard(armedNow), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().pressGuard(liveNow), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         for (m in Mode.entries) {
             val cur = t.mode == m.n
             val color = when (m) { Mode.TAKEOFF -> c.modeTake; Mode.GLIDE -> c.modeGlide; Mode.FLY -> c.modeFly }
@@ -245,7 +249,7 @@ fun ControlSheet(open: Boolean, close: () -> Unit) {
         }
     }
     SectionHeader("ФАРА")
-    Row(Modifier.fillMaxWidth().pressGuard(armedNow), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().pressGuard(liveNow), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         BigButton("Фара вкл", { if (armed) ScooterRepo.command(Commands.light(true)) }, Modifier.weight(1f), icon = AppIcons.Light, style = BtnStyle.OUTLINED, enabled = can)
         BigButton("Фара выкл", { if (armed) ScooterRepo.command(Commands.light(false)) }, Modifier.weight(1f), style = BtnStyle.OUTLINED, enabled = can)
     }

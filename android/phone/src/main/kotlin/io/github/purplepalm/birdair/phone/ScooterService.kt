@@ -239,6 +239,10 @@ class ScooterService : Service() {
         while (scope.isActive) {
             delay(PERIODIC_MS)
             if (link.wanted) acquireWake()   // renews the timeout
+            // «Установить» waiting in the system installer while the recording runs on: its window counts from now
+            val p = ScooterRepo.prefs
+            val at = p.resumeAfterUpdateAt
+            UpdateFlow.attemptAt(at, ScooterRepo.status.value.running, System.currentTimeMillis()).let { if (it != at) p.resumeAfterUpdateAt = it }
             val s = ScooterRepo.session ?: continue
             if (System.currentTimeMillis() - savedAt >= LogStore.AUTO_EVERY_MS) {
                 savedAt = System.currentTimeMillis()

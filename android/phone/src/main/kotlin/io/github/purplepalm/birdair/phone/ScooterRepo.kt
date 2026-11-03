@@ -113,6 +113,8 @@ data class UpdateState(
     val readyCode: Int? = null,
     /** The owner tapped for it and no recording runs: the activity opens the installer once it is ready. */
     val openWhenReady: Boolean = false,
+    /** «Установить» tapped with a recording running: it is being saved, the installer opens after (seconds for a long part). */
+    val saving: Boolean = false,
 )
 
 /**
@@ -369,7 +371,8 @@ object ScooterRepo {
     /**
      * Right before the system installer replaces this app: Android kills the process without onDestroy and does not
      * restart the service, so the running recording (every changed part) and the app odometer are saved now. When one
-     * runs goes to [Prefs.resumeAfterUpdateAt], at every attempt: [UpdatedReceiver] brings the link back only then.
+     * runs goes to [Prefs.resumeAfterUpdateAt], at every attempt (the service moves it along while the recording runs
+     * on, [UpdateFlow.attemptAt]): [UpdatedReceiver] brings the link back only then.
      */
     suspend fun beforeInstall(ctx: Context) {
         val running = status.value.running

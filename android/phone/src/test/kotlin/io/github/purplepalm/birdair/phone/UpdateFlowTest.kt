@@ -98,6 +98,22 @@ class UpdateFlowTest {
         assertNull(to(null, wanted = true, canConnect = false))
     }
 
+    /**
+     * «Установить» at a stop, «Обновить» in the system dialog 20 min later (the phone in its mount): the recording ran on
+     * meanwhile, so the update still brings the link back; with nothing running the attempt ages as before.
+     */
+    @Test fun theWindowMovesWithTheRecording() {
+        val a = "AA:BB:CC:DD:EE:FF"
+        val now = 1_761_600_000_000L
+        val tap = now - 20 * 60_000L
+        assertEquals("the periodic tick while it records", now - 30_000, UpdateFlow.attemptAt(tap, running = true, nowMs = now - 30_000))
+        assertEquals(a, UpdateFlow.resumeTo(UpdateFlow.attemptAt(tap, true, now - 30_000), false, now, a, true))
+        assertNull("not moved: 20 min is past the window", UpdateFlow.resumeTo(tap, false, now, a, true))
+        assertEquals("nothing runs: it ages", tap, UpdateFlow.attemptAt(tap, running = false, nowMs = now))
+        assertEquals("no attempt: none appears", 0L, UpdateFlow.attemptAt(0L, running = true, nowMs = now))
+        assertNull("v111's: left for its own rule", UpdateFlow.attemptAt(null, running = true, nowMs = now))
+    }
+
     @Test fun theInstallerOpensItselfOnlyAfterATapAndOffTheRide() {
         assertTrue(UpdateFlow.openWhenDone(byTap = true, running = false))
         assertFalse("recording: never by itself", UpdateFlow.openWhenDone(byTap = true, running = true))
@@ -118,6 +134,10 @@ class UpdateFlowTest {
         assertEquals("Скачиваю 63 %", UpdateFlow.button(UpdPhase.DOWNLOADING, v109, dl))
         assertEquals("Скачиваю…", UpdateFlow.button(UpdPhase.DOWNLOADING, UpdateInfo(109, "", ""), UpdateState(downloading = true)))
         assertEquals("Установить v109", UpdateFlow.button(UpdPhase.READY, v109, UpdateState(latest = v109, readyCode = 109)))
+        // the tap went through: the recording is being saved, the installer comes next (still READY: the APK is kept)
+        val saving = UpdateState(latest = v109, readyCode = 109, saving = true)
+        assertEquals(UpdPhase.READY, UpdateFlow.phase(saving, 108))
+        assertEquals("Сохраняю лог…", UpdateFlow.button(UpdPhase.READY, v109, saving))
         // the size from version.json when the server does not send one
         assertEquals(0.5f, UpdateFlow.fraction(UpdateState(latest = v109, gotBytes = 19_293_798 / 2))!!, 0.001f)
         assertEquals("18,4 МБ", UpdateFlow.mb(19_293_798))
