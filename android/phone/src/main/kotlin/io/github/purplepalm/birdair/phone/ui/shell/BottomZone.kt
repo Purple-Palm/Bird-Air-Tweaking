@@ -51,6 +51,7 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -147,7 +148,10 @@ fun RowScope.Tile(
     }
 }
 
-/** False for [ms] after [key] changes (the tiles appeared, the view switched): taps go nowhere, nothing changes visually. */
+/**
+ * False for [ms] after [key] changes (the tiles appeared, the view switched, «Управление» opened): taps go nowhere,
+ * nothing changes visually.
+ */
 @Composable
 fun rememberArmed(key: Any?, ms: Long = DashViews.TILE_GUARD_MS): Boolean {
     var armed by remember(key) { mutableStateOf(false) }
@@ -160,7 +164,7 @@ fun rememberArmed(key: Any?, ms: Long = DashViews.TILE_GUARD_MS): Boolean {
 /**
  * 64 dp, the thumb zone. Riding / parked / silent: «Метка» (one tap, the word in the snackbar), «Управление»,
  * «Отключить» (held [DashViews.HOLD_MS] while moving, one tap when stopped). Idle: «Подключить» / «Другой», the
- * first-launch step's action, «Подключаюсь…» / «Отмена».
+ * first-launch step's action, «Подключаюсь…» (Bluetooth off: «Включить Bluetooth») / «Отмена».
  */
 @Composable
 fun ActionRow(view: DashView, setup: SetupStep) {
@@ -181,8 +185,10 @@ fun ActionRow(view: DashView, setup: SetupStep) {
             HoldButton(
                 "Отключить", AppIcons.Stop, hold = moving,
                 onConfirm = {
+                    // before the stop: without scooter data the auto-send has nothing to go with
+                    val data = ScooterRepo.hasScooterData()
                     ui.disconnect()
-                    snack.text(DashText.disconnected(ScooterRepo.gh.value, ScooterRepo.hasToken.value))
+                    snack.text(DashText.disconnected(ScooterRepo.gh.value, ScooterRepo.hasToken.value, data))
                 },
                 onShortTap = { snack.text("На ходу «Отключить» нужно удержать — так запись не оборвётся случайно") },
                 modifier = Modifier.weight(1f),
@@ -211,8 +217,10 @@ fun ActionRow(view: DashView, setup: SetupStep) {
                 }
             }
             st.running -> {
-                FillButton("Подключаюсь…", null, Modifier.weight(2f), enabled = false, spinner = true) {}
-                ActionButton("Отмена", null, Modifier.weight(1.1f), row = true) { ui.disconnect() }
+                // Bluetooth off: the link waits for it, so the way to turn it on rather than a spinner (one line at 360 dp)
+                if (!sys.bluetoothOn) FillButton("Включить Bluetooth", AppIcons.Bt, Modifier.weight(2.2f)) { ui.enableBluetooth() }
+                else FillButton("Подключаюсь…", null, Modifier.weight(2.2f), enabled = false, spinner = true) {}
+                ActionButton("Отмена", null, Modifier.weight(1f), row = true) { ui.disconnect() }
             }
             st.address == null -> FillButton("Найти самокат", AppIcons.Bt, Modifier.weight(2f), enabled = !scan.scanning) { ui.scan(false) }
             else -> {
@@ -243,7 +251,7 @@ fun ActionButton(text: String, icon: ImageVector?, modifier: Modifier = Modifier
     }
 }
 
-/** The filled primary action of the idle row (twice as wide). */
+/** The filled primary action of the idle row (twice as wide); a label too long for it (a big font) takes two lines. */
 @Composable
 fun FillButton(text: String, icon: ImageVector?, modifier: Modifier = Modifier, enabled: Boolean = true, spinner: Boolean = false, onClick: () -> Unit) {
     val c = LocalBal.current
@@ -256,7 +264,7 @@ fun FillButton(text: String, icon: ImageVector?, modifier: Modifier = Modifier, 
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (spinner) { CircularProgressIndicator(Modifier.size(22.dp), color = c.btnInk, strokeWidth = 2.4.dp); Spacer(Modifier.width(10.dp)) }
             else if (icon != null) { Icon(icon, contentDescription = null, tint = c.btnInk, modifier = Modifier.size(24.dp)); Spacer(Modifier.width(10.dp)) }
-            Text(text, color = c.btnInk, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(text, color = c.btnInk, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, textAlign = TextAlign.Center)
         }
     }
 }

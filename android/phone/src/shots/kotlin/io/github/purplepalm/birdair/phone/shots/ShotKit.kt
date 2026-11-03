@@ -223,6 +223,23 @@ object Scenes {
     /** Connected, the dash silent for 10 s after 1470 s. */
     fun silent() = replay(PARKED_MS, moreMs = 10_000)
 
+    /** Bluetooth switched off: the link drops and waits for it, as ScooterLink says then (pass bluetoothOn = false too). */
+    fun bluetoothOff() = ScooterRepo.setLink(Link.RECONNECTING, "Нет связи — переподключаюсь через 4 с", true)
+
+    /** After [idle]: «Подключить» with Bluetooth off — the service runs, nothing streamed, the link waits for it. */
+    fun connectingBluetoothOff() {
+        ScooterRepo.status.update { it.copy(running = true) }
+        bluetoothOff()
+    }
+
+    /** Connected, and not one frame from the scooter in this recording (the dash silent from the start). */
+    fun noData() {
+        ScooterRepo.status.update { it.copy(running = true, link = Link.CONNECTED) }
+        ScooterRepo.newSession("scooter", ADDRESS, wallMs = TestLogs.startedAt(LOG))
+        ScooterRepo.setLink(Link.CONNECTED)
+        ScooterRepo.pipeline.publishNow()
+    }
+
     fun update(u: Upd) {
         val checked = System.currentTimeMillis() - 3 * 3600_000L
         ScooterRepo.update.value = when (u) {

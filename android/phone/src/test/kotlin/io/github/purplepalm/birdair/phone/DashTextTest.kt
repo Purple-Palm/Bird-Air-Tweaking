@@ -15,7 +15,7 @@ import org.junit.Before
 import org.junit.Test
 import java.util.TimeZone
 
-/** The dash's words: the band, the range, the pill, the trip title, the logs tile. */
+/** The dash's words: the band, the range, the pill, the trip title, the logs tile, «Отключить», Bluetooth off. */
 class DashTextTest {
     private val zone = TimeZone.getDefault()
     @Before fun la() = TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"))
@@ -100,12 +100,38 @@ class DashTextTest {
 
     @Test fun disconnectedSaysWhatAutoSendWillDo() {
         val on = GhConfig(auto = true)
-        assertEquals("Отключено · лог сохранён и уходит в GitHub", DashText.disconnected(on, hasToken = true))
-        assertEquals("Отключено · лог сохранён", DashText.disconnected(GhConfig(auto = false), hasToken = true))
+        assertEquals("Отключено · лог сохранён и уходит в GitHub", DashText.disconnected(on, hasToken = true, hasData = true))
+        assertEquals("set up, but the scooter sent nothing: LogStore.autoDue sends nothing", "Отключено · лог сохранён · данных с руля не было — в GitHub не отправляю",
+            DashText.disconnected(on, hasToken = true, hasData = false))
+        assertEquals("Отключено · лог сохранён", DashText.disconnected(GhConfig(auto = false), hasToken = true, hasData = true))
+        assertEquals("auto-send off: nothing to say about it", "Отключено · лог сохранён", DashText.disconnected(GhConfig(auto = false), hasToken = true, hasData = false))
         assertEquals("on without a token: nothing goes (LogStore.autoDue)", "Отключено · лог сохранён · для автоотправки нужен токен",
-            DashText.disconnected(on, hasToken = false))
-        assertEquals("Отключено · лог сохранён · для автоотправки заполни «Логи» → «GitHub»", DashText.disconnected(on.copy(branch = " "), hasToken = true))
+            DashText.disconnected(on, hasToken = false, hasData = true))
+        assertEquals("Отключено · лог сохранён · для автоотправки заполни «Логи» → «GitHub»", DashText.disconnected(on.copy(branch = " "), hasToken = true, hasData = true))
         assertFalse(on.copy(owner = "").autoReady(true))
         assertTrue(on.autoReady(true))
+    }
+
+    /** Bluetooth off mid-ride or while connecting: the dash says so and the tap turns it on (v109's card did, the new screen did not). */
+    @Test fun bluetoothOff() {
+        val bt = DashText.silentBand(Link.RECONNECTING, bluetoothOn = false)
+        assertEquals("Bluetooth выключен", bt.title)
+        assertEquals("нажми — включу, связь вернётся сама", bt.hint)
+        assertEquals("a tap turns it on, not a lamp sheet", DashText.BLUETOOTH, bt.id)
+        assertEquals(LampLevel.AMBER, bt.level)
+        assertFalse(bt.crit)
+        assertEquals("still up, just switched off", bt, DashText.silentBand(Link.CONNECTED, bluetoothOn = false))
+        // Bluetooth on: the words the band has for the link
+        assertEquals(band(emptyList(), link = Link.RECONNECTING, streaming = false), DashText.silentBand(Link.RECONNECTING, bluetoothOn = true))
+        assertEquals("Переподключаюсь…", DashText.silentBand(Link.RECONNECTING, bluetoothOn = true).title)
+        assertEquals(band(emptyList(), streaming = false), DashText.silentBand(Link.CONNECTED, bluetoothOn = true))
+        // the idle dash while connecting: the link only says «Нет связи — переподключаюсь…»
+        val lost = "Нет связи — переподключаюсь через 4 с"
+        assertEquals("Bluetooth выключен — включи, подключусь сам" to DashText.Tone.WARN, DashText.idleLine(running = true, bluetoothOn = false, message = lost, err = true))
+        assertEquals("Bluetooth on: the link's own word", lost to DashText.Tone.CRIT, DashText.idleLine(running = true, bluetoothOn = true, message = lost, err = true))
+        assertEquals("Подключаюсь…" to DashText.Tone.TEXT, DashText.idleLine(running = true, bluetoothOn = true, message = "", err = false))
+        assertEquals("not running: what stopped it", "Связь с самокатом остановлена" to DashText.Tone.CRIT,
+            DashText.idleLine(running = false, bluetoothOn = false, message = "Связь с самокатом остановлена", err = true))
+        assertNull("«Отключить»: nothing", DashText.idleLine(running = false, bluetoothOn = true, message = "Отключено", err = false))
     }
 }

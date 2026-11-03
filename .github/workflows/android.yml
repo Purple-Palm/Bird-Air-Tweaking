@@ -86,9 +86,12 @@ jobs:
           cp phone/build/outputs/apk/debug/phone-debug.apk out/bird-air-phone.apk
           cp wear/build/outputs/apk/debug/wear-debug.apk out/bird-air-watch.apk
           # sizes and SHA-256 let the watch (WatchUpdater) and the phone (Updater) check the APK they download; notes: the
-          # commit's subject, the phone's «Что нового»; jq keeps it valid JSON
+          # phone's «Что нового» — the first non-empty line of android/WHATSNEW.txt (Russian, for the owner), the commit's
+          # subject when the file is missing or empty; jq keeps it valid JSON
           sha() { sha256sum "$1" | cut -d' ' -f1; }
           size() { stat -c %s "$1"; }
+          notes=$(sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' WHATSNEW.txt 2>/dev/null | grep -m1 . || true)
+          [ -n "$notes" ] || notes=$(git log -1 --format=%s)
           jq -n \
             --argjson versionCode "$VERSION_CODE" \
             --arg versionName "$VERSION_NAME" \
@@ -97,7 +100,7 @@ jobs:
             --argjson watchSize "$(size out/bird-air-watch.apk)" \
             --arg phoneSha256 "$(sha out/bird-air-phone.apk)" \
             --argjson phoneSize "$(size out/bird-air-phone.apk)" \
-            --arg notes "$(git log -1 --format=%s)" \
+            --arg notes "$notes" \
             '{$versionCode, $versionName, $sha, $watchSha256, $watchSize, $phoneSha256, $phoneSize, $notes}' \
             > out/version.json
           cat out/version.json

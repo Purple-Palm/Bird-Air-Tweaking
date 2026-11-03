@@ -25,12 +25,13 @@ data class Installed(val code: Int, val name: String, val sha: String)
 
 /**
  * In-app update from the android-latest release, one state machine ([UpdateFlow]): version.json at start and once a day
- * (and on «Проверить обновления»), the phone APK into filesDir/update (with «Скачивать обновления сам» right after the
- * check), checked (size and SHA-256 from version.json, this app, newer) and kept there across processes: «Установить vN»
- * hands it to the system installer through the FileProvider. The installer opens by itself only after the owner's tap
- * and only when no recording runs ([UpdateState.openWhenReady]). Android asks once to allow «Установка неизвестных
- * приложений» for Bird Air. Same key, so it installs over this one with settings and logs kept; MY_PACKAGE_REPLACED
- * ([UpdatedReceiver]) deletes the APK and brings the link back. Nothing here talks to the scooter.
+ * (and on «Проверить обновления», and again before a download the owner taps for: the release moves), the phone APK
+ * into filesDir/update (with «Скачивать обновления сам» right after the check), checked (size and SHA-256 from
+ * version.json, this app, newer) and kept there across processes: «Установить vN» hands it to the system installer
+ * through the FileProvider. The installer opens by itself only after the owner's tap and only when no recording runs
+ * ([UpdateState.openWhenReady]). Android asks once to allow «Установка неизвестных приложений» for Bird Air. Same key,
+ * so it installs over this one with settings and logs kept; MY_PACKAGE_REPLACED ([UpdatedReceiver]) deletes the APK
+ * and, if a recording ran, brings the link back. Nothing here talks to the scooter.
  */
 object Updater {
     private val lock = Mutex()
@@ -87,30 +88,23 @@ object Updater {
         val newer = withContext(Dispatchers.IO) {
             lock.withLock {
                 state.update { it.copy(checking = true, message = if (manual) "Проверяю обновления…" else it.message, err = false) }
-                val text = try { get(Versions.VERSION_URL) } catch (e: IOException) { null }
-                val info = Versions.parse(text)
                 val now = System.currentTimeMillis()
-                if (info != null) {
-                    ScooterRepo.prefs.updateJson = text
-                    ScooterRepo.prefs.updateCheckedAt = now
-                }
-                state.update {
-                    val latest = info ?: it.latest
-                    val msg = when {
-                        info == null -> if (manual) "Не удалось прочитать version.json релиза android-latest: нет сети или CI его ещё не выложил." else it.message
-                        Versions.isNewer(info, code) -> "Есть обновление: ${info.label()}."
-                        manual -> "Новее нет: v$code — последняя сборка."
-                        else -> it.message
-                    }
-                    // a kept APK older than the release now: download again
-                    val ready = it.readyCode?.takeIf { c -> UpdateFlow.keep(c, code, latest) }
-                    it.copy(latest = latest, checkedAt = if (info != null) now else it.checkedAt, checking = false, message = msg,
-                        err = info == null && manual, readyCode = ready)
-                }
+                val info = readRelease(now)
+                state.update { UpdateFlow.checked(it, info, code, manual, now) }
                 Versions.isNewer(state.value.latest, code) && state.value.readyCode == null
             }
         }
-        if (newer && ScooterRepo.settings.value.autoDownload) download(ctx, byTap)
+        // read just now: no second look before the download
+        if (newer && ScooterRepo.settings.value.autoDownload) download(ctx, byTap, recheck = false)
+    }
+
+    /** version.json of android-latest, kept in the prefs with [now] when it came through; null: no network, not a version.json. */
+    private fun readRelease(now: Long): UpdateInfo? {
+        val text = try { get(Versions.VERSION_URL) } catch (e: IOException) { null }
+        val info = Versions.parse(text) ?: return null
+        ScooterRepo.prefs.updateJson = text
+        ScooterRepo.prefs.updateCheckedAt = now
+        return info
     }
 
     private fun get(url: String): String? {
@@ -143,19 +137,28 @@ object Updater {
 
     /**
      * The release's phone APK into filesDir/update (kept when it is already there, newer than this build and not older
-     * than what version.json says now), checked by size and SHA-256 when version.json has them. Run it in
-     * [ScooterRepo.scope], not an activity's: the download outlives the screen. [byTap]: the installer may open after it.
+     * than what version.json says now), checked by size and SHA-256 when version.json has them. [recheck]: version.json
+     * is read again first, «Скачиваю…» showing meanwhile — android-latest is replaced on every push, and the APK of a newer
+     * build fails the size and SHA-256 of the version.json read before on every tap, until the daily check (a check that
+     * has just read it passes false). Run it in [ScooterRepo.scope], not an activity's: the download outlives the screen.
+     * [byTap]: the installer may open after it.
      */
-    suspend fun download(ctx: Context, byTap: Boolean): File? = withContext(Dispatchers.IO) {
+    suspend fun download(ctx: Context, byTap: Boolean, recheck: Boolean = true): File? = withContext(Dispatchers.IO) {
         lock.withLock {
             val f = apkFile(ctx)
-            val latest = state.value.latest
-            apkCode(ctx, f)?.let { c ->
-                if (UpdateFlow.keep(c, code, latest)) { ready(c, byTap); return@withLock f }
-            }
             val tmp = File(f.path + ".part")
-            state.update { it.copy(downloading = true, progress = 0f, gotBytes = 0, totalBytes = latest?.phoneSize, message = "Скачиваю ${Versions.PHONE_APK}…", err = false) }
+            state.update { it.copy(downloading = true, progress = 0f, gotBytes = 0, totalBytes = it.latest?.phoneSize, message = "Скачиваю ${Versions.PHONE_APK}…", err = false) }
             try {
+                if (recheck) {
+                    val now = System.currentTimeMillis()
+                    val info = readRelease(now)
+                    // the release as it is now: its size and SHA-256 below; the download's own words stay
+                    state.update { u -> UpdateFlow.checked(u, info, code, manual = false, nowMs = now).let { it.copy(message = u.message, err = false, totalBytes = it.latest?.phoneSize) } }
+                }
+                val latest = state.value.latest
+                apkCode(ctx, f)?.let { c ->
+                    if (UpdateFlow.keep(c, code, latest)) { ready(c, byTap); return@withLock f }
+                }
                 val md = MessageDigest.getInstance("SHA-256")
                 val c = URL(Versions.PHONE_APK_URL).openConnection() as HttpURLConnection
                 var got = 0L

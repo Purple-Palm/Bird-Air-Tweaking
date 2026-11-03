@@ -7,7 +7,10 @@ import io.github.purplepalm.birdair.core.RangeEstimate
 import io.github.purplepalm.birdair.core.Telemetry
 import io.github.purplepalm.birdair.core.TellTales
 
-/** The dash's warning band: [id] the lamp a tap opens (null: none), [level] its colour, two lines; [crit] red. */
+/**
+ * The dash's warning band: [id] the lamp a tap opens (null: none; [DashText.BLUETOOTH]: a tap turns Bluetooth on), [level]
+ * its colour, two lines; [crit] red.
+ */
 data class Band(val id: String?, val level: LampLevel?, val title: String, val hint: String?, val crit: Boolean)
 
 /** The dash's words. Pure: the screen passes the state in. */
@@ -19,14 +22,44 @@ object DashText {
      */
     fun band(lamps: List<Lamp>, units: String, bulb: Boolean, running: Boolean, link: Link, streaming: Boolean): Band {
         if (bulb) return Band(null, null, "Проверка ламп…", null, false)
-        if (running && link == Link.RECONNECTING) return Band(TellTales.LINK, LampLevel.AMBER, "Переподключаюсь…", "связь с самокатом прервалась — пробую снова", false)
-        if (running && link == Link.CONNECTED && !streaming) return Band(TellTales.LINK, LampLevel.AMBER, TellTales.T_SILENT, SILENT_HINT, false)
+        if (running && link == Link.RECONNECTING) return RECONNECT
+        if (running && link == Link.CONNECTED && !streaming) return SILENT
         val top = TellTales.top(lamps) ?: return Band(null, null, "Предупреждений нет", null, false)
         val title = top.text.ifEmpty { LampText.short(top) } + (LampText.value(top, units)?.let { " · $it" } ?: "")
         return Band(top.id, top.level, title, hint(top), top.level == LampLevel.RED)
     }
 
+    /**
+     * The band of the silent dash (the same places with dashes): Bluetooth off first — a tap turns it on, the link comes
+     * back by itself (the link alone would only say «Переподключаюсь…»); the reconnect; «Руль молчит».
+     */
+    fun silentBand(link: Link, bluetoothOn: Boolean): Band = when {
+        !bluetoothOn -> Band(BLUETOOTH, LampLevel.AMBER, BT_OFF, "нажми — включу, связь вернётся сама", false)
+        link == Link.RECONNECTING -> RECONNECT
+        else -> SILENT
+    }
+
     const val SILENT_HINT = "жду кадры после запроса +SVGT=?…"
+    /** [Band.id] of «Bluetooth выключен»: not a lamp, a tap turns Bluetooth on. */
+    const val BLUETOOTH = "bt"
+    const val BT_OFF = "Bluetooth выключен"
+
+    private val RECONNECT = Band(TellTales.LINK, LampLevel.AMBER, "Переподключаюсь…", "связь с самокатом прервалась — пробую снова", false)
+    private val SILENT = Band(TellTales.LINK, LampLevel.AMBER, TellTales.T_SILENT, SILENT_HINT, false)
+
+    enum class Tone { TEXT, WARN, CRIT }
+
+    /**
+     * The line under the scooter on the idle dash: connecting with Bluetooth off — that (the button below turns it on;
+     * the link itself only says «Нет связи — переподключаюсь через N с»); the error that stopped the link; the link's
+     * word while connecting; else none.
+     */
+    fun idleLine(running: Boolean, bluetoothOn: Boolean, message: String, err: Boolean): Pair<String, Tone>? = when {
+        running && !bluetoothOn -> "$BT_OFF — включи, подключусь сам" to Tone.WARN
+        err && message.isNotEmpty() -> message to Tone.CRIT
+        running -> message.ifEmpty { "Подключаюсь…" } to Tone.TEXT
+        else -> null
+    }
 
     private val HINTS = mapOf(
         "${TellTales.BATTERY}:${LampLevel.RED}" to "сбавь газ, ищи где встать",
@@ -81,9 +114,13 @@ object DashText {
 
     const val SENT_SHOW_MS = 5 * 60_000L
 
-    /** The snackbar after «Отключить»: «уходит в GitHub» only when the auto-send will really go ([GhConfig.autoReady]). */
-    fun disconnected(gh: GhConfig, hasToken: Boolean): String = "Отключено · лог сохранён" + when {
-        gh.autoReady(hasToken) -> " и уходит в GitHub"
+    /**
+     * The snackbar after «Отключить»: «уходит в GitHub» only when the auto-send will really go — set up
+     * ([GhConfig.autoReady]) and [hasData], the scooter sent something this recording ([LogStore.autoDue] sends nothing
+     * without it); else what it lacks.
+     */
+    fun disconnected(gh: GhConfig, hasToken: Boolean, hasData: Boolean): String = "Отключено · лог сохранён" + when {
+        gh.autoReady(hasToken) -> if (hasData) " и уходит в GitHub" else " · данных с руля не было — в GitHub не отправляю"
         !gh.auto -> ""
         !hasToken -> " · для автоотправки нужен токен"
         else -> " · для автоотправки заполни «Логи» → «GitHub»"

@@ -9,7 +9,8 @@ import kotlinx.serialization.json.longOrNull
 
 /**
  * version.json of the android-latest release: {"versionCode": int, "versionName": str, "sha": str}, and from CI also the
- * phone APK's [phoneSize] (bytes) and [phoneSha256] (the download is checked against them) and [notes] (the commit's subject).
+ * phone APK's [phoneSize] (bytes) and [phoneSha256] (the download is checked against them) and [notes] (the first line
+ * of android/WHATSNEW.txt, else the commit's subject: «Что нового» on the update card).
  */
 data class UpdateInfo(
     val versionCode: Int, val versionName: String, val sha: String,

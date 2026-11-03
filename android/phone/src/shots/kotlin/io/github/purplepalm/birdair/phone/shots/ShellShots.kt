@@ -1,9 +1,11 @@
 package io.github.purplepalm.birdair.phone.shots
 
+import android.Manifest
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -11,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import io.github.purplepalm.birdair.core.TellTales
 import io.github.purplepalm.birdair.phone.BuildConfig
 import io.github.purplepalm.birdair.phone.DashViews
 import io.github.purplepalm.birdair.phone.Installed
@@ -158,6 +161,48 @@ abstract class ShellShotsBase {
         rule.onNodeWithText("Проверка ламп…").assertExists()
     }
 
+    /** Bluetooth off mid-ride: the band says so and a tap turns it on; the link comes back by itself. */
+    @Test fun homeSilentBluetoothOff() {
+        Scenes.ride(); Scenes.update(Upd.NONE); Scenes.logs(Logs.UNSENT)
+        Scenes.bluetoothOff()
+        shot.setContent("22:12", NavStart(), SystemState(bluetoothOn = false))
+        shot.both("home-silent-bt")
+        assertTrue("still moving: «Отключить» wants the hold", ScooterRepo.moving.value)
+        // the band's, not the reconnect's (the pill on top still says «Переподключаюсь…» / «Связь…»)
+        rule.onNodeWithText("связь с самокатом прервалась", substring = true).assertDoesNotExist()
+        checkLayout(ride = true)
+        rule.onNodeWithText("Bluetooth выключен").performClick()
+        assertTrue("the band turns Bluetooth on", "enableBluetooth" in shot.ui.calls)
+        rule.onNodeWithText("Bluetooth выключен").assertExists()
+    }
+
+    /** Bluetooth off while connecting: «Включить Bluetooth» instead of a spinner, «Отмена» stays, the card says why. */
+    @Test fun homeConnectingBluetoothOff() {
+        Scenes.idle(); Scenes.update(Upd.NONE); Scenes.logs(Logs.UNSENT)
+        Scenes.connectingBluetoothOff()
+        shot.setContent("22:25", NavStart(), SystemState(bluetoothOn = false))
+        shot.both("home-connecting-bt")
+        rule.onNodeWithText("Bluetooth выключен — включи, подключусь сам").assertExists()
+        rule.onNodeWithText("Нет связи — переподключаюсь", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("Подключаюсь…").assertDoesNotExist()
+        checkLayout()
+        rule.onNodeWithText("Включить Bluetooth").performClick()
+        assertTrue("enableBluetooth" in shot.ui.calls)
+        rule.onNodeWithText("Отмена").performClick()
+        assertTrue("«Отмена» still stops it", "disconnect" in shot.ui.calls)
+    }
+
+    /** Updated from v109 with a scooter saved and the notification and background cards never put off: «Подключить» at once. */
+    @Test fun upgradeKeepsConnect() {
+        Scenes.idle(); Scenes.update(Upd.NONE)
+        ScooterRepo.updateUi { it.copy(batteryHintHidden = false, notifHintHidden = false) }
+        shot.setContent("22:25", NavStart(), SystemState(missingPerms = listOf(Manifest.permission.POST_NOTIFICATIONS), samsung = true, ignoringBattery = false))
+        rule.onNodeWithText("Подключить").assertExists()
+        rule.onNodeWithText("Уведомления выключены").assertDoesNotExist()
+        rule.onNodeWithText("Работа в фоне").assertDoesNotExist()
+        checkLayout()
+    }
+
     // -- the sheets
 
     @Test fun lampSheet() {
@@ -296,13 +341,61 @@ abstract class ShellShotsBase {
         assertTrue("held, it disconnects", "disconnect" in shot.ui.calls)
     }
 
-    /** Stopped, one tap disconnects. */
+    /** Stopped, one tap disconnects; the ride had data and auto-send is set up: it goes to GitHub. */
     @Test fun tapToDisconnectWhenParked() {
         Scenes.parked()
         shot.setContent("22:06", NavStart(), sys)
         rule.onNodeWithContentDescription("Отключить", substring = true).performClick()
         shot.settle(1)
         assertTrue("disconnect" in shot.ui.calls)
+        rule.onNodeWithText("Отключено · лог сохранён и уходит в GitHub").assertExists()
+    }
+
+    /** «Отключить» on a recording the scooter sent nothing to: the snackbar does not promise GitHub (LogStore.autoDue sends nothing). */
+    @Test fun disconnectWithoutData() {
+        Scenes.update(Upd.NONE)
+        Scenes.noData()
+        shot.setContent("22:25", NavStart(), sys)
+        rule.onNodeWithText(TellTales.T_SILENT).assertExists()
+        rule.onNodeWithContentDescription("Отключить", substring = true).performClick()
+        shot.settle(2)
+        assertTrue("disconnect" in shot.ui.calls)
+        rule.onNodeWithText("Отключено · лог сохранён · данных с руля не было — в GitHub не отправляю").assertExists()
+        shot.both("home-silent-nodata")
+    }
+
+    /**
+     * «Управление» opens right under the thumb: for 0,6 s after it opens (every time) its switch, modes and headlight take
+     * no taps — a double tap or a glove's bounce on «Управление» while riding sends nothing — then they work.
+     */
+    @Test fun controlSheetGuard() {
+        Scenes.ride()
+        ScooterRepo.setAllowCommands(true)
+        shot.setContent("22:12", NavStart(), sys)
+        fun open() { rule.onNodeWithText("Управление").performClick(); rule.mainClock.advanceTimeByFrame() }
+        open()
+        rule.onNodeWithText("Разрешить команды").assertIsDisplayed().performClick()
+        assertTrue("0 ms: the switch stays on", ScooterRepo.control.value.allow)
+        rule.mainClock.advanceTimeBy(150)
+        rule.onNodeWithContentDescription("Режим GLIDE").assertIsDisplayed().performClick()
+        rule.mainClock.advanceTimeBy(150)
+        rule.onNodeWithText("Фара выкл").assertIsDisplayed().performClick()
+        assertEquals("0–300 ms: nothing reached ScooterRepo.command", "", ScooterRepo.control.value.message)
+        assertTrue(ScooterRepo.control.value.allow)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.onNodeWithText("Фара выкл").performClick()
+        // no service in a shot: ScooterRepo.command refuses for want of a link, so the tap did get there
+        assertEquals("after 0,6 s the tap goes", "Нет связи с самокатом.", ScooterRepo.control.value.message)
+        // closed and opened again: guarded again, the switch too
+        ScooterRepo.setAllowCommands(false)
+        rule.onNodeWithContentDescription("Закрыть").performClick()
+        rule.mainClock.advanceTimeBy(400)
+        open()
+        rule.onNodeWithText("Разрешить команды").assertIsDisplayed().performClick()
+        assertFalse("a bounce does not allow commands", ScooterRepo.control.value.allow)
+        rule.mainClock.advanceTimeBy(DashViews.TILE_GUARD_MS)
+        rule.onNodeWithText("Разрешить команды").performClick()
+        assertTrue("then the switch works", ScooterRepo.control.value.allow)
     }
 
     /** Tiles that just appeared (the view switched to «Стою») ignore taps for 0,6 s. */
@@ -416,5 +509,15 @@ class ShellShotsS21 : ShellShotsBase() {
         shot.setContent("22:12", NavStart(), SystemState(), fontScale = 1.3f)
         shot.both("home-ride", suffix = "-s21-fs13")
         checkDock()
+    }
+
+    /** A 1,3 font while connecting with Bluetooth off: «Включить Bluetooth» takes two lines rather than losing a word. */
+    @Test fun homeConnectingBluetoothOffFontScale() {
+        Scenes.idle(); Scenes.update(Upd.NONE); Scenes.logs(Logs.UNSENT)
+        Scenes.connectingBluetoothOff()
+        shot.setContent("22:25", NavStart(), SystemState(bluetoothOn = false), fontScale = 1.3f)
+        shot.both("home-connecting-bt", suffix = "-s21-fs13")
+        checkDock()
+        checkTargets()
     }
 }

@@ -116,6 +116,8 @@ class ScooterService : Service() {
     /** «Отключить»: link down, no reconnects; the log is saved (and sent, with auto-send) before the service ends. */
     private fun stopAll() {
         ScooterRepo.prefs.wanted = false
+        // nothing runs now: after an install cancelled earlier, an update put on later by hand must not bring the link back
+        ScooterRepo.prefs.resumeAfterUpdate = false
         val was = ScooterRepo.status.value.running
         if (was) ScooterRepo.ended(EndCause.OWNER)
         link.stop()

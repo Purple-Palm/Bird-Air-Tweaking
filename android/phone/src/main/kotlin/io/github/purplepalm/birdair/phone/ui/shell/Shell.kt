@@ -105,7 +105,7 @@ fun AppShell(ui: UiActions, sys: SystemState, start: NavStart = NavStart()) {
     val settings by ScooterRepo.settings.collectAsStateWithLifecycle()
     val scan by ScooterRepo.scan.collectAsStateWithLifecycle()
     val view = DashViews.of(st.running, st.link, streaming, streamed, moving, pin)
-    val setup = Setup.step(sys, settings, Perms.scan(), running = st.running)
+    val setup = Setup.step(sys, settings, Perms.scan(), running = st.running, chosen = st.address != null)
 
     // starting the service shows the dash; a tap on a notification shows it with nothing over it
     var wasRunning by rememberSaveable { mutableStateOf(st.running) }

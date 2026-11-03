@@ -40,7 +40,10 @@ class MotionView(val parkBelowKmh: Double = 1.0, val rideAboveKmh: Double = 3.0,
 object DashViews {
     /** «Отключить» while moving: held this long. */
     const val HOLD_MS = 700L
-    /** Tiles ignore taps right after they appear (a view switch must not take a tap meant for what was there). */
+    /**
+     * Tiles ignore taps right after they appear (a view switch must not take a tap meant for what was there); so do the
+     * «Управление» sheet's switch and buttons after it opens under the thumb.
+     */
     const val TILE_GUARD_MS = 600L
 
     /**
@@ -76,13 +79,15 @@ object Setup {
      * PERMS: any of [scanPerms] missing; NOTIF: only POST_NOTIFICATIONS missing and not put off («Позже»); BLUETOOTH: off;
      * BACKGROUND: battery optimisation still on (or a Samsung, which sleeps apps anyway) and not put off; else DONE.
      * Only while nothing runs: [running] (connecting, the IDLE view too) → DONE, so «Подключаюсь…» / «Отмена» show.
+     * NOTIF and BACKGROUND only until a scooter is [chosen]: an owner updating from v109 (a scooter saved, those cards
+     * never put off) keeps «Подключить»; both are in «Настройки → Работа в фоне» anyway.
      */
-    fun step(sys: SystemState, s: UiSettings, scanPerms: List<String>, running: Boolean = false): SetupStep = when {
+    fun step(sys: SystemState, s: UiSettings, scanPerms: List<String>, running: Boolean = false, chosen: Boolean = false): SetupStep = when {
         running -> SetupStep.DONE
         scanPerms.any { it in sys.missingPerms } -> SetupStep.PERMS
-        sys.missingPerms.isNotEmpty() && sys.missingPerms.all { it == NOTIFY } && !s.notifHintHidden -> SetupStep.NOTIF
+        !chosen && sys.missingPerms.isNotEmpty() && sys.missingPerms.all { it == NOTIFY } && !s.notifHintHidden -> SetupStep.NOTIF
         !sys.bluetoothOn -> SetupStep.BLUETOOTH
-        (!sys.ignoringBattery || sys.samsung) && !s.batteryHintHidden -> SetupStep.BACKGROUND
+        !chosen && (!sys.ignoringBattery || sys.samsung) && !s.batteryHintHidden -> SetupStep.BACKGROUND
         else -> SetupStep.DONE
     }
 

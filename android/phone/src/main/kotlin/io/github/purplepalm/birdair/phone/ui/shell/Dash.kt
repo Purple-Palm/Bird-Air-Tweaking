@@ -126,13 +126,15 @@ private val RIDE_SIZES = listOf(RideSizes(128f, 56.dp, 50.dp), RideSizes(96f, 56
 
 /**
  * RIDE: the warning band (fixed height), the speed sized to the width, the mode, the power with its bar, the battery and
- * the range, the 12 lamps 2×6 — no scrolling at 360×800. SILENT: the same with dashes and «жду данные от BMS».
+ * the range, the 12 lamps 2×6 — no scrolling at 360×800. SILENT: the same with dashes and «жду данные от BMS»; its band
+ * says «Bluetooth выключен» when it is (a tap turns it on), else the reconnect or «Руль молчит» ([DashText.silentBand]).
  */
 @Composable
 fun DashRide(silent: Boolean, modifier: Modifier = Modifier) {
     val t by ScooterRepo.telemetry.collectAsStateWithLifecycle()
     val st by ScooterRepo.status.collectAsStateWithLifecycle()
     val s by ScooterRepo.settings.collectAsStateWithLifecycle()
+    val sys = LocalSys.current
     val bulb = rememberBulbCheck()
     val density = LocalDensity.current
     BoxWithConstraints(modifier.fillMaxSize()) {
@@ -156,8 +158,7 @@ fun DashRide(silent: Boolean, modifier: Modifier = Modifier) {
                 .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
             verticalArrangement = if (fits) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp),
         ) {
-            val band = if (silent && !bulb) Band(TellTales.LINK, LampLevel.AMBER, if (st.link == io.github.purplepalm.birdair.core.Link.RECONNECTING) "Переподключаюсь…" else TellTales.T_SILENT,
-                if (st.link == io.github.purplepalm.birdair.core.Link.RECONNECTING) "связь с самокатом прервалась — пробую снова" else DashText.SILENT_HINT, false)
+            val band = if (silent && !bulb) DashText.silentBand(st.link, sys.bluetoothOn)
             else DashText.band(t.lamps, s.units, bulb, st.running, st.link, t.streaming)
             BandView(band, height = 60.dp)
             SpeedRow(t, s.units, silent, fitSp(z.speedMax))
@@ -281,11 +282,15 @@ fun BatteryRow(t: Telemetry, units: String, silent: Boolean) {
     }
 }
 
-/** The fixed-height warning band; a tap opens the lamp's sheet («Предупреждений нет»: the Приборка page). */
+/**
+ * The fixed-height warning band; a tap opens the lamp's sheet («Предупреждений нет»: the Приборка page; «Bluetooth
+ * выключен»: turns it on).
+ */
 @Composable
 fun BandView(b: Band, height: Dp) {
     val c = LocalBal.current
     val nav = LocalNav.current
+    val ui = LocalUi.current
     val quiet = b.level == null
     val warnCol = b.level?.let { if (b.crit) c.crit else c.warn } ?: c.muted
     val shape = RoundedCornerShape(12.dp)
@@ -295,7 +300,9 @@ fun BandView(b: Band, height: Dp) {
     val blink = rememberBlink()
     Row(
         Modifier.fillMaxWidth().height(height).clip(shape).background(bg).border(border, shape)
-            .then(if (bulb) Modifier else Modifier.clickable(role = Role.Button) { val id = b.id; if (id != null) nav.lamp(id) else nav.open(Page.LAMPS) })
+            .then(if (bulb) Modifier else Modifier.clickable(role = Role.Button) {
+                when (val id = b.id) { DashText.BLUETOOTH -> ui.enableBluetooth(); null -> nav.open(Page.LAMPS); else -> nav.lamp(id) }
+            })
             .semantics(mergeDescendants = true) { contentDescription = b.title + (b.hint?.let { " — $it" } ?: "") }
             .padding(start = 14.dp, end = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -526,13 +533,14 @@ fun Sparkline(windowMs: Long?, modifier: Modifier = Modifier) {
 // -- idle
 
 /**
- * IDLE: the first-launch card one step at a time; or the scooter (and the error that stopped it, in red), the last ride
- * with why it ended, the battery as it was. Nothing chosen yet: «Самокат не выбран».
+ * IDLE: the first-launch card one step at a time; or the scooter (and the error that stopped it, in red; connecting with
+ * Bluetooth off, that), the last ride with why it ended, the battery as it was. Nothing chosen yet: «Самокат не выбран».
  */
 @Composable
 fun DashIdle(setup: SetupStep, modifier: Modifier = Modifier) {
     val c = LocalBal.current
     val nav = LocalNav.current
+    val sys = LocalSys.current
     val st by ScooterRepo.status.collectAsStateWithLifecycle()
     val last by ScooterRepo.lastRide.collectAsStateWithLifecycle()
     val s by ScooterRepo.settings.collectAsStateWithLifecycle()
@@ -542,8 +550,8 @@ fun DashIdle(setup: SetupStep, modifier: Modifier = Modifier) {
     ) {
         if (setup != SetupStep.DONE) {
             SetupCard(setup)
-            Text("Потом — «Найти самокат»: приложение запомнит его и будет подключаться само.", color = c.muted, fontSize = 13.sp, lineHeight = 18.sp,
-                modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp))
+            Text(if (st.address == null) "Потом — «Найти самокат»: приложение запомнит его и будет подключаться само." else "Потом — «Подключить»: самокат уже запомнен.",
+                color = c.muted, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp))
             return@Column
         }
         if (st.address == null) {
@@ -557,8 +565,10 @@ fun DashIdle(setup: SetupStep, modifier: Modifier = Modifier) {
         val r = last
         WellCard(onDash = true) {
             Hero(AppIcons.Scooter, c.ink2, st.deviceName ?: "Самокат", st.address + (r?.let { " · до " + Fmt.clock(it.endMs, seconds = false) } ?: ""))
-            if (st.err && st.message.isNotEmpty()) Text(st.message, color = c.critInk, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 10.dp))
-            else if (st.running) Text(st.message.ifEmpty { "Подключаюсь…" }, color = c.ink2, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 10.dp))
+            DashText.idleLine(st.running, sys.bluetoothOn, st.message, st.err)?.let { (text, tone) ->
+                val col = when (tone) { DashText.Tone.WARN -> c.warnInk; DashText.Tone.CRIT -> c.critInk; DashText.Tone.TEXT -> c.ink2 }
+                Text(text, color = col, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 10.dp))
+            }
         }
         if (r != null) {
             TripCard(

@@ -255,6 +255,8 @@ object ScooterRepo {
         viewPin.value = ViewPin.AUTO
         streamed.value = false
         cutPct = null
+        // the last recording's LastRide is kept: its parts need not stay in memory through this one
+        endedFor = null
         movingMs = 0L
         prevT = Long.MIN_VALUE
         prevKmh = Double.NaN
@@ -366,12 +368,15 @@ object ScooterRepo {
 
     /**
      * Right before the system installer replaces this app: Android kills the process without onDestroy and does not
-     * restart the service, so the running recording (every changed part) and the app odometer are saved now.
+     * restart the service, so the running recording (every changed part) and the app odometer are saved now. Whether one
+     * runs goes to [Prefs.resumeAfterUpdate], at every attempt: [UpdatedReceiver] brings the link back only then.
      */
     suspend fun beforeInstall(ctx: Context) {
+        val running = status.value.running
+        prefs.resumeAfterUpdate = running
         saveOdometer(true)
         val s = session ?: return
-        if (status.value.running) {
+        if (running) {
             sys("Обновление: сохраняю лог перед установкой, связь с самокатом прервётся")
             LogStore.saveAll(ctx.applicationContext, s)
         }
@@ -460,6 +465,9 @@ object ScooterRepo {
 
     /** Seconds above 1 km/h this session. */
     fun movingSeconds(): Long = movingMs / 1000
+
+    /** The scooter sent something this recording (without it [LogStore.autoDue] sends nothing). */
+    fun hasScooterData(): Boolean = (session?.rx?.get() ?: 0L) > 0
 
     fun toast(text: String) { toastFlow.tryEmit(text) }
 

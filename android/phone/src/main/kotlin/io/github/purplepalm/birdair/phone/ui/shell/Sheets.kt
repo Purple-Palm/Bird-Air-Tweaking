@@ -125,7 +125,7 @@ fun SheetHost(kind: SheetKind?, scanShown: Boolean, bottomInset: Dp) {
                 when (val s = shown) {
                     "scan" -> ScanSheet(close)
                     SheetKind.LAMP -> LampSheet(nav.lamp ?: TellTales.BATTERY, close)
-                    SheetKind.CONTROL -> ControlSheet(close)
+                    SheetKind.CONTROL -> ControlSheet(open, close)
                     SheetKind.UPDATE -> UpdateSheet(close)
                     SheetKind.VIEW -> ViewSheet(close)
                     else -> if (s != null) Spacer(Modifier.height(1.dp))
@@ -204,19 +204,24 @@ private inline fun androidx.compose.ui.text.AnnotatedString.Builder.withStyleSpa
 /**
  * «Управление»: the explicit «Разрешить команды» switch (off at every start), the three modes (68 dp, the current one in
  * its colour) and the headlight. Everything grey unless allowed and connected; only [Commands.mode] / [Commands.light]
- * through [ScooterRepo.command] (WriteGuard behind it).
+ * through [ScooterRepo.command] (WriteGuard behind it). The sheet opens right under the thumb: the switch and the
+ * buttons take taps only [io.github.purplepalm.birdair.phone.DashViews.TILE_GUARD_MS] after it [open]s (again at every
+ * opening; nothing changes visually), so a glove's bounce or a double tap on «Управление» does not land on «Фара выкл»
+ * or a mode.
  */
 @Composable
-fun ControlSheet(close: () -> Unit) {
+fun ControlSheet(open: Boolean, close: () -> Unit) {
     val c = LocalBal.current
     val t by ScooterRepo.telemetry.collectAsStateWithLifecycle()
     val st by ScooterRepo.status.collectAsStateWithLifecycle()
     val s by ScooterRepo.settings.collectAsStateWithLifecycle()
     val ctl by ScooterRepo.control.collectAsStateWithLifecycle()
     val can = ctl.allow && st.link == Link.CONNECTED
+    // sliding in or out, nothing here takes a tap
+    val armed = rememberArmed(open) && open
     SheetTitle("Управление", close)
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.well).border(1.dp, c.hair, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 2.dp)) {
-        SettingSwitch("Разрешить команды", ctl.allow, { ScooterRepo.setAllowCommands(it) },
+        SettingSwitch("Разрешить команды", ctl.allow, { if (armed) ScooterRepo.setAllowCommands(it) },
             hint = "Только команды приложения Bird: +MODE и +HLGT. Выключается при каждом запуске.")
     }
     SectionHeader("РЕЖИМ")
@@ -228,7 +233,7 @@ fun ControlSheet(close: () -> Unit) {
             Column(
                 Modifier.weight(1f).height(68.dp).alpha(if (can) 1f else if (cur) 0.62f else 0.38f).clip(shape)
                     .border(if (cur) 3.dp else 1.dp, if (cur) color else c.base, shape)
-                    .clickable(enabled = can, role = Role.Button) { Commands.mode(m.n)?.let { ScooterRepo.command(it) } }
+                    .clickable(enabled = can, role = Role.Button) { if (armed) Commands.mode(m.n)?.let { ScooterRepo.command(it) } }
                     .semantics(mergeDescendants = true) { contentDescription = "Режим ${m.title}" + if (cur) ", сейчас" else "" },
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
             ) {
@@ -239,8 +244,8 @@ fun ControlSheet(close: () -> Unit) {
     }
     SectionHeader("ФАРА")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        BigButton("Фара вкл", { ScooterRepo.command(Commands.light(true)) }, Modifier.weight(1f), icon = AppIcons.Light, style = BtnStyle.OUTLINED, enabled = can)
-        BigButton("Фара выкл", { ScooterRepo.command(Commands.light(false)) }, Modifier.weight(1f), style = BtnStyle.OUTLINED, enabled = can)
+        BigButton("Фара вкл", { if (armed) ScooterRepo.command(Commands.light(true)) }, Modifier.weight(1f), icon = AppIcons.Light, style = BtnStyle.OUTLINED, enabled = can)
+        BigButton("Фара выкл", { if (armed) ScooterRepo.command(Commands.light(false)) }, Modifier.weight(1f), style = BtnStyle.OUTLINED, enabled = can)
     }
     val msg = ctl.message.ifEmpty {
         if (st.link != Link.CONNECTED) "Нет связи с самокатом — команды недоступны."

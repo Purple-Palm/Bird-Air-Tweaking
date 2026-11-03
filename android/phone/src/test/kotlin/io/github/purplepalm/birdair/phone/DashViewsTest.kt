@@ -7,7 +7,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The dash's view: «Еду» / «Стою» by speed with hysteresis, the view for every link state, «Отключить»'s hold, the tiles' guard, the first-launch steps. */
+/**
+ * The dash's view: «Еду» / «Стою» by speed with hysteresis, the view for every link state, «Отключить»'s hold, the tiles'
+ * guard, the first-launch steps (and which of them a chosen scooter skips).
+ */
 class DashViewsTest {
     private fun moving(vararg samples: Pair<Long, Double?>, streaming: Boolean = true): MotionView {
         val m = MotionView()
@@ -120,5 +123,22 @@ class DashViewsTest {
         val samsung = SystemState(samsung = true, ignoringBattery = false, bluetoothOn = false)
         assertEquals(SetupStep.BLUETOOTH, step(samsung))
         assertEquals("connecting: «Подключаюсь…» / «Отмена», not the card", SetupStep.DONE, Setup.step(samsung, s, scan, running = true))
+    }
+
+    /** A scooter saved (an owner updating from v109, those cards never put off): «Подключить», not notifications or background. */
+    @Test fun aChosenScooterSkipsTheOptionalSteps() {
+        val scan = listOf("android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT")
+        val notify = "android.permission.POST_NOTIFICATIONS"
+        val s = UiSettings()
+        fun chosen(sys: SystemState) = Setup.step(sys, s, scan, chosen = true)
+        val s21 = SystemState(samsung = true, ignoringBattery = false)
+        assertEquals("a fresh install still gets it", SetupStep.BACKGROUND, Setup.step(s21, s, scan))
+        assertEquals("«Работа в фоне» waits in Настройки", SetupStep.DONE, chosen(s21))
+        assertEquals(SetupStep.NOTIF, Setup.step(SystemState(missingPerms = listOf(notify)), s, scan))
+        assertEquals(SetupStep.DONE, chosen(SystemState(missingPerms = listOf(notify))))
+        // what it cannot connect without stays
+        assertEquals(SetupStep.PERMS, chosen(SystemState(missingPerms = scan + notify, samsung = true, ignoringBattery = false)))
+        assertEquals(SetupStep.BLUETOOTH, chosen(s21.copy(bluetoothOn = false, missingPerms = listOf(notify))))
+        assertEquals(SetupStep.DONE, Setup.step(s21.copy(bluetoothOn = false), s, scan, running = true, chosen = true))
     }
 }

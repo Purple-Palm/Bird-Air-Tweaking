@@ -7,6 +7,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class VersionsTest {
     @Test fun versionJson() {
@@ -35,6 +36,16 @@ class VersionsTest {
         assertNull(bad.phoneSha256)
         assertNull(bad.phoneSize)
         assertNull(bad.notes)
+    }
+
+    /** android/WHATSNEW.txt: CI puts its first non-empty line into version.json's notes — «Что нового: …» on the update card. */
+    @Test fun whatsNewIsOneShortRussianLine() {
+        val f = File(System.getProperty("repoRoot") ?: "../..", "android/WHATSNEW.txt")
+        // missing or empty: CI takes the commit's subject
+        val line = (if (f.isFile) f.readLines() else emptyList()).map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: return
+        assertTrue("a line for the card, ≤ 200 characters: ${line.length}", line.length <= 200)
+        assertTrue("for the owner, in Russian: $line", line.any { it in 'а'..'я' || it in 'А'..'Я' })
+        assertFalse("the card says «Что нового» itself", line.startsWith("Что нового"))
     }
 
     @Test fun newerByVersionCodeOnly() {

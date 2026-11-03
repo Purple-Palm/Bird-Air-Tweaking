@@ -226,12 +226,15 @@ class MainActivity : ComponentActivity(), UiActions {
 
     override fun refreshLogs() { ScooterRepo.scope.launch(Dispatchers.IO) { ScooterRepo.refreshUnsent(applicationContext) } }
 
-    /** The one update button: check → download → install, by the state it is in ([UpdateFlow.phase]). */
+    /**
+     * The one update button: check → download → install, by the state it is in ([UpdateFlow.phase]). «Обновить» reads
+     * version.json again before the APK: android-latest may have moved on since the last check.
+     */
     override fun updateStep() {
         val app = applicationContext
         when (Updater.phase()) {
             UpdPhase.NONE -> ScooterRepo.scope.launch { Updater.check(app, manual = true) }
-            UpdPhase.AVAILABLE -> ScooterRepo.scope.launch { Updater.download(app, byTap = true) }
+            UpdPhase.AVAILABLE -> ScooterRepo.scope.launch { Updater.download(app, byTap = true, recheck = true) }
             UpdPhase.READY -> install()
             UpdPhase.CHECKING, UpdPhase.DOWNLOADING -> {}
         }

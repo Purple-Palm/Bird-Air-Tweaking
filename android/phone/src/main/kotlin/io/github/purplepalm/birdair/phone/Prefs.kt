@@ -49,6 +49,14 @@ class Prefs(ctx: Context) {
         get() = main.getBoolean("wanted", false)
         set(v) = main.edit { putBoolean("wanted", v) }
 
+    /**
+     * A recording ran when the in-app install began ([ScooterRepo.beforeInstall]; «Отключить» clears it): after the
+     * update ([UpdatedReceiver]) the link comes back only then, once. Not [wanted]: a service the system ended leaves that on.
+     */
+    var resumeAfterUpdate: Boolean
+        get() = main.getBoolean("resumeAfterUpdate", false)
+        set(v) = main.edit { putBoolean("resumeAfterUpdate", v) }
+
     var ui: UiSettings
         get() = UiSettings(
             units = Units.norm(main.getString("units", Units.KMH)),
